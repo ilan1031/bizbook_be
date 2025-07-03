@@ -1,5 +1,5 @@
 ## .env
-1. DB_Coll = "mongodb+srv://sabaribihub:O78ekT8lJZjYXmjI@cluster0.wieij.mongodb.net/Z_Clone"
+1. DB_Coll = "mongodb+srv://pf5ihub:awc5XaujOiCOWiLS@cluster0.6nihgms.mongodb.net/Z_Clone"
 2. LISTEN = 4000
 3. APP_PORT = 4000
 4. JWT_SECRET = "qwertyuiosdfghjk!@#$%^&*CVBNM"
