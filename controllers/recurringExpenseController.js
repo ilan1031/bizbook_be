@@ -10,8 +10,6 @@ const commonHelper = require("../helpers/commonHelpers");
 const userActivityHelper = require("../helpers/userActivityHelper");
 const moment = require("moment");
 
-
-
 function createComments(
   commented_by,
   commented_by_id,
