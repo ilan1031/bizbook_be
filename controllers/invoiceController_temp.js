@@ -307,7 +307,7 @@ class InvoiceController {
         5,
         "JL"
       );
-     
+
       invoiceData["sub_total_formatted"] = formatCurrency(
         invoiceData.sub_total
       );
@@ -859,6 +859,91 @@ class InvoiceController {
     }
   }
   // 📌 Update invoice
+  // async updateInvoice(req, res) {
+  //   try {
+  //     const { organization_id, invoice_id } = req.query;
+  //     let updateData = { ...req.body };
+
+  //     let documents = updateData.documents;
+  //     if (req.file) {
+  //       documents = req.file.filename;
+  //     }
+
+  //     updateData["documents"] = documents;
+
+  //     // Validate required query params
+  //     if (!organization_id || !invoice_id) {
+  //       return res.status(400).json({
+  //         code: 1,
+  //         message:
+  //           "Missing required parameters: organization_id and invoice_id",
+  //       });
+  //     }
+
+  //     // Find existing invoice
+  //     let invoice = await InvoiceCollection.findOne({
+  //       invoice_id,
+  //       organization_id,
+  //       deleted_at: null, // Ensure it's not already soft-deleted
+  //     });
+
+  //     if (!invoice) {
+  //       return res.status(404).json({
+  //         code: 1,
+  //         message: "Unauthorized or invoice not found",
+  //       });
+  //     }
+
+  //     // Recalculate totals if line items are updated
+  //     if (updateData.line_items && updateData.line_items.length > 0) {
+  //       let subTotal = 0;
+
+  //       // Calculate sub-total from line items
+  //       updateData.line_items.forEach((item) => {
+  //         const lineTotal = (item.quantity || 0) * (item.rate || 0);
+  //         item.item_total = lineTotal;
+  //         subTotal += lineTotal;
+  //       });
+
+  //       updateData["sub_total"] = subTotal;
+
+  //       // Calculate tax amount if applicable
+  //       const taxRate =
+  //         updateData.tax_percentage || invoice.tax_percentage || 0;
+  //       const taxAmount = (subTotal * taxRate) / 100;
+  //       updateData["tax_total"] = taxAmount;
+
+  //       // Calculate discount if applicable
+  //       const discountAmount =
+  //         updateData.discount_amount || invoice.discount_amount || 0;
+
+  //       // Calculate final total
+  //       updateData["total"] = subTotal + taxAmount - discountAmount;
+  //     }
+
+  //     // Perform the update
+  //     let updatedInvoice = await InvoiceCollection.findOneAndUpdate(
+  //       { invoice_id, organization_id },
+  //       { $set: updateData },
+  //       { new: true } // Return the updated document
+  //     );
+
+  //     // Success Response
+  //     return res.status(200).json({
+  //       code: 0,
+  //       message: "Invoice updated successfully",
+  //       invoice: updatedInvoice,
+  //     });
+  //   } catch (error) {
+  //     console.error("updateInvoice Error:", error.message);
+  //     return res.status(500).json({
+  //       code: 1,
+  //       message: "Internal Server Error: Unable to update invoice",
+  //       error: error.message,
+  //     });
+  //   }
+  // }
+
   async updateInvoice(req, res) {
     try {
       const { organization_id, invoice_id } = req.query;
@@ -884,7 +969,7 @@ class InvoiceController {
       let invoice = await InvoiceCollection.findOne({
         invoice_id,
         organization_id,
-        deleted_at: null, // Ensure it's not already soft-deleted
+        deleted_at: null,
       });
 
       if (!invoice) {
@@ -894,7 +979,7 @@ class InvoiceController {
         });
       }
 
-      // Recalculate totals if line items are updated
+      // ✅ Recalculate totals using the same logic as createInvoice
       if (updateData.line_items && updateData.line_items.length > 0) {
         let subTotal = 0;
 
@@ -906,33 +991,147 @@ class InvoiceController {
         });
 
         updateData["sub_total"] = subTotal;
-
-        // Calculate tax amount if applicable
-        const taxRate =
-          updateData.tax_percentage || invoice.tax_percentage || 0;
-        const taxAmount = (subTotal * taxRate) / 100;
-        updateData["tax_total"] = taxAmount;
-
-        // Calculate discount if applicable
-        const discountAmount =
-          updateData.discount_amount || invoice.discount_amount || 0;
-
-        // Calculate final total
-        updateData["total"] = subTotal + taxAmount - discountAmount;
       }
 
-      // Perform the update
+      // ✅ Use existing values or updated values for calculations
+      const sub_total = Number(updateData.sub_total || invoice.sub_total || 0);
+      const discount = Number(
+        updateData.discount_amount || invoice.discount_amount || 0
+      );
+      const adjustment = Number(
+        updateData.adjustment || invoice.adjustment || 0
+      );
+      const tax_percentage = Number(
+        updateData.tax_percentage || invoice.tax_percentage || 0
+      );
+      const tax_type = updateData.tax_type || invoice.tax_type || "";
+
+      // Calculate tax amount using same logic as createInvoice
+      const tax_amount = (tax_percentage / 100) * (sub_total - discount);
+
+      // Calculate total receivable using same logic as createInvoice
+      const total_receivable =
+        sub_total -
+        discount +
+        (tax_type === "TCS" ? tax_amount : -tax_amount) +
+        adjustment;
+
+      // Update calculated values
+      updateData["tax_amount"] = tax_amount;
+      updateData["total"] = total_receivable;
+      updateData["balance"] = total_receivable; // Assuming balance equals total for new invoices
+
+      // Add formatted currency fields
+      updateData["sub_total_formatted"] = formatCurrency(sub_total);
+      updateData["total_formatted"] = formatCurrency(total_receivable);
+      updateData["balance_formatted"] = formatCurrency(total_receivable);
+
+      // ✅ Prepare Journal Line Items using same structure as createInvoice
+      const Journal_line_items = [
+        {
+          coa_account_id: "AC_046",
+          coa_account_name: "Sales",
+          creditOrDebit: "Credit",
+          amount: sub_total,
+          amount_formatted: formatCurrency(sub_total),
+        },
+      ];
+
+      // Add tax-specific entry
+      if (tax_type === "TCS" && tax_amount > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_025",
+          coa_account_name: "TCS Payable",
+          creditOrDebit: "Credit",
+          amount: tax_amount,
+          amount_formatted: formatCurrency(tax_amount),
+        });
+      } else if (tax_type === "TDS" && tax_amount > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_006",
+          coa_account_name: "TDS Receivable",
+          creditOrDebit: "Debit",
+          amount: tax_amount,
+          amount_formatted: formatCurrency(tax_amount),
+        });
+      }
+
+      // Add adjustment if any
+      if (adjustment !== 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_044",
+          coa_account_name: "Other Charges",
+          creditOrDebit: adjustment > 0 ? "Credit" : "Debit",
+          amount: Math.abs(adjustment),
+          amount_formatted: formatCurrency(Math.abs(adjustment)),
+        });
+      }
+
+      // Add discount if any
+      if (discount !== 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_050",
+          coa_account_name: "Discount",
+          creditOrDebit: "Debit",
+          amount: Math.abs(discount),
+          amount_formatted: formatCurrency(Math.abs(discount)),
+        });
+      }
+
+      // Final receivable entry
+      Journal_line_items.push({
+        coa_account_id: "AC_019",
+        coa_account_name: "Accounts Receivable",
+        creditOrDebit: "Debit",
+        amount: total_receivable,
+        amount_formatted: formatCurrency(total_receivable),
+      });
+
+      // ✅ Prepare journal update data (keeping same journal_id)
+      const updatedJournal = {
+        journal_date: updateData.date || invoice.date,
+        journal_date_formatted:
+          updateData.date_formatted || invoice.date_formatted,
+        total_amount: total_receivable,
+        total_amount_formatted: formatCurrency(total_receivable),
+        customer_name: updateData.customer_name || invoice.customer_name,
+        line_items: Journal_line_items,
+      };
+
+      // ✅ Update the existing journal entry
+      const updateJournal = await JournalCollection.findOneAndUpdate(
+        { journal_id: invoice.journal_id }, // Use existing journal_id
+        { $set: updatedJournal },
+        { new: true, runValidators: true }
+      );
+
+      if (!updateJournal) {
+        return res.status(404).json({
+          code: 1,
+          message: "Journal entry not found for this invoice",
+        });
+      }
+
+      // ✅ Update the invoice
       let updatedInvoice = await InvoiceCollection.findOneAndUpdate(
         { invoice_id, organization_id },
         { $set: updateData },
-        { new: true } // Return the updated document
+        { new: true }
       );
+
+      if (!updatedInvoice) {
+        return res.status(404).json({
+          code: 1,
+          message: "Failed to update invoice",
+        });
+      }
 
       // Success Response
       return res.status(200).json({
         code: 0,
-        message: "Invoice updated successfully",
+        message: "Invoice and journal updated successfully",
         invoice: updatedInvoice,
+        journal: updateJournal,
       });
     } catch (error) {
       console.error("updateInvoice Error:", error.message);

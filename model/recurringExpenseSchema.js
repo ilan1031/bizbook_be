@@ -121,6 +121,7 @@ const RecurringExpenseModel = new mongoose.Schema(
     inclusive_exclusive: String,
     base_amount: Number,
     source_of_supply: String,
+    
     destination_of_supply: String,
     hsn_code: String,
     sac_code: String,
@@ -130,6 +131,7 @@ const RecurringExpenseModel = new mongoose.Schema(
     expense_type: String,
     gst_treatment: String,
     gst_no: String,
+    journal_id: String,
     is_billable: Boolean,
     is_deleted: {
       type: Boolean,
