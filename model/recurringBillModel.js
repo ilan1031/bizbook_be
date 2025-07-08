@@ -107,6 +107,7 @@ const RecurringBillSchema = new mongoose.Schema(
     payment_terms: { type: Number },
     payment_terms_label: { type: String },
     exchange_rate: { type: Number },
+    journal_id: String,
     line_items: [LineItemSchema],
     billing_address: AddressSchema,
     comments: [CommentSchema],

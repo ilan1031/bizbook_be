@@ -41,8 +41,8 @@ class ExpensesController {
           ? bData.tot_amount_with_tax
           : bData.tot_amount;
 
-let Journal_line_items_expense =[]
-      if(bData.type == "expense"){
+      let Journal_line_items_expense = [];
+      if (bData.type == "expense") {
         Journal_line_items_expense = [
           {
             coa_account_id: bData?.paid_through_account_id,
@@ -146,7 +146,6 @@ let Journal_line_items_expense =[]
       });
     }
   }
-
   async getExpense(req, res) {
     try {
       let { org_id, filter = "", sort_column, sort_order } = req.query;
@@ -396,7 +395,6 @@ let Journal_line_items_expense =[]
       });
     }
   }
-
   async getIndividualExpense(req, res) {
     try {
       const { org_id, expense_id } = req.query;
@@ -429,118 +427,256 @@ let Journal_line_items_expense =[]
       });
     }
   }
-
   async updateExpense(req, res) {
+  const session = await mongoose.startSession();
+  try {
+    let bData = req.body;
+    let { orgId, expense_id } = req.query;
+    const admin_id = res.locals.user_id;
+
+    // Validate required parameters
+    if (!orgId || !expense_id) {
+      return res.status(ST_CODES.BAD_REQUEST).json({
+        success: false,
+        message: "Organization ID and expense ID are required",
+      });
+    }
+
+    await session.startTransaction();
+
     try {
-      let bData = req.body;
-      let { orgId, expense_id } = req.query;
+      // Find existing expense to get journal_id
+      const existingExpense = await ExpenseCollection.findOne({
+        admin_id: admin_id,
+        unique_EX_id: expense_id,
+        organization_id: orgId,
+      }, null, { session });
 
-      if (!orgId || !expense_id) {
-        return res
-          .status(ST_CODES.BAD_REQUEST)
-          .send({ message: "Organization ID and expense ID are required" });
+      if (!existingExpense) {
+        throw new Error("Expense not found");
       }
 
-      const journalAmt =
-        req.body.type == "expense"
-          ? bData.tot_amount_with_tax
-          : bData.tot_amount;
+      console.log("Found existing expense:", {
+        expense_id: existingExpense.unique_EX_id,
+        journal_id: existingExpense.journal_id,
+        type: existingExpense.type
+      });
 
-let Journal_line_items_expense =[]
-      if(bData.type == "expense"){
-      Journal_line_items_expense = [
-        {
-          coa_account_id: bData.paid_through_account_id,
-          coa_account_name: bData.paid_through_account_name,
-          creditOrDebit: "Credit",
-          amount: bData.tot_amount_with_tax,
-          amount_formatted: formatCurrency(bData.tot_amount_with_tax),
-        },
-        ...bData.lineItems.map((item) => ({
-          coa_account_id: item.account_id,
-          coa_account_name: item.account_name,
-          creditOrDebit: "Debit",
-          amount: item.amount || 0,
-          amount_formatted: formatCurrency(item.amount),
-        })),
-      ];}
+      // Calculate journal amount based on expense type
+      const journalAmt = bData.type === "expense" 
+        ? (bData.tot_amount_with_tax || bData.total_amount_with_tax || 0)
+        : (bData.tot_amount || bData.total_amount || 0);
 
-      if (req.body.inclusive_exclusive === "exclusive") {
-        Journal_line_items_expense.push({
-          coa_account_id: "AC_011",
-          coa_account_name: "Input IGST",
-          creditOrDebit: "Debit",
-          amount: bData.expense_tax_amount,
-          amount_formatted: formatCurrency(bData.expense_tax_amount),
-        });
-      }
+      console.log("Calculated journal amount:", {
+        type: bData.type,
+        journalAmt: journalAmt,
+        tot_amount_with_tax: bData.tot_amount_with_tax,
+        tot_amount: bData.tot_amount
+      });
 
-      const Journal_line_items_mileage = [
-        {
-          coa_account_id: bData?.paid_through_account_id,
-          coa_account_name: bData?.paid_through_account_name,
+      let Journal_line_items = [];
+
+      // Handle expense type journal items
+      if (bData.type === "expense") {
+        // Credit entry for payment account
+        Journal_line_items.push({
+          coa_account_id: bData.paid_through_account_id || existingExpense.paid_through_account_id,
+          coa_account_name: bData.paid_through_account_name || existingExpense.paid_through_account_name,
           creditOrDebit: "Credit",
           amount: journalAmt,
           amount_formatted: formatCurrency(journalAmt),
-        },
-        {
-          coa_account_id: "AC_051",
-          coa_account_name: "Travel Expense",
-          creditOrDebit: "Debit",
-          amount: journalAmt || 0,
-          amount_formatted: formatCurrency(journalAmt),
-        },
-      ];
+        });
 
-      const updatedJournal = {
-        total_amount: journalAmt,
-        total_amount_formatted: formatCurrency(journalAmt),
-        vendor_name: bData.vendor_Name,
-        line_items:
-          bData.type == "expense"
-            ? Journal_line_items_expense
-            : Journal_line_items_mileage,
+        // Debit entries for line items
+        if (bData.lineItems && Array.isArray(bData.lineItems)) {
+          bData.lineItems.forEach((item) => {
+            if (item.amount && item.amount > 0) {
+              Journal_line_items.push({
+                coa_account_id: item.account_id || "AC_078", // Default expense account
+                coa_account_name: item.account_name || "General Expenses",
+                creditOrDebit: "Debit",
+                amount: Number(item.amount) || 0,
+                amount_formatted: formatCurrency(Number(item.amount) || 0),
+              });
+            }
+          });
+        } else {
+          // Default expense entry if no line items
+          Journal_line_items.push({
+            coa_account_id: "AC_078",
+            coa_account_name: "General Expenses",
+            creditOrDebit: "Debit",
+            amount: journalAmt,
+            amount_formatted: formatCurrency(journalAmt),
+          });
+        }
+
+        // Add tax entry if exclusive and has tax amount
+        if (bData.inclusive_exclusive === "exclusive" && bData.expense_tax_amount > 0) {
+          Journal_line_items.push({
+            coa_account_id: "AC_011",
+            coa_account_name: "Input IGST",
+            creditOrDebit: "Debit",
+            amount: Number(bData.expense_tax_amount),
+            amount_formatted: formatCurrency(Number(bData.expense_tax_amount)),
+          });
+        }
+      } 
+      // Handle mileage/travel type journal items
+      else {
+        Journal_line_items = [
+          {
+            coa_account_id: bData.paid_through_account_id || existingExpense.paid_through_account_id,
+            coa_account_name: bData.paid_through_account_name || existingExpense.paid_through_account_name,
+            creditOrDebit: "Credit",
+            amount: journalAmt,
+            amount_formatted: formatCurrency(journalAmt),
+          },
+          {
+            coa_account_id: "AC_051",
+            coa_account_name: "Travel Expense",
+            creditOrDebit: "Debit",
+            amount: journalAmt,
+            amount_formatted: formatCurrency(journalAmt),
+          },
+        ];
+      }
+
+      console.log("Journal line items to update:", Journal_line_items);
+
+      // Update journal entry if it exists
+      let journalUpdateSuccess = false;
+      const journalId = bData.journal_id || existingExpense.journal_id;
+
+      if (journalId) {
+        console.log("Updating journal with journal_id:", journalId);
+
+        const updatedJournalData = {
+          journal_date: bData.expense_date || bData.date || existingExpense.expense_date,
+          journal_date_formatted: commonHelper.formatDateString(bData.expense_date || bData.date || existingExpense.expense_date),
+          total_amount: journalAmt,
+          total_amount_formatted: formatCurrency(journalAmt),
+          vendor_name: bData.vendor_Name || bData.vendor_name || existingExpense.vendor_Name,
+          line_items: Journal_line_items,
+          type: bData.type === "expense" ? "Expense" : "Travel Expense",
+          updated_at: new Date(),
+        };
+
+        console.log("Journal update data:", updatedJournalData);
+
+        const updateJournal = await JournalCollection.findOneAndUpdate(
+          { 
+            journal_id: journalId,
+            organization_id: orgId 
+          },
+          { $set: updatedJournalData },
+          { session, new: true, runValidators: true }
+        );
+
+        if (updateJournal) {
+          console.log("Journal updated successfully");
+          journalUpdateSuccess = true;
+        } else {
+          console.warn("Journal entry not found for journal_id:", journalId);
+          // Don't throw error, continue with expense update
+        }
+      } else {
+        console.log("No journal_id found, skipping journal update");
+      }
+
+      // Update expense data
+      const expenseUpdateData = {
+        ...bData,
+        updated_at: new Date(),
       };
 
-      const updateJournal = await JournalCollection.findOneAndUpdate(
-        { journal_id: bData.journal_id },
-        { $set: updatedJournal },
-        { new: true, runValidators: true }
-      );
+      console.log("Updating expense with data:", expenseUpdateData);
 
-      // console.log(bData, "------expense");
-      // return;
       const updatedExpense = await ExpenseCollection.findOneAndUpdate(
         {
-          admin_id: res.locals.user_id,
+          admin_id: admin_id,
           unique_EX_id: expense_id,
           organization_id: orgId,
         },
-        {
-          $set: bData,
-        }
+        { $set: expenseUpdateData },
+        { session, new: true, runValidators: true }
       );
 
       if (!updatedExpense) {
-        return res
-          .status(ST_CODES.NOT_FOUND)
-          .send({ message: "Expense not found for update" });
+        throw new Error("Failed to update expense");
       }
+
+      console.log("Expense updated successfully");
+
+      // Log user activity
+      try {
+        await userActivityHelper(
+          admin_id,
+          orgId,
+          updatedExpense.vendor_id,
+          `Expense updated for ${formatCurrency(journalAmt)}${journalUpdateSuccess ? ' (including journal entry)' : ''}`,
+          "Expense updated",
+          updatedExpense._id,
+          "expense",
+          session
+        );
+      } catch (error) {
+        console.error("Failed to log user activity:", error.message);
+        // Don't fail the entire transaction if activity logging fails
+      }
+
+      // Commit transaction
+      await session.commitTransaction();
 
       return res.status(ST_CODES.OK).json({
         success: true,
-        message: "Expense updated successfully",
-        data: updatedExpense,
+        message: `Expense updated successfully${journalUpdateSuccess ? ' and journal entry updated' : ''}`,
+        data: {
+          expense: updatedExpense,
+          journal_updated: journalUpdateSuccess,
+        },
       });
-    } catch (error) {
-      console.log("Error in Expense Update", error);
+
+    } catch (transactionError) {
+      // Rollback transaction on any error
+      await session.abortTransaction();
+      console.error("Transaction rolled back due to error:", transactionError.message);
+
+      // Handle specific error types
+      if (transactionError.message === "Expense not found") {
+        return res.status(ST_CODES.NOT_FOUND).json({
+          success: false,
+          message: "Expense not found for update.",
+        });
+      }
+
+      if (transactionError.message === "Failed to update expense") {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: "Failed to update expense. Please check your data.",
+        });
+      }
+
+      // Generic transaction error
       return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
         success: false,
-        message:
-          "Internal Server Error: Unable to update expense. Please try again later.",
+        message: "Transaction failed and was rolled back. Please try again.",
+        error: process.env.NODE_ENV === "development" ? transactionError.message : "An error occurred during the update process.",
       });
     }
+
+  } catch (error) {
+    console.error("Error in Expense Update:", error);
+    return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: "Internal Server Error: Unable to update expense. Please try again later.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  } finally {
+    // Always end the session
+    await session.endSession();
   }
+}
   async deleteExpense(req, res) {
     try {
       let { org_id, expense_id, journal_id } = req.query;

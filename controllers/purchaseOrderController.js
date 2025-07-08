@@ -69,10 +69,10 @@ class purchaseOrderController {
         1: "DRAFT",
       };
 
-      if(poData.status === 0){
+      if (poData.status === 0) {
         poData.order_status = "issued";
         poData.order_status_formatted = "Issued";
-      }else {
+      } else {
         poData.order_status = "draft";
         poData.order_status_formatted = "Draft";
       }
@@ -166,10 +166,8 @@ class purchaseOrderController {
             },
           ];
         } else {
-          // Set an empty array if no billing address
           poData.billing_address = [];
         }
-
         // Format and assign shipping address if available in vendor data
         // Shipping address is a single object as per schema
         if (vendor.shipping_address) {
@@ -199,7 +197,6 @@ class purchaseOrderController {
             is_valid: vendor.shipping_address.is_valid || false,
           };
         }
-
         // Format and assign delivery address (using shipping address if delivery is not specified)
         // Delivery address is a single object as per schema
         if (vendor.delivery_address) {
@@ -487,9 +484,9 @@ class purchaseOrderController {
       const formatAmount = (amount) => {
         if (!amount || amount === 0) return "₹0.00";
         const numericAmount = parseFloat(amount);
-        const formattedAmount = numericAmount.toLocaleString('en-IN', {
+        const formattedAmount = numericAmount.toLocaleString("en-IN", {
           minimumFractionDigits: 2,
-          maximumFractionDigits: 2
+          maximumFractionDigits: 2,
         });
         return `₹${formattedAmount}`;
       };
@@ -659,10 +656,10 @@ class purchaseOrderController {
       poData["tax_amount"] = poData.taxAmount;
       poData["status_type"] = poData.status == 0 ? "ISSUED" : "CLOSED";
 
-      if(poData.status === 0){
+      if (poData.status === 0) {
         poData.order_status = "issued";
         poData.order_status_formatted = "Issued";
-      }else {
+      } else {
         poData.order_status = "draft";
         poData.order_status_formatted = "Draft";
       }
@@ -1383,7 +1380,7 @@ class purchaseOrderController {
       });
     }
   }
-  async updatePurchaseOrderStatus(req, res) {
+  async  updatePurchaseOrderStatus(req, res) {
     try {
       const { org_id, po_id } = req.query;
       const { status } = req.body;
@@ -1490,88 +1487,90 @@ class purchaseOrderController {
     }
   }
   async removeDocumentFromPurchaseOrder(req, res) {
-  try {
-    const { org_id, po_id } = req.query;
+    try {
+      const { org_id, po_id } = req.query;
 
-    // Validate required parameters
-    if (!org_id || !po_id) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required parameters: org_id or po_id",
-      });
-    }
-
-    // Find the purchase order
-    const purchaseOrder = await PurchaseOrderCollection.findOne({
-      admin_id: res.locals.user_id,
-      org_id: org_id,
-      purchase_number: po_id,
-    });
-
-    // If PO not found
-    if (!purchaseOrder) {
-      return res.status(404).json({
-        success: false,
-        message: "Purchase Order not found",
-      });
-    }
-
-    // If no document exists
-    if (!purchaseOrder.documents || purchaseOrder.documents === "") {
-      return res.status(404).json({
-        success: false,
-        message: "No document attached to remove",
-      });
-    }
-
-    // Optional: Delete the physical file from disk
-    const filePath = path.join(uploadDir, purchaseOrder.documents);
-
-    fs.access(filePath, fs.constants.F_OK, (err) => {
-      if (!err) {
-        // File exists, delete it
-        fs.unlink(filePath, (unlinkErr) => {
-          if (unlinkErr) {
-            console.error("Error deleting file from disk:", unlinkErr);
-          } else {
-            console.log(`File ${purchaseOrder.documents} deleted successfully`);
-          }
+      // Validate required parameters
+      if (!org_id || !po_id) {
+        return res.status(400).json({
+          success: false,
+          message: "Missing required parameters: org_id or po_id",
         });
-      } else {
-        console.warn(`File ${purchaseOrder.documents} does not exist on disk`);
       }
-    });
 
-    // Update the documents field to empty string
-    const updatedPO = await PurchaseOrderCollection.findOneAndUpdate(
-      {
+      // Find the purchase order
+      const purchaseOrder = await PurchaseOrderCollection.findOne({
         admin_id: res.locals.user_id,
         org_id: org_id,
         purchase_number: po_id,
-      },
-      {
-        $set: {
-          documents: "", // Clear the document field
+      });
+
+      // If PO not found
+      if (!purchaseOrder) {
+        return res.status(404).json({
+          success: false,
+          message: "Purchase Order not found",
+        });
+      }
+
+      // If no document exists
+      if (!purchaseOrder.documents || purchaseOrder.documents === "") {
+        return res.status(404).json({
+          success: false,
+          message: "No document attached to remove",
+        });
+      }
+
+      // Optional: Delete the physical file from disk
+      const filePath = path.join(uploadDir, purchaseOrder.documents);
+
+      fs.access(filePath, fs.constants.F_OK, (err) => {
+        if (!err) {
+          // File exists, delete it
+          fs.unlink(filePath, (unlinkErr) => {
+            if (unlinkErr) {
+              console.error("Error deleting file from disk:", unlinkErr);
+            } else {
+              console.log(
+                `File ${purchaseOrder.documents} deleted successfully`
+              );
+            }
+          });
+        } else {
+          console.warn(
+            `File ${purchaseOrder.documents} does not exist on disk`
+          );
+        }
+      });
+
+      // Update the documents field to empty string
+      const updatedPO = await PurchaseOrderCollection.findOneAndUpdate(
+        {
+          admin_id: res.locals.user_id,
+          org_id: org_id,
+          purchase_number: po_id,
         },
-      },
-      { new: true }
-    );
+        {
+          $set: {
+            documents: "", // Clear the document field
+          },
+        },
+        { new: true }
+      );
 
-    return res.status(200).json({
-      success: true,
-      message: "Document removed successfully",
-      data: updatedPO,
-    });
-  } catch (error) {
-    console.error("removeDocumentFromPurchaseOrder error", error);
-    return res.status(500).json({
-      success: false,
-      message: "Something went wrong",
-    });
+      return res.status(200).json({
+        success: true,
+        message: "Document removed successfully",
+        data: updatedPO,
+      });
+    } catch (error) {
+      console.error("removeDocumentFromPurchaseOrder error", error);
+      return res.status(500).json({
+        success: false,
+        message: "Something went wrong",
+      });
+    }
   }
-}
-
-
   // 📌 Get Purchase Order unique ID
   async getUniqueId(req, res) {
     try {

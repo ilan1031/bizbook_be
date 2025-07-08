@@ -5,10 +5,16 @@ const { upload } = require("../helpers/multer");
 const router = express.Router();
 
 //create recurring bill
+// router.post(
+//     "/recurring-bill/create",
+//     authMiddleware,
+//     upload.single("documents"),
+//     recurringBillController.createRecurring
+// );
+
 router.post(
     "/recurring-bill/create",
     authMiddleware,
-    upload.single("documents"),
     recurringBillController.createRecurring
 );
 

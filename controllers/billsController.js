@@ -75,7 +75,244 @@ class billsController {
         .send({ message: "Something went wrong" });
     }
   }
- async createBills(req, res) {
+  //  async createBills(req, res) {
+  //     const session = await mongoose.startSession();
+  //     try {
+  //       const formatCurrency = (amount) => {
+  //         return `₹${amount.toLocaleString("en-IN", {
+  //           minimumFractionDigits: 2,
+  //           maximumFractionDigits: 2,
+  //         })}`;
+  //       };
+
+  //       console.log("Processing Bill Creation...");
+  //       let bData = req.body;
+  //       console.log(bData,"-*-*-*-*-*-*-");
+  //       // return
+  //       let orgId = req.query.org_id;
+  //       const admin_id = res.locals.user_id; // Fetch admin_id from session
+  //       if (req.file) {
+  //         bData["documents"] = req.file.filename;
+  //       }
+  //       // Validate required parameters
+  //       if (!orgId || !bData || Object.keys(bData).length === 0) {
+  //         return res.status(ST_CODES.BAD_REQUEST).json({
+  //           success: false,
+  //           message:
+  //             "Missing required parameters: organization_id and bill data are mandatory.",
+  //         });
+  //       }
+
+  //       // Mapping status numbers to their respective string values
+  //       const statusMap = {
+  //         0: "OPEN",
+  //         1: "DRAFT",
+  //         2: "VOID",
+  //         3: "PAID",
+  //       };
+
+  //       // Validate and map status
+  //       if (!statusMap.hasOwnProperty(bData.status)) {
+  //         return res.status(ST_CODES.BAD_REQUEST).json({
+  //           success: false,
+  //           message:
+  //             "Invalid status value. Allowed values: 0 (OPEN), 1 (DRAFT), 2 (VOID), 3 (PAID).",
+  //         });
+  //       }
+
+  //       // Convert numeric status to string before storing
+  //       bData.status_type = statusMap[bData.status];
+
+  //     await session.startTransaction();
+
+  //     try {
+  //       // Generate unique Bill ID
+  //       let billUniqueId = await commonHelper.generateUniqueId(
+  //         BillsCollection,
+  //         "bill_number",
+  //         7,
+  //         "BL"
+  //       );
+
+  //       // Assign additional fields
+  //       bData["bill_number"] = billUniqueId;
+  //       bData["admin_id"] = admin_id;
+  //       bData["due_date"] = bData.dueDate;
+  //       bData["due_amt"] = bData.total;
+  //       // Fetch Organization Data
+  //       let orgData = await OrgCollection.findOne({ organization_id: orgId });
+  //       if (!orgData) {
+  //         return res.status(ST_CODES.NOT_FOUND).json({
+  //           success: false,
+  //           message: "Organization not found.",
+  //         });
+  //       }
+  //       bData["organization_id"] = orgData.organization_id;
+
+  //       console.log("The data saving for the bill is: ", bData);
+
+  //       const Journal_line_items = [
+  //         {
+  //           coa_account_id: "AC_078",
+  //           coa_account_name: "Cost of Goods Sold",
+  //           creditOrDebit: "Debit",
+  //           amount: bData.total,
+  //           amount_formatted: formatCurrency(bData.total),
+  //         },
+  //         ...bData.items.map((item) => ({
+  //           coa_account_id: item.account_id || "1",
+  //           coa_account_name: item.account_name || "Bad Debt",
+  //           creditOrDebit: "Credit",
+  //           amount: item.amount || 0,
+  //           amount_formatted: formatCurrency(item.amount || 0),
+  //         })),
+  //       ];
+  //       let journalUniqueId = await commonHelper.generateUniqueId(
+  //         JournalCollection,
+  //         "Journal_id",
+  //         5,
+  //         "JL"
+  //       );
+
+  //       const journalData = {
+  //         organization_id: orgId,
+  //         admin_id: admin_id,
+  //         journal_id: journalUniqueId,
+  //         journal_date: bData.billDate,
+  //         journal_date_formatted: commonHelper.formatDateString(bData.billDate),
+  //         total_amount: bData.total,
+  //         total_amount_formatted: formatCurrency(bData.total),
+  //         type: "Bill Payment",
+  //         vendor_name: bData.vendorName,
+
+  //         line_items: Journal_line_items,
+  //       };
+
+  //       console.log("The Journal Data", journalData);
+
+  //       const savedJournal = await JournalCollection.create(journalData);
+
+  //       // Insert new Bill into the database
+  //       // let createBill = await queryHelper.insertData(BillsCollection, bData);
+
+  //       // // Fetch Organization Data (within transaction)
+  //       // let orgData = await OrgCollection.findOne(
+  //       //   { organization_id: orgId },
+  //       //   null,
+  //       //   { session }
+  //       // );
+
+  //       // if (!orgData) {
+  //       //   throw new Error("Organization not found");
+  //       // }
+
+  //       // bData["organization_id"] = orgData.organization_id;
+
+  //       // Create comment
+  //       const commented_by_id = res.locals.user_id || "";
+  //       const commented_by = req.user?.company_name || "System";
+  //       const description = `Bill created for ${commonHelper.formatRupee(bData.total)}`;
+
+  //       const comment = createComments(
+  //         commented_by,
+  //         commented_by_id,
+  //         "system",
+  //         billUniqueId,
+  //         description,
+  //         "Added",
+  //         "",
+  //         "bills"
+  //       );
+  //       bData["comments"] = comment;
+
+  //       // Insert new Bill into the database (within transaction)
+  //       let createBill = await BillsCollection.create([bData], { session });
+
+  //       if (!createBill || createBill.length === 0) {
+  //         throw new Error("Failed to create bill");
+  //       }
+
+  //       const billId = createBill[0]._id;
+
+  //       // Log user activity (within transaction if userActivityHelper supports it)
+  //       await userActivityHelper(
+  //         admin_id,
+  //         orgId,
+  //         bData.vendor_id,
+  //         description,
+  //         "Bill created",
+  //         billId,
+  //         "po_bill",
+  //         session // Pass session if supported
+  //       );
+
+  //       // Update billed_status in PurchaseOrderCollection (within transaction)
+  //       let purchaseOrderUpdate = await PurchaseOrderCollection.updateMany(
+  //         {
+  //           organization_id: orgId,
+  //           billed_status: { $ne: "Billed" }
+  //         },
+  //         { $set: { billed_status: "Billed" } },
+  //         { session }
+  //       );
+
+  //       console.log("Updated Purchase Orders:", purchaseOrderUpdate);
+
+  //       // If everything is successful, commit the transaction
+  //       await session.commitTransaction();
+
+  //       return res.status(ST_CODES.CREATED).json({
+  //         success: true,
+  //         message: "Bill created successfully and Purchase Orders updated.",
+  //         data: {
+  //           bill_number: billUniqueId,
+  //           status: bData.status,
+  //           updated_purchase_orders: purchaseOrderUpdate.modifiedCount,
+  //         },
+  //         journalData: savedJournal,
+  //       });
+
+  //     } catch (transactionError) {
+  //       // Rollback transaction on any error
+  //       await session.abortTransaction();
+  //       console.error("Transaction rolled back due to error:", transactionError.message);
+
+  //       // Handle specific error types
+  //       if (transactionError.message === "Organization not found") {
+  //         return res.status(ST_CODES.NOT_FOUND).json({
+  //           success: false,
+  //           message: "Organization not found.",
+  //         });
+  //       }
+
+  //       if (transactionError.message === "Failed to create bill") {
+  //         return res.status(ST_CODES.BAD_REQUEST).json({
+  //           success: false,
+  //           message: "Failed to create bill. Please check your data.",
+  //         });
+  //       }
+
+  //       // Generic transaction error
+  //       return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+  //         success: false,
+  //         message: "Transaction failed and was rolled back. Please try again.",
+  //         error: transactionError.message
+  //       });
+  //     }
+
+  //   } catch (error) {
+  //     console.error("createBills Error:", error.message);
+  //     return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+  //       success: false,
+  //       message: "Internal Server Error: Unable to create bill. Please try again later.",
+  //     });
+  //   } finally {
+  //     // Always end the session
+  //     await session.endSession();
+  //   }
+  //   }
+
+  async createBills(req, res) {
     const session = await mongoose.startSession();
     try {
       const formatCurrency = (amount) => {
@@ -87,11 +324,15 @@ class billsController {
 
       console.log("Processing Bill Creation...");
       let bData = req.body;
+      console.log(bData, "-*-*-*-*-*-*-");
+
       let orgId = req.query.org_id;
       const admin_id = res.locals.user_id; // Fetch admin_id from session
+
       if (req.file) {
         bData["documents"] = req.file.filename;
       }
+
       // Validate required parameters
       if (!orgId || !bData || Object.keys(bData).length === 0) {
         return res.status(ST_CODES.BAD_REQUEST).json({
@@ -121,193 +362,259 @@ class billsController {
       // Convert numeric status to string before storing
       bData.status_type = statusMap[bData.status];
 
-    await session.startTransaction();
+      await session.startTransaction();
 
-    try {
-      // Generate unique Bill ID
-      let billUniqueId = await commonHelper.generateUniqueId(
-        BillsCollection,
-        "bill_number", 
-        7,
-        "BL"
-      );
+      try {
+        // Generate unique Bill ID
+        let billUniqueId = await commonHelper.generateUniqueId(
+          BillsCollection,
+          "bill_number",
+          7,
+          "BL"
+        );
 
-      // Assign additional fields
-      bData["bill_number"] = billUniqueId;
-      bData["admin_id"] = admin_id;
-      bData["due_date"] = bData.dueDate;
-      bData["due_amt"] = bData.total;
-      // Fetch Organization Data
-      let orgData = await OrgCollection.findOne({ organization_id: orgId });
-      if (!orgData) {
-        return res.status(ST_CODES.NOT_FOUND).json({
-          success: false,
-          message: "Organization not found.",
-        });
-      }
-      bData["organization_id"] = orgData.organization_id;
+        // Assign additional fields
+        bData["bill_number"] = billUniqueId;
+        bData["admin_id"] = admin_id;
+        bData["due_date"] = bData.dueDate;
+        bData["due_amt"] = bData.total;
 
-      console.log("The data saving for the bill is: ", bData);
+        // Fetch Organization Data
+        let orgData = await OrgCollection.findOne({ organization_id: orgId });
+        if (!orgData) {
+          return res.status(ST_CODES.NOT_FOUND).json({
+            success: false,
+            message: "Organization not found.",
+          });
+        }
+        bData["organization_id"] = orgData.organization_id;
 
-      const Journal_line_items = [
-        {
-          coa_account_id: "AC_078",
-          coa_account_name: "Cost of Goods Sold",
-          creditOrDebit: "Debit",
-          amount: bData.total,
-          amount_formatted: formatCurrency(bData.total),
-        },
-        ...bData.items.map((item) => ({
-          coa_account_id: item.account_id || "1",
-          coa_account_name: item.account_name || "Bad Debt",
+        // Calculate amounts for journal entries (similar to invoice logic)
+        const sub_total = Number(bData.sub_total || bData.total);
+        const discount = Number(bData.discount_amount || 0);
+        const adjustment = Number(bData.adjustment || 0);
+        const tax_percentage = Number(bData.tax_percentage || 0);
+        const tax_type = bData.tax_type; // "TDS" or "GST"
+        const tax_amount = (tax_percentage / 100) * (sub_total - discount);
+        const total_payable =
+          sub_total -
+          discount +
+          (tax_type === "GST" ? tax_amount : -tax_amount) +
+          adjustment;
+
+        console.log("The data saving for the bill is: ", bData);
+
+        // Generate unique Journal ID (standardized with lowercase 'journal_id')
+        let journalUniqueId = await commonHelper.generateUniqueId(
+          JournalCollection,
+          "journal_id",
+          5,
+          "JL"
+        );
+
+        // Create Journal Line Items following invoice pattern
+        const Journal_line_items = [];
+
+        // Add expense entries from items
+        if (bData.items && bData.items.length > 0) {
+          bData.items.forEach((item) => {
+            Journal_line_items.push({
+              coa_account_id: item.account_id || "AC_078",
+              coa_account_name: item.account_name || "Cost of Goods Sold",
+              creditOrDebit: "Debit",
+              amount: Number(item.amount || 0),
+              amount_formatted: formatCurrency(Number(item.amount || 0)),
+            });
+          });
+        } else {
+          // Default expense entry if no items
+          Journal_line_items.push({
+            coa_account_id: "AC_078",
+            coa_account_name: "Cost of Goods Sold",
+            creditOrDebit: "Debit",
+            amount: sub_total,
+            amount_formatted: formatCurrency(sub_total),
+          });
+        }
+
+        // Add tax-specific entry
+        if (tax_type === "GST" && tax_amount > 0) {
+          Journal_line_items.push({
+            coa_account_id: "AC_026", // GST Input Tax Credit
+            coa_account_name: "GST Input Tax Credit",
+            creditOrDebit: "Debit",
+            amount: tax_amount,
+            amount_formatted: formatCurrency(tax_amount),
+          });
+        } else if (tax_type === "TDS" && tax_amount > 0) {
+          Journal_line_items.push({
+            coa_account_id: "AC_006",
+            coa_account_name: "TDS Receivable",
+            creditOrDebit: "Debit",
+            amount: tax_amount,
+            amount_formatted: formatCurrency(tax_amount),
+          });
+        }
+
+        // Add discount if any
+        if (discount !== 0) {
+          Journal_line_items.push({
+            coa_account_id: "AC_051",
+            coa_account_name: "Purchase Discount",
+            creditOrDebit: "Credit",
+            amount: Math.abs(discount),
+            amount_formatted: formatCurrency(Math.abs(discount)),
+          });
+        }
+
+        // Add adjustment if any
+        if (adjustment !== 0) {
+          Journal_line_items.push({
+            coa_account_id: "AC_045",
+            coa_account_name: "Other Expenses",
+            creditOrDebit: adjustment > 0 ? "Debit" : "Credit",
+            amount: Math.abs(adjustment),
+            amount_formatted: formatCurrency(Math.abs(adjustment)),
+          });
+        }
+
+        // Final payable entry (Credit to Accounts Payable)
+        Journal_line_items.push({
+          coa_account_id: "AC_020",
+          coa_account_name: "Accounts Payable",
           creditOrDebit: "Credit",
-          amount: item.amount || 0,
-          amount_formatted: formatCurrency(item.amount || 0),
-        })),
-      ];
-      let journalUniqueId = await commonHelper.generateUniqueId(
-        JournalCollection,
-        "Journal_id",
-        5,
-        "JL"
-      );
+          amount: total_payable,
+          amount_formatted: formatCurrency(total_payable),
+        });
 
-      const journalData = {
-        organization_id: orgId,
-        admin_id: admin_id,
-        journal_id: journalUniqueId,
-        journal_date: bData.billDate,
-        journal_date_formatted: commonHelper.formatDateString(bData.billDate),
-        total_amount: bData.total,
-        total_amount_formatted: formatCurrency(bData.total),
-        type: "Bill Payment",
-        vendor_name: bData.vendorName,
+        const journalData = {
+          organization_id: orgId,
+          admin_id: admin_id,
+          journal_id: journalUniqueId,
+          journal_date: bData.billDate,
+          journal_date_formatted: commonHelper.formatDateString(bData.billDate),
+          total_amount: total_payable,
+          total_amount_formatted: formatCurrency(total_payable),
+          type: "Bill",
+          vendor_name: bData.vendorName,
+          line_items: Journal_line_items,
+        };
 
-        line_items: Journal_line_items,
-      };
+        // Add journal_id to bill data
+        bData["journal_id"] = journalUniqueId;
 
-      console.log("The Journal Data", journalData);
+        console.log("The Journal Data", journalData);
 
-      const savedJournal = await JournalCollection.create(journalData);
+        const savedJournal = await JournalCollection.create([journalData], {
+          session,
+        });
 
-      // Insert new Bill into the database
-      // let createBill = await queryHelper.insertData(BillsCollection, bData);
+        // Create comment
+        const commented_by_id = res.locals.user_id || "";
+        const commented_by = req.user?.company_name || "System";
+        const description = `Bill created for ${commonHelper.formatRupee(
+          bData.total
+        )}`;
 
-      // // Fetch Organization Data (within transaction)
-      // let orgData = await OrgCollection.findOne(
-      //   { organization_id: orgId },
-      //   null,
-      //   { session }
-      // );
-      
-      // if (!orgData) {
-      //   throw new Error("Organization not found");
-      // }
-      
-      // bData["organization_id"] = orgData.organization_id;
+        const comment = createComments(
+          commented_by,
+          commented_by_id,
+          "system",
+          billUniqueId,
+          description,
+          "Added",
+          "",
+          "bills"
+        );
+        bData["comments"] = comment;
 
-      // Create comment
-      const commented_by_id = res.locals.user_id || "";
-      const commented_by = req.user?.company_name || "System";
-      const description = `Bill created for ${commonHelper.formatRupee(bData.total)}`;
-      
-      const comment = createComments(
-        commented_by,
-        commented_by_id,
-        "system",
-        billUniqueId,
-        description,
-        "Added",
-        "",
-        "bills"
-      );
-      bData["comments"] = comment;
+        // Insert new Bill into the database (within transaction)
+        let createBill = await BillsCollection.create([bData], { session });
 
-      // Insert new Bill into the database (within transaction)
-      let createBill = await BillsCollection.create([bData], { session });
-      
-      if (!createBill || createBill.length === 0) {
-        throw new Error("Failed to create bill");
-      }
+        if (!createBill || createBill.length === 0) {
+          throw new Error("Failed to create bill");
+        }
 
-      const billId = createBill[0]._id;
+        const billId = createBill[0]._id;
 
-      // Log user activity (within transaction if userActivityHelper supports it)
-      await userActivityHelper(
-        admin_id,
-        orgId,
-        bData.vendor_id,
-        description,
-        "Bill created",
-        billId,
-        "po_bill",
-        session // Pass session if supported
-      );
+        // Log user activity (within transaction if userActivityHelper supports it)
+        await userActivityHelper(
+          admin_id,
+          orgId,
+          bData.vendor_id,
+          description,
+          "Bill created",
+          billId,
+          "po_bill",
+          session // Pass session if supported
+        );
 
-      // Update billed_status in PurchaseOrderCollection (within transaction)
-      let purchaseOrderUpdate = await PurchaseOrderCollection.updateMany(
-        { 
-          organization_id: orgId, 
-          billed_status: { $ne: "Billed" } 
-        },
-        { $set: { billed_status: "Billed" } },
-        { session }
-      );
+        // Update billed_status in PurchaseOrderCollection (within transaction)
+        let purchaseOrderUpdate = await PurchaseOrderCollection.updateMany(
+          {
+            organization_id: orgId,
+            billed_status: { $ne: "Billed" },
+          },
+          { $set: { billed_status: "Billed" } },
+          { session }
+        );
 
-      console.log("Updated Purchase Orders:", purchaseOrderUpdate);
+        console.log("Updated Purchase Orders:", purchaseOrderUpdate);
 
-      // If everything is successful, commit the transaction
-      await session.commitTransaction();
-      
-      return res.status(ST_CODES.CREATED).json({
-        success: true,
-        message: "Bill created successfully and Purchase Orders updated.",
-        data: {
-          bill_number: billUniqueId,
-          status: bData.status,
-          updated_purchase_orders: purchaseOrderUpdate.modifiedCount,
-        },
-        journalData: savedJournal,
-      });
+        // If everything is successful, commit the transaction
+        await session.commitTransaction();
 
-    } catch (transactionError) {
-      // Rollback transaction on any error
-      await session.abortTransaction();
-      console.error("Transaction rolled back due to error:", transactionError.message);
-      
-      // Handle specific error types
-      if (transactionError.message === "Organization not found") {
-        return res.status(ST_CODES.NOT_FOUND).json({
+        return res.status(ST_CODES.CREATED).json({
+          success: true,
+          message: "Bill created successfully and Purchase Orders updated.",
+          data: {
+            bill_number: billUniqueId,
+            status: bData.status,
+            updated_purchase_orders: purchaseOrderUpdate.modifiedCount,
+          },
+          journalData: savedJournal[0],
+        });
+      } catch (transactionError) {
+        // Rollback transaction on any error
+        await session.abortTransaction();
+        console.error(
+          "Transaction rolled back due to error:",
+          transactionError.message
+        );
+
+        // Handle specific error types
+        if (transactionError.message === "Organization not found") {
+          return res.status(ST_CODES.NOT_FOUND).json({
+            success: false,
+            message: "Organization not found.",
+          });
+        }
+
+        if (transactionError.message === "Failed to create bill") {
+          return res.status(ST_CODES.BAD_REQUEST).json({
+            success: false,
+            message: "Failed to create bill. Please check your data.",
+          });
+        }
+
+        // Generic transaction error
+        return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
           success: false,
-          message: "Organization not found.",
+          message: "Transaction failed and was rolled back. Please try again.",
+          error: transactionError.message,
         });
       }
-      
-      if (transactionError.message === "Failed to create bill") {
-        return res.status(ST_CODES.BAD_REQUEST).json({
-          success: false,
-          message: "Failed to create bill. Please check your data.",
-        });
-      }
-
-      // Generic transaction error
+    } catch (error) {
+      console.error("createBills Error:", error.message);
       return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
         success: false,
-        message: "Transaction failed and was rolled back. Please try again.",
-        error: transactionError.message
+        message:
+          "Internal Server Error: Unable to create bill. Please try again later.",
       });
+    } finally {
+      // Always end the session
+      await session.endSession();
     }
-
-  } catch (error) {
-    console.error("createBills Error:", error.message);
-    return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
-      success: false,
-      message: "Internal Server Error: Unable to create bill. Please try again later.",
-    });
-  } finally {
-    // Always end the session
-    await session.endSession();
-  }
   }
   async getAllBills(req, res) {
     try {
@@ -411,7 +718,7 @@ class billsController {
         documents: 1,
         due_amt: 1,
         discount_amount: 1,
-        journal_id:1,
+        journal_id: 1,
       };
 
       const totalCount = await BillsCollection.countDocuments(query);
@@ -629,8 +936,6 @@ class billsController {
         { new: true, runValidators: true } // Returns updated document and applies schema validation
       );
 
-
-
       // If bill is found and updated, return the updated document
       if (updatedBill) {
         return res.status(ST_CODES.OK).json({
@@ -652,33 +957,139 @@ class billsController {
         .send({ message: "Something went wrong" });
     }
   }
+  // async deleteIndividualBill(req, res) {
+  //   try {
+  //     const { org_id, bill_id, journal_id } = req.query;
+
+  //     if (!journal_id) {
+  //       return res
+  //         .status(ST_CODES.BAD_REQUEST)
+  //         .json({ message: "The Journal ID is required for delete expense." });
+  //     }
+
+  //     const deleteBill = await BillsCollection.findOneAndDelete({
+  //       admin_id: res.locals.user_id,
+  //       organization_id: org_id,
+  //       bill_number: bill_id,
+  //     });
+
+  //     const deleteJournal = await JournalCollection.findOneAndDelete({
+  //       journal_id: journal_id,
+  //     });
+
+  //     await userActivityHelper(
+  //       res.locals.user_id,
+  //       org_id,
+  //       deleteBill.vendor_id,
+  //       "Bill deleted ny admin",
+  //       "Bill deleted",
+  //       deleteBill._id,
+  //       "po_bill"
+  //     );
+  //     return res.status(ST_CODES.OK).json({
+  //       success: true,
+  //       message: "Bill deleted successfully",
+  //     });
+  //   } catch (error) {
+  //     return res
+  //       .status(ST_CODES.INTERNAL_SERVER_ERROR)
+  //       .send({ message: "Something went wrong" });
+  //   }
+  // }
+
   async deleteIndividualBill(req, res) {
     try {
-      const { org_id, bill_id } = req.query;
+      const { org_id, bill_id, journal_id } = req.query;
+
+      // Validate required parameters
+      if (!org_id) {
+        return res
+          .status(ST_CODES.BAD_REQUEST)
+          .json({ message: "Organization ID is required." });
+      }
+
+      if (!bill_id) {
+        return res
+          .status(ST_CODES.BAD_REQUEST)
+          .json({ message: "Bill ID is required." });
+      }
+
+      if (!journal_id) {
+        return res
+          .status(ST_CODES.BAD_REQUEST)
+          .json({ message: "Journal ID is required for deleting the bill." });
+      }
+
+      // Check if bill exists before deletion
+      const billToDelete = await BillsCollection.findOne({
+        admin_id: res.locals.user_id,
+        organization_id: org_id,
+        bill_number: bill_id,
+      });
+
+      if (!billToDelete) {
+        return res
+          .status(ST_CODES.NOT_FOUND)
+          .json({
+            message:
+              "Bill not found or you don't have permission to delete this bill.",
+          });
+      }
+
+      // Check if journal exists before deletion
+      const journalToDelete = await JournalCollection.findOne({
+        journal_id: journal_id,
+      });
+
+      if (!journalToDelete) {
+        return res
+          .status(ST_CODES.NOT_FOUND)
+          .json({ message: "Journal entry not found." });
+      }
+
+      // Delete bill
       const deleteBill = await BillsCollection.findOneAndDelete({
         admin_id: res.locals.user_id,
         organization_id: org_id,
         bill_number: bill_id,
       });
+
+      // Delete journal entry
+      const deleteJournal = await JournalCollection.findOneAndDelete({
+        journal_id: journal_id,
+      });
+
+      // Log user activity (fix typo: "ny" -> "by")
       await userActivityHelper(
         res.locals.user_id,
         org_id,
         deleteBill.vendor_id,
-        "Bill deleted ny admin",
+        "Bill deleted by admin",
         "Bill deleted",
         deleteBill._id,
         "po_bill"
       );
+
       return res.status(ST_CODES.OK).json({
         success: true,
-        message: "Bill deleted successfully",
+        message: "Bill and associated journal entry deleted successfully",
+        data: {
+          deleted_bill_id: deleteBill._id,
+          deleted_journal_id: deleteJournal.journal_id,
+        },
       });
     } catch (error) {
-      return res
-        .status(ST_CODES.INTERNAL_SERVER_ERROR)
-        .send({ message: "Something went wrong" });
+      console.error("Error deleting bill:", error);
+
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+        success: false,
+        message: "Something went wrong while deleting the bill",
+        error:
+          process.env.NODE_ENV === "development" ? error.message : undefined,
+      });
     }
   }
+
   async updateBillStatusToVoid(req, res) {
     try {
       const { org_id, bill_id, status } = req.query;

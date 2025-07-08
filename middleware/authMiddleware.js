@@ -22,11 +22,8 @@ const authMiddleware = async (req, res, next) => {
     const decode = jwt.verify(userToken, process.env.JWT_SECRET);
     let response;
     if (decode.role === "client") {
-      // console.log("hiiiiiiiii");
       response = await apiHandler.getClientInformation(userToken);
-      // console.log(response, "responseresponseresponseresponseresponse");
     } else {
-      // console.log("hiiiiiiiii11111111111111");
       response = await apiHandler.getUserInformation(userToken);
     }
     if (!response || !response.data || !response.data.status) {
@@ -34,7 +31,6 @@ const authMiddleware = async (req, res, next) => {
         .status(401)
         .json({ message: "Unauthorized: Invalid token.", success: false });
     }
-    // console.log(response.data.data);
     res.user = response.data.data.user; // Store user info in res.user
     res.locals.user_id = response.data.data.id;
     next();

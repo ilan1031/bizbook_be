@@ -76,7 +76,6 @@ exports.generateOrgUniqueId = async (
     throw new Error("Failed to generate unique ID");
   }
 };
-
 exports.formatDateString = (inputDateStr) => {
   if (!inputDateStr) return "";
   const date = new Date(inputDateStr);
@@ -88,7 +87,6 @@ exports.formatDateString = (inputDateStr) => {
 
   return `${day}/${month}/${year}`;
 };
-
 exports.formatRupee = (value) => {
   if (value === null || value === undefined || value === "") return "";
 
@@ -104,7 +102,6 @@ exports.formatRupee = (value) => {
     })
   );
 };
-
 exports.formatRupees = (value) => {
   if (value === null || value === undefined || value === "") return "";
 
@@ -112,12 +109,8 @@ exports.formatRupees = (value) => {
   if (isNaN(num)) return value; // return as-is if not a valid number
 
   // Format using Indian numbering system
-  return (
-    num.toLocaleString("en-IN", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })
-  );
+  return num.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 };
-
-
