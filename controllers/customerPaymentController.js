@@ -2110,6 +2110,165 @@ class CustomerPaymentController {
       });
     }
   }
+
+  async getCustomerPaymentEmailDetails(req, res) {
+    try {
+      const { organization_id } = req.query;
+      const { quote_id } = req.params;
+      const token = req.headers.authorization;
+
+      // Validate required parameters
+      if (!organization_id || !quote_id || !token) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          status: false,
+          message:
+            "Missing required parameters: organization_id, quote_id, or token",
+        });
+      }
+
+      // Fetch Sales Order
+      const estimate = await EstimateCollection.findOne({
+        organization_id: organization_id,
+        quote_id: quote_id,
+      });
+
+      if (!estimate) {
+        return res.status(ST_CODES.NOT_FOUND).json({
+          status: false,
+          message: "Quotes not found",
+        });
+      }
+
+      if (!estimate.customer_id) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          status: false,
+          message: "Quotes does not have a valid customer_id",
+        });
+      }
+
+      let organization = {};
+      let contactPerson = {};
+
+      try {
+        // Fetch organization and contact person data in parallel
+        const [organizationResponse, contactPersonResponse] = await Promise.all(
+          [
+            apiHandler.getOrganizationDetails(organization_id, token),
+            apiHandler.getContactPersonInformation(
+              estimate.customer_id,
+              organization_id,
+              token
+            ),
+          ]
+        );
+
+        if (organizationResponse?.data?.data) {
+          organization = organizationResponse.data.data;
+          // console.log(
+          //   "✅ Organization data retrieved successfully.",
+          //   organization
+          // );
+        } else {
+          console.log("⚠️ Organization API returned empty data.");
+        }
+
+        if (contactPersonResponse?.data) {
+          contactPerson = contactPersonResponse.data;
+          console.log("✅ Contact person data retrieved successfully.");
+        } else {
+          console.log("⚠️ Contact person API returned empty data.");
+        }
+      } catch (error) {
+        console.error(
+          "❌ Error fetching organization or contact details:",
+          error.message
+        );
+        if (error.response) {
+          console.error(
+            "API response error:",
+            error.response.status,
+            error.response.data
+          );
+        }
+      }
+
+      // Extract relevant contact information (Ensure it's always an array)
+      const to_contact = Array.isArray(contactPerson?.data)
+        ? contactPerson.data.map((contact) => ({
+            contact_person_id: contact.contact_person_id || "",
+            contact_id: contact.contact_id || "",
+            organization_id: contact.organization_id || "",
+            salutation: contact.salutation || "",
+            first_name: contact.first_name || "",
+            last_name: contact.last_name || "",
+            email: contact.email || "", // Ensure email is included here
+            phone: contact.phone || "",
+            mobile: contact.mobile || "",
+            skype: contact.skype || "",
+            department: contact.department || "",
+            designation: contact.designation || "",
+            is_primary_contact: contact.is_primary_contact || false,
+            is_portal_invitation_accepted:
+              contact.is_portal_invitation_accepted || false,
+            contact_name: `${contact.salutation || ""} ${
+              contact.first_name || ""
+            } ${contact.last_name || ""}`.trim(),
+          }))
+        : []; // Default to empty array if not an array
+
+      // Extract orgemail_name details from organization
+      const orgemail_name = Array.isArray(organization?.orgemail_name)
+        ? organization.orgemail_name.map((emailData) => ({
+            email: emailData.email || "",
+            contact_name: emailData.contact_name || "",
+          }))
+        : [];
+
+      const admin = await UserCollection.findOne(
+        { _id: res.locals.user_id },
+        { email: 1 }
+      );
+
+      // Prepare Email Details Object
+      const emailDetails = {
+        from_email: organization.email || admin ? admin.email : null,
+        subject: `Quote - ${estimate.estimate_number} is awaiting your approval`,
+        body: `Dear ${estimate.customer_name},\n\nThank you for contacting us. Your quote can be viewed, printed and downloaded as PDF from the link below.`,
+        customer_name: estimate.customer_name || "",
+        customer_id: estimate.customer_id || "",
+        organization_name: organization.organization_name || "",
+        organization_id: organization_id,
+        estimate_number: estimate.estimate_number || "",
+        quote_id: estimate.quote_id,
+        total: estimate.total || 0,
+        total_formatted: estimate.total_formatted || "",
+        date: estimate.date || "",
+        date_formatted: estimate.date_formatted || "",
+        file_name: estimate.estimate_number,
+        file_name_without_extension: `${estimate.estimate_number}.pdf`,
+        orgemail_detail: orgemail_name, // Include the correctly formatted orgemail_name array
+        to_contact, // Include the contact list with emails
+        status: estimate.status || "",
+        entity_type: "quotes",
+      };
+
+      console.log("✅ Email details successfully prepared:", emailDetails);
+
+      // Return the email details
+      res.status(ST_CODES.OK).json({
+        status: true,
+        message: "Email details retrieved successfully",
+        data: emailDetails,
+      });
+    } catch (error) {
+      console.error("❌ getEstimateEmailDetails Error:", error);
+      res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+        status: false,
+        message: "Something went wrong while fetching email details",
+        error: error.message,
+      });
+    }
+  }
 }
 
 module.exports = new CustomerPaymentController();
