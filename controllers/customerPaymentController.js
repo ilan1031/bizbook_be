@@ -588,180 +588,372 @@ class CustomerPaymentController {
   }
 
   // 📝 Delete a Customer Payment
+  // async deleteCustomerPayment(req, res) {
+  //   try {
+  //     const { payment_id, organization_id } = req.query;
+
+  //     // Validate required parameters
+  //     if (!payment_id || !organization_id) {
+  //       return res.status(400).json({
+  //         status: false,
+  //         message: "Payment ID and Organization ID are required",
+  //       });
+  //     }
+
+  //     // Find the payment to be deleted
+  //     const paymentToDelete = await CustomerPaymentCollection.findOne({
+  //       payment_id: payment_id,
+  //       organization_id: organization_id,
+  //       deleted_at: null,
+  //     });
+
+  //     if (!paymentToDelete) {
+  //       return res.status(404).json({
+  //         status: false,
+  //         message: "Payment not found or already deleted",
+  //       });
+  //     }
+
+  //     // Array to store updated invoice information
+  //     const updatedInvoices = [];
+
+  //     // Update associated invoices if any
+  //     if (
+  //       Array.isArray(paymentToDelete.invoices) &&
+  //       paymentToDelete.invoices.length > 0
+  //     ) {
+  //       for (const invoicePayment of paymentToDelete.invoices) {
+  //         try {
+  //           const invoiceId = invoicePayment.invoice_id;
+
+  //           // Get the amount that was applied to this invoice
+  //           const amountApplied = parseFloat(
+  //             invoicePayment.amount_applied || 0
+  //           );
+  //           const taxWithheld = parseFloat(
+  //             invoicePayment.tax_amount_withheld || 0
+  //           );
+  //           const totalApplied = amountApplied + taxWithheld;
+
+  //           if (totalApplied <= 0) continue; // Skip if no amount was applied
+
+  //           // Find the invoice
+  //           const invoice = await InvoiceCollection.findOne({
+  //             invoice_id: invoiceId,
+  //             organization_id: organization_id,
+  //           });
+
+  //           if (invoice) {
+  //             // Calculate the new balance
+  //             const currentBalance = parseFloat(invoice.balance || 0);
+  //             const newBalance = currentBalance + totalApplied;
+  //             const invoiceTotal = parseFloat(invoice.total || 0);
+
+  //             console.log(
+  //               currentBalance,
+  //               newBalance,
+  //               invoiceTotal,
+  //               "gettting all the details "
+  //             );
+  //             // return
+
+  //             // Determine the new payment status
+  //             let newStatus, newStatusFormatted;
+  //             if (newBalance >= invoiceTotal) {
+  //               newStatus = "unpaid";
+  //               newStatusFormatted = "Unpaid";
+  //             } else if (newBalance > 0) {
+  //               newStatus = "partially paid";
+  //               newStatusFormatted = "Partially Paid";
+  //             } else {
+  //               newStatus = "paid";
+  //               newStatusFormatted = "Paid";
+  //             }
+
+  //             // Remove this payment from the payments array
+  //             const updatedPayments = invoice.payments.filter(
+  //               (payment) => payment.payment_id !== payment_id
+  //             );
+
+  //             // Update the invoice
+  //             const updatedInvoice = await InvoiceCollection.findOneAndUpdate(
+  //               { invoice_id: invoiceId, organization_id },
+  //               {
+  //                 $set: {
+  //                   balance: newBalance,
+  //                   balance_formatted: `₹${newBalance.toFixed(2)}`,
+  //                   status: newStatus,
+  //                   status_formatted: newStatusFormatted,
+  //                   payments: updatedPayments,
+  //                 },
+  //               },
+  //               { new: true }
+  //             );
+
+  //             // Add the updated invoice to our response array
+  //             updatedInvoices.push({
+  //               invoice_id: invoiceId,
+  //               invoice_number: updatedInvoice.invoice_number,
+  //               new_balance: newBalance,
+  //               new_balance_formatted: `₹${newBalance.toFixed(2)}`,
+  //               new_status: newStatus,
+  //               new_status_formatted: newStatusFormatted,
+  //               amount_added_back: totalApplied,
+  //               amount_added_back_formatted: `₹${totalApplied.toFixed(2)}`,
+  //             });
+  //           }
+  //         } catch (error) {
+  //           console.error(
+  //             `Error updating invoice ${invoicePayment.invoice_id}:`,
+  //             error.message
+  //           );
+  //         }
+  //       }
+  //     }
+  //     let paymentData = await CustomerPaymentCollection.findOne({
+  //       payment_id: payment_id,
+  //       organization_id,
+  //     });
+  //     await JournalCollection.findOneAndUpdate({
+  //       journal_id: paymentData.journal_id,
+  //     });
+  //     // Perform soft delete on the payment
+  //     const deletedPayment = await CustomerPaymentCollection.findOneAndUpdate(
+  //       { payment_id: payment_id, organization_id },
+  //       {
+  //         $set: {
+  //           deleted_at: new Date(),
+  //           is_deleted: true,
+  //           payment_status: "deleted",
+  //           payment_status_formatted: "Deleted",
+  //         },
+  //       },
+  //       { new: true }
+  //     );
+
+  //     if (!deletedPayment) {
+  //       return res.status(404).json({
+  //         status: false,
+  //         message: "Failed to delete payment",
+  //       });
+  //     }
+
+  //     // Return success response with updated invoice information
+  //     return res.status(200).json({
+  //       status: true,
+  //       message: "Payment deleted successfully",
+  //       data: {
+  //         deleted_payment: {
+  //           payment_id: deletedPayment.payment_id,
+  //           payment_number: deletedPayment.payment_number,
+  //           amount: deletedPayment.amount,
+  //           amount_formatted: deletedPayment.amount_formatted,
+  //           deleted_at: deletedPayment.deleted_at,
+  //         },
+  //         updated_invoices: updatedInvoices,
+  //       },
+  //     });
+  //   } catch (error) {
+  //     console.error("Error deleting customer payment:", error);
+  //     return res.status(500).json({
+  //       status: false,
+  //       message: "Failed to delete customer payment",
+  //       error: error.message,
+  //     });
+  //   }
+  // }
+
   async deleteCustomerPayment(req, res) {
-    try {
-      const { payment_id, organization_id } = req.query;
+  try {
+    const { payment_id, organization_id } = req.query;
 
-      // Validate required parameters
-      if (!payment_id || !organization_id) {
-        return res.status(400).json({
-          status: false,
-          message: "Payment ID and Organization ID are required",
-        });
-      }
-
-      // Find the payment to be deleted
-      const paymentToDelete = await CustomerPaymentCollection.findOne({
-        payment_id: payment_id,
-        organization_id: organization_id,
-        deleted_at: null,
-      });
-
-      if (!paymentToDelete) {
-        return res.status(404).json({
-          status: false,
-          message: "Payment not found or already deleted",
-        });
-      }
-
-      // Array to store updated invoice information
-      const updatedInvoices = [];
-
-      // Update associated invoices if any
-      if (
-        Array.isArray(paymentToDelete.invoices) &&
-        paymentToDelete.invoices.length > 0
-      ) {
-        for (const invoicePayment of paymentToDelete.invoices) {
-          try {
-            const invoiceId = invoicePayment.invoice_id;
-
-            // Get the amount that was applied to this invoice
-            const amountApplied = parseFloat(
-              invoicePayment.amount_applied || 0
-            );
-            const taxWithheld = parseFloat(
-              invoicePayment.tax_amount_withheld || 0
-            );
-            const totalApplied = amountApplied + taxWithheld;
-
-            if (totalApplied <= 0) continue; // Skip if no amount was applied
-
-            // Find the invoice
-            const invoice = await InvoiceCollection.findOne({
-              invoice_id: invoiceId,
-              organization_id: organization_id,
-            });
-
-            if (invoice) {
-              // Calculate the new balance
-              const currentBalance = parseFloat(invoice.balance || 0);
-              const newBalance = currentBalance + totalApplied;
-              const invoiceTotal = parseFloat(invoice.total || 0);
-
-              console.log(
-                currentBalance,
-                newBalance,
-                invoiceTotal,
-                "gettting all the details "
-              );
-              // return
-
-              // Determine the new payment status
-              let newStatus, newStatusFormatted;
-              if (newBalance >= invoiceTotal) {
-                newStatus = "unpaid";
-                newStatusFormatted = "Unpaid";
-              } else if (newBalance > 0) {
-                newStatus = "partially paid";
-                newStatusFormatted = "Partially Paid";
-              } else {
-                newStatus = "paid";
-                newStatusFormatted = "Paid";
-              }
-
-              // Remove this payment from the payments array
-              const updatedPayments = invoice.payments.filter(
-                (payment) => payment.payment_id !== payment_id
-              );
-
-              // Update the invoice
-              const updatedInvoice = await InvoiceCollection.findOneAndUpdate(
-                { invoice_id: invoiceId, organization_id },
-                {
-                  $set: {
-                    balance: newBalance,
-                    balance_formatted: `₹${newBalance.toFixed(2)}`,
-                    status: newStatus,
-                    status_formatted: newStatusFormatted,
-                    payments: updatedPayments,
-                  },
-                },
-                { new: true }
-              );
-
-              // Add the updated invoice to our response array
-              updatedInvoices.push({
-                invoice_id: invoiceId,
-                invoice_number: updatedInvoice.invoice_number,
-                new_balance: newBalance,
-                new_balance_formatted: `₹${newBalance.toFixed(2)}`,
-                new_status: newStatus,
-                new_status_formatted: newStatusFormatted,
-                amount_added_back: totalApplied,
-                amount_added_back_formatted: `₹${totalApplied.toFixed(2)}`,
-              });
-            }
-          } catch (error) {
-            console.error(
-              `Error updating invoice ${invoicePayment.invoice_id}:`,
-              error.message
-            );
-          }
-        }
-      }
-      let paymentData = await CustomerPaymentCollection.findOne({
-        payment_id: payment_id,
-        organization_id,
-      });
-      await JournalCollection.findOneAndUpdate({
-        journal_id: paymentData.journal_id,
-      });
-      // Perform soft delete on the payment
-      const deletedPayment = await CustomerPaymentCollection.findOneAndUpdate(
-        { payment_id: payment_id, organization_id },
-        {
-          $set: {
-            deleted_at: new Date(),
-            is_deleted: true,
-            payment_status: "deleted",
-            payment_status_formatted: "Deleted",
-          },
-        },
-        { new: true }
-      );
-
-      if (!deletedPayment) {
-        return res.status(404).json({
-          status: false,
-          message: "Failed to delete payment",
-        });
-      }
-
-      // Return success response with updated invoice information
-      return res.status(200).json({
-        status: true,
-        message: "Payment deleted successfully",
-        data: {
-          deleted_payment: {
-            payment_id: deletedPayment.payment_id,
-            payment_number: deletedPayment.payment_number,
-            amount: deletedPayment.amount,
-            amount_formatted: deletedPayment.amount_formatted,
-            deleted_at: deletedPayment.deleted_at,
-          },
-          updated_invoices: updatedInvoices,
-        },
-      });
-    } catch (error) {
-      console.error("Error deleting customer payment:", error);
-      return res.status(500).json({
+    // Validate required parameters
+    if (!payment_id || !organization_id) {
+      return res.status(400).json({
         status: false,
-        message: "Failed to delete customer payment",
-        error: error.message,
+        message: "Payment ID and Organization ID are required",
       });
     }
+
+    // Find the payment to be deleted
+    const paymentToDelete = await CustomerPaymentCollection.findOne({
+      payment_id: payment_id,
+      organization_id: organization_id,
+      deleted_at: null,
+    });
+
+    if (!paymentToDelete) {
+      return res.status(404).json({
+        status: false,
+        message: "Payment not found or already deleted",
+      });
+    }
+
+    // Array to store updated invoice information
+    const updatedInvoices = [];
+
+    // Update associated invoices if any
+    if (
+      Array.isArray(paymentToDelete.invoices) &&
+      paymentToDelete.invoices.length > 0
+    ) {
+      for (const invoicePayment of paymentToDelete.invoices) {
+        try {
+          const invoiceId = invoicePayment.invoice_id;
+
+          // Get the amount that was applied to this invoice
+          const amountApplied = parseFloat(
+            invoicePayment.amount_applied || 0
+          );
+          const taxWithheld = parseFloat(
+            invoicePayment.tax_amount_withheld || 0
+          );
+          const totalApplied = amountApplied + taxWithheld;
+
+          if (totalApplied <= 0) continue; // Skip if no amount was applied
+
+          // Find the invoice
+          const invoice = await InvoiceCollection.findOne({
+            invoice_id: invoiceId,
+            organization_id: organization_id,
+          });
+
+          if (invoice) {
+            // Calculate the new balance
+            const currentBalance = parseFloat(invoice.balance || 0);
+            const newBalance = currentBalance + totalApplied;
+            const invoiceTotal = parseFloat(invoice.total || 0);
+
+            console.log(
+              currentBalance,
+              newBalance,
+              invoiceTotal,
+              "getting all the details "
+            );
+
+            // Determine the new payment status
+            let newStatus, newStatusFormatted;
+            if (newBalance >= invoiceTotal) {
+              newStatus = "unpaid";
+              newStatusFormatted = "Unpaid";
+            } else if (newBalance > 0) {
+              newStatus = "partially paid";
+              newStatusFormatted = "Partially Paid";
+            } else {
+              newStatus = "paid";
+              newStatusFormatted = "Paid";
+            }
+
+            // Remove this payment from the payments array
+            const updatedPayments = invoice.payments.filter(
+              (payment) => payment.payment_id !== payment_id
+            );
+
+            // Update the invoice
+            const updatedInvoice = await InvoiceCollection.findOneAndUpdate(
+              { invoice_id: invoiceId, organization_id },
+              {
+                $set: {
+                  balance: newBalance,
+                  balance_formatted: `₹${newBalance.toFixed(2)}`,
+                  status: newStatus,
+                  status_formatted: newStatusFormatted,
+                  payments: updatedPayments,
+                },
+              },
+              { new: true }
+            );
+
+            // Add the updated invoice to our response array
+            updatedInvoices.push({
+              invoice_id: invoiceId,
+              invoice_number: updatedInvoice.invoice_number,
+              new_balance: newBalance,
+              new_balance_formatted: `₹${newBalance.toFixed(2)}`,
+              new_status: newStatus,
+              new_status_formatted: newStatusFormatted,
+              amount_added_back: totalApplied,
+              amount_added_back_formatted: `₹${totalApplied.toFixed(2)}`,
+            });
+          }
+        } catch (error) {
+          console.error(
+            `Error updating invoice ${invoicePayment.invoice_id}:`,
+            error.message
+          );
+        }
+      }
+    }
+
+    // Delete the associated journal entry
+    if (paymentToDelete.journal_id) {
+      try {
+        const journalDeleteResult = await JournalCollection.findOneAndDelete({
+          journal_id: paymentToDelete.journal_id,
+          organization_id: organization_id,
+        });
+
+        if (!journalDeleteResult) {
+          console.warn(`Journal entry ${paymentToDelete.journal_id} not found for deletion`);
+        } else {
+          console.log(`Successfully deleted journal entry: ${paymentToDelete.journal_id}`);
+        }
+      } catch (error) {
+        console.error("Error deleting journal entry:", error.message);
+        return res.status(500).json({
+          status: false,
+          message: "Failed to delete associated journal entry",
+          error: error.message,
+        });
+      }
+    }
+
+    // Perform soft delete on the payment
+    const deletedPayment = await CustomerPaymentCollection.findOneAndUpdate(
+      { payment_id: payment_id, organization_id },
+      {
+        $set: {
+          deleted_at: new Date(),
+          is_deleted: true,
+          payment_status: "deleted",
+          payment_status_formatted: "Deleted",
+        },
+      },
+      { new: true }
+    );
+
+    if (!deletedPayment) {
+      return res.status(404).json({
+        status: false,
+        message: "Failed to delete payment",
+      });
+    }
+
+    // Return success response with updated invoice information
+    return res.status(200).json({
+      status: true,
+      message: "Payment and associated journal entry deleted successfully",
+      data: {
+        deleted_payment: {
+          payment_id: deletedPayment.payment_id,
+          payment_number: deletedPayment.payment_number,
+          amount: deletedPayment.amount,
+          amount_formatted: deletedPayment.amount_formatted,
+          deleted_at: deletedPayment.deleted_at,
+        },
+        deleted_journal_id: paymentToDelete.journal_id,
+        updated_invoices: updatedInvoices,
+      },
+    });
+  } catch (error) {
+    console.error("Error deleting customer payment:", error);
+    return res.status(500).json({
+      status: false,
+      message: "Failed to delete customer payment",
+      error: error.message,
+    });
   }
+}
   // 📝 Refund a Customer Payment
   async refundCustomerPayment(req, res) {
     try {
@@ -978,6 +1170,406 @@ class CustomerPaymentController {
     }
   }
   // 📝 Update an existing Customer Payment
+  // async updateCustomerPayment(req, res) {
+  //   try {
+  //     const { payment_id, organization_id } = req.query;
+  //     const updateData = req.body;
+
+  //     // Validate required parameters
+  //     if (!payment_id || !organization_id) {
+  //       return res.status(400).json({
+  //         status: false,
+  //         message: "Payment ID and Organization ID are required",
+  //       });
+  //     }
+
+  //     // Find the existing payment
+  //     const existingPayment = await CustomerPaymentCollection.findOne({
+  //       payment_id: payment_id,
+  //       organization_id: organization_id,
+  //       deleted_at: null,
+  //     });
+
+  //     if (!existingPayment) {
+  //       return res.status(404).json({
+  //         status: false,
+  //         message: "Payment not found",
+  //       });
+  //     }
+
+  //     // Track changes for audit
+  //     const changes = [];
+  //     const paymentUpdates = {};
+
+  //     // If amount is being updated
+  //     if (
+  //       updateData.amount !== undefined &&
+  //       updateData.amount !== existingPayment.amount
+  //     ) {
+  //       paymentUpdates.amount = updateData.amount;
+  //       paymentUpdates.amount_formatted = `₹${parseFloat(
+  //         updateData.amount
+  //       ).toFixed(2)}`;
+
+  //       changes.push({
+  //         field: "amount",
+  //         old_value: existingPayment.amount,
+  //         old_value_formatted: existingPayment.amount_formatted,
+  //         new_value: updateData.amount,
+  //         new_value_formatted: paymentUpdates.amount_formatted,
+  //       });
+  //     }
+
+  //     // Handle other basic field updates
+  //     const basicFields = [
+  //       "payment_mode",
+  //       "reference_number",
+  //       "date",
+  //       "date_formatted",
+  //       "notes",
+  //       "account_id",
+  //       "account_name",
+  //       "description",
+  //       "tags",
+  //       "place_of_supply",
+  //       "tax_account_name",
+  //       "deposite_to",
+  //       "bank_charges",
+  //       {},
+  //     ];
+
+  //     basicFields.forEach((field) => {
+  //       if (
+  //         updateData[field] !== undefined &&
+  //         updateData[field] !== existingPayment[field]
+  //       ) {
+  //         paymentUpdates[field] = updateData[field];
+  //         changes.push({
+  //           field: field,
+  //           old_value: existingPayment[field],
+  //           new_value: updateData[field],
+  //         });
+  //       }
+  //     });
+
+  //     // Handle invoices updates - the most complex part
+  //     if (
+  //       Array.isArray(updateData.invoices) &&
+  //       updateData.invoices.length > 0
+  //     ) {
+  //       const updatedInvoices = [];
+
+  //       // Use the existing amount or the updated amount if present
+  //       // IMPORTANT: We're ensuring that even if amount is 0, we don't enforce the validation
+  //       // This allows updating invoice balances directly
+  //       let unusedAmount =
+  //         updateData.amount !== undefined
+  //           ? parseFloat(updateData.amount)
+  //           : parseFloat(existingPayment.amount || 0);
+
+  //       // Calculate total tax withheld
+  //       let totalTaxWithheld = 0;
+
+  //       // Calculate total applied amount for tracking purposes only
+  //       const totalApplied = updateData.invoices.reduce(
+  //         (sum, inv) => sum + parseFloat(inv.amount_applied || 0),
+  //         0
+  //       );
+
+  //       // REMOVED the validation that was causing the issue
+  //       // We're now allowing the total applied amount to exceed the payment amount
+  //       // This is important for cases where you just want to update invoice balances
+
+  //       // First, handle any existing invoices that need to be reverted
+  //       if (
+  //         Array.isArray(existingPayment.invoices) &&
+  //         existingPayment.invoices.length > 0
+  //       ) {
+  //         for (const oldInvoice of existingPayment.invoices) {
+  //           try {
+  //             // Find if this invoice is in the updated list
+  //             const updatedInvoiceData = updateData.invoices.find(
+  //               (inv) => inv.invoice_id === oldInvoice.invoice_id
+  //             );
+
+  //             // If not in updated list or amount has changed, we need to revert the old effect first
+  //             if (
+  //               !updatedInvoiceData ||
+  //               parseFloat(updatedInvoiceData.amount_applied || 0) !==
+  //                 parseFloat(oldInvoice.amount_applied || 0) ||
+  //               parseFloat(updatedInvoiceData.tax_amount_withheld || 0) !==
+  //                 parseFloat(oldInvoice.tax_amount_withheld || 0)
+  //             ) {
+  //               // Fetch the invoice to update it
+  //               const invoice = await InvoiceCollection.findOne({
+  //                 invoice_id: oldInvoice.invoice_id,
+  //                 organization_id: organization_id,
+  //               });
+
+  //               if (invoice) {
+  //                 // Add back the old amount to the balance
+  //                 const oldAppliedAmount = parseFloat(
+  //                   oldInvoice.amount_applied || 0
+  //                 );
+  //                 const oldTaxWithheld = parseFloat(
+  //                   oldInvoice.tax_amount_withheld || 0
+  //                 );
+  //                 const oldTotalApplied = oldAppliedAmount + oldTaxWithheld;
+
+  //                 const currentBalance = parseFloat(invoice.balance || 0);
+  //                 const invoiceTotal = parseFloat(invoice.total || 0);
+
+  //                 // Calculate new balance but ensure it doesn't exceed the invoice total
+  //                 let newBalance = currentBalance + oldTotalApplied; // Add back the old applied amount
+  //                 if (newBalance > invoiceTotal) {
+  //                   newBalance = invoiceTotal;
+  //                   console.log(
+  //                     `Balance adjusted for invoice ${oldInvoice.invoice_id}: capped at invoice total ${invoiceTotal}`
+  //                   );
+  //                 }
+
+  //                 // Update the invoice balance - full revert of old payment
+  //                 await InvoiceCollection.findOneAndUpdate(
+  //                   { invoice_id: oldInvoice.invoice_id, organization_id },
+  //                   {
+  //                     $set: {
+  //                       balance: newBalance,
+  //                       balance_formatted: `₹${newBalance.toFixed(2)}`,
+  //                       status:
+  //                         newBalance >= invoiceTotal
+  //                           ? "unpaid"
+  //                           : "partially paid",
+  //                       status_formatted:
+  //                         newBalance >= invoiceTotal
+  //                           ? "Unpaid"
+  //                           : "Partially Paid",
+  //                       // Status updated here to reflect the reversion
+  //                     },
+  //                   }
+  //                 );
+  //               }
+  //             }
+  //           } catch (error) {
+  //             console.error(
+  //               `Error processing old invoice ${oldInvoice.invoice_id}:`,
+  //               error.message
+  //             );
+  //           }
+  //         }
+  //       }
+
+  //       // Now apply the new invoice payments
+  //       for (const invoice of updateData.invoices) {
+  //         try {
+  //           // Fetch the invoice to update
+  //           const existingInvoice = await InvoiceCollection.findOne({
+  //             invoice_id: invoice.invoice_id,
+  //             organization_id: organization_id,
+  //           });
+
+  //           if (existingInvoice) {
+  //             // Format values for display
+  //             invoice.tax_amount_withheld_formatted =
+  //               invoice.tax_amount_withheld
+  //                 ? `₹${parseFloat(invoice.tax_amount_withheld).toFixed(2)}`
+  //                 : "₹0.00";
+
+  //             invoice.amount_applied_formatted = invoice.amount_applied
+  //               ? `₹${parseFloat(invoice.amount_applied).toFixed(2)}`
+  //               : "₹0.00";
+
+  //             invoice.date = updateData.date || existingPayment.date;
+  //             invoice.date_formatted =
+  //               updateData.date_formatted || existingPayment.date_formatted;
+  //             invoice.total = existingInvoice.total;
+  //             invoice.total_formatted = existingInvoice.total_formatted;
+  //             invoice.invoice_number = existingInvoice.invoice_number;
+
+  //             // Calculate the new amount being applied
+  //             const appliedAmount = parseFloat(invoice.amount_applied || 0);
+  //             const taxWithheld = parseFloat(invoice.tax_amount_withheld || 0);
+  //             const totalApplied = appliedAmount + taxWithheld;
+
+  //             // Update running totals
+  //             totalTaxWithheld += taxWithheld;
+  //             // We're still tracking unusedAmount for recording purposes but not enforcing it
+  //             unusedAmount -= appliedAmount;
+
+  //             // Calculate new invoice balance
+  //             const currentBalance = parseFloat(existingInvoice.balance || 0);
+  //             const invoiceTotal = parseFloat(existingInvoice.total || 0);
+
+  //             // Calculate new balance and ensure it doesn't go below zero
+  //             let newBalance = currentBalance - totalApplied;
+  //             if (newBalance < 0) {
+  //               console.log(
+  //                 `Warning: Invoice ${invoice.invoice_id} would have negative balance. Setting to zero.`
+  //               );
+  //               newBalance = 0;
+  //             }
+
+  //             // Ensure balance doesn't exceed invoice total
+  //             if (newBalance > invoiceTotal) {
+  //               newBalance = invoiceTotal;
+  //               console.log(
+  //                 `Balance adjusted for invoice ${invoice.invoice_id}: capped at invoice total ${invoiceTotal}`
+  //               );
+  //             }
+
+  //             // Determine payment status
+  //             let status, statusFormatted;
+  //             if (newBalance <= 0) {
+  //               status = "paid";
+  //               statusFormatted = "Paid";
+  //             } else if (newBalance >= invoiceTotal) {
+  //               status = "unpaid";
+  //               statusFormatted = "Unpaid";
+  //             } else {
+  //               status = "partially paid";
+  //               statusFormatted = "Partially Paid";
+  //             }
+
+  //             // Check if payment already exists in the invoice's payments array
+  //             const paymentExists =
+  //               existingInvoice.payments &&
+  //               existingInvoice.payments.some(
+  //                 (p) => p.payment_id === payment_id
+  //               );
+
+  //             let updateOperation;
+  //             if (paymentExists) {
+  //               // Update the existing payment entry
+  //               updateOperation = {
+  //                 $set: {
+  //                   balance: newBalance,
+  //                   balance_formatted: `₹${newBalance.toFixed(2)}`,
+  //                   status: status,
+  //                   status_formatted: statusFormatted,
+  //                   "payments.$[elem].amount_applied": appliedAmount,
+  //                   "payments.$[elem].amount_applied_formatted":
+  //                     invoice.amount_applied_formatted,
+  //                   "payments.$[elem].tax_amount_withheld": taxWithheld,
+  //                   "payments.$[elem].tax_amount_withheld_formatted":
+  //                     invoice.tax_amount_withheld_formatted,
+  //                 },
+  //               };
+  //             } else {
+  //               // Add a new payment entry
+  //               const paymentDetails = {
+  //                 payment_id: payment_id,
+  //                 payment_number: existingPayment.payment_number || "",
+  //                 amount_applied: appliedAmount,
+  //                 amount_applied_formatted: invoice.amount_applied_formatted,
+  //                 tax_amount_withheld: taxWithheld,
+  //                 tax_amount_withheld_formatted:
+  //                   invoice.tax_amount_withheld_formatted,
+  //                 date: invoice.date,
+  //                 date_formatted: invoice.date_formatted,
+  //               };
+
+  //               updateOperation = {
+  //                 $set: {
+  //                   balance: newBalance,
+  //                   balance_formatted: `₹${newBalance.toFixed(2)}`,
+  //                   status: status,
+  //                   status_formatted: statusFormatted,
+  //                 },
+  //                 $push: {
+  //                   payments: paymentDetails,
+  //                 },
+  //               };
+  //             }
+
+  //             // Update the invoice
+  //             const updatedInvoice = await InvoiceCollection.findOneAndUpdate(
+  //               { invoice_id: invoice.invoice_id, organization_id },
+  //               updateOperation,
+  //               {
+  //                 new: true,
+  //                 arrayFilters: paymentExists
+  //                   ? [{ "elem.payment_id": payment_id }]
+  //                   : [],
+  //               }
+  //             );
+
+  //             // Add to the updated invoices array
+  //             updatedInvoices.push(invoice);
+  //           }
+  //         } catch (error) {
+  //           console.error(
+  //             `Error updating invoice ${invoice.invoice_id}:`,
+  //             error.message
+  //           );
+  //         }
+  //       }
+
+  //       // Update payment details
+  //       paymentUpdates.invoices = updatedInvoices;
+  //       paymentUpdates.tax_amount_withheld = totalTaxWithheld;
+  //       paymentUpdates.tax_amount_withheld_formatted = `₹${totalTaxWithheld.toFixed(
+  //         2
+  //       )}`;
+  //       paymentUpdates.unused_amount = unusedAmount > 0 ? unusedAmount : 0;
+  //       paymentUpdates.unused_amount_formatted = `₹${(unusedAmount > 0
+  //         ? unusedAmount
+  //         : 0
+  //       ).toFixed(2)}`;
+  //     }
+
+  //     // Add standard update fields
+  //     paymentUpdates.updated_time = new Date();
+  //     paymentUpdates.updated_by = res.locals.user_id;
+
+  //     // Add comment about the update if there are changes
+  //     if (changes.length > 0) {
+  //       const changeComment = {
+  //         comment_id: await commonHelper.generateUniqueId(
+  //           CustomerPaymentCollection,
+  //           "comment_id",
+  //           8,
+  //           "CMT"
+  //         ),
+  //         description: `Payment was updated by ${res.locals.user_id}`,
+  //         commented_by: res.locals.user_id,
+  //         date: new Date(),
+  //         date_formatted: new Date().toLocaleDateString(),
+  //         operation_type: "update",
+  //         changes: changes,
+  //       };
+
+  //       paymentUpdates.$push = { comments: changeComment };
+  //     }
+
+  //     // Update the payment record
+  //     const updatedPayment = await CustomerPaymentCollection.findOneAndUpdate(
+  //       { payment_id: payment_id, organization_id: organization_id },
+  //       { $set: paymentUpdates },
+  //       { new: true }
+  //     );
+
+  //     if (!updatedPayment) {
+  //       return res.status(404).json({
+  //         status: false,
+  //         message: "Failed to update payment",
+  //       });
+  //     }
+
+  //     // Return success response
+  //     return res.status(200).json({
+  //       status: true,
+  //       message: "Payment updated successfully",
+  //       data: updatedPayment,
+  //     });
+  //   } catch (error) {
+  //     console.error("Error updating customer payment:", error);
+  //     return res.status(500).json({
+  //       status: false,
+  //       message: "Failed to update customer payment",
+  //       error: error.message,
+  //     });
+  //   }
+  // }
+
   async updateCustomerPayment(req, res) {
     try {
       const { payment_id, organization_id } = req.query;
@@ -1043,7 +1635,7 @@ class CustomerPaymentController {
         "tax_account_name",
         "deposite_to",
         "bank_charges",
-        {},
+        "formType",
       ];
 
       basicFields.forEach((field) => {
@@ -1059,6 +1651,121 @@ class CustomerPaymentController {
           });
         }
       });
+
+      // Update Journal Entry if amount, deposite_to, or formType changed
+      if (
+        updateData.amount !== undefined ||
+        updateData.deposite_to !== undefined ||
+        updateData.formType !== undefined ||
+        updateData.date !== undefined ||
+        updateData.date_formatted !== undefined
+      ) {
+        try {
+          // Get the updated values or use existing ones
+          const updatedAmount = updateData.amount || existingPayment.amount;
+          const updatedDepositeTo =
+            updateData.deposite_to || existingPayment.deposite_to;
+          const updatedFormType =
+            updateData.formType || existingPayment.formType;
+          const updatedDate = updateData.date || existingPayment.date;
+          const updatedDateFormatted =
+            updateData.date_formatted || existingPayment.date_formatted;
+
+          // Fetch COA details for the deposit account
+          let fetchCOA = await COA_collection.aggregate([
+            {
+              $match: {
+                organization_id: organization_id,
+              },
+            },
+            {
+              $unwind: {
+                path: "$chart_of_accounts",
+              },
+            },
+            {
+              $match: {
+                "chart_of_accounts.account_name": `${updatedDepositeTo}`,
+              },
+            },
+          ]);
+
+          if (fetchCOA.length > 0) {
+            let COA_Detail = fetchCOA[0].chart_of_accounts;
+
+            // Determine the credit account based on form type
+            let coa_id = "AC_024";
+            let coa_name = "Unearned Revenue";
+            if (updatedFormType == "Invoice Payment") {
+              coa_id = "AC_019";
+              coa_name = "Accounts Receivable";
+            }
+
+            // Prepare updated journal line items
+            const updatedJournalLineItems = [
+              {
+                coa_account_id: COA_Detail.account_id,
+                coa_account_name: COA_Detail.account_name,
+                creditOrDebit: "Debit",
+                amount: updatedAmount,
+                amount_formatted: commonHelper.formatRupee(updatedAmount),
+              },
+              {
+                coa_account_id: coa_id,
+                coa_account_name: coa_name,
+                creditOrDebit: "Credit",
+                amount: updatedAmount,
+                amount_formatted: commonHelper.formatRupee(updatedAmount),
+              },
+            ];
+
+            // Prepare journal update data
+            const journalUpdateData = {
+              organization_id: organization_id,
+              admin_id: res.locals.user_id,
+              journal_date: updatedDate,
+              journal_date_formatted: updatedDateFormatted,
+              total_amount: updatedAmount,
+              total_amount_formatted: commonHelper.formatRupee(updatedAmount),
+              type:
+                updatedFormType == "Invoice Payment"
+                  ? "Invoice Payment"
+                  : "Customer Advance",
+              customer_name:
+                updateData.customer_name || existingPayment.customer_name,
+              line_items: updatedJournalLineItems,
+              updated_at: new Date(),
+            };
+
+            // Update the journal entry
+            const updatedJournal = await JournalCollection.findOneAndUpdate(
+              {
+                journal_id: existingPayment.journal_id,
+                organization_id: organization_id,
+              },
+              { $set: journalUpdateData },
+              { new: true, runValidators: true }
+            );
+
+            if (updatedJournal) {
+              console.log(
+                `Journal ${existingPayment.journal_id} updated successfully`
+              );
+            } else {
+              console.warn(
+                `Journal ${existingPayment.journal_id} not found for update`
+              );
+            }
+          } else {
+            console.warn(
+              `COA not found for deposit account: ${updatedDepositeTo}`
+            );
+          }
+        } catch (journalError) {
+          console.error("Error updating journal entry:", journalError);
+          // Don't fail the entire operation if journal update fails
+        }
+      }
 
       // Handle invoices updates - the most complex part
       if (
@@ -1377,6 +2084,7 @@ class CustomerPaymentController {
       });
     }
   }
+
   // get invoice unique Id
   async getUniqueId(req, res) {
     try {

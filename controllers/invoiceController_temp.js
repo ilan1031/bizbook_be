@@ -13,6 +13,8 @@ const apiHandler = require("../handler/api-handler");
 const CustomerCollection = require("../model/contactModel");
 const OrganizationCollection = require("../model/organizationSchema");
 const { createInvoiceData } = require("../helpers/invoiceHelper");
+const userActivityHelper = require("../helpers/userActivityHelper");
+
 const UserCollection = mongoose.model("user");
 require("dotenv").config();
 
@@ -289,18 +291,227 @@ class InvoiceController {
 
   async createInvoice(req, res) {
     try {
-      const invoiceData = await createInvoiceData(req, req.body);
-      const sub_total = Number(invoiceData.sub_total); // 2000
-      const discount = Number(invoiceData.discount_amount); // 0
-      const adjustment = Number(invoiceData.adjustment); // 0
-      const tax_percentage = Number(invoiceData.tax_percentage); // 2
+      let invoiceData = req.body;
+      const orgId = req.query.org_id;
+      const admin_id = res.locals.user_id;
+
+      // Validate required organization ID
+      if (!orgId) {
+        return res.status(400).json({
+          success: false,
+          message: "Organization ID is required",
+        });
+      }
+
+      // Assign admin_id and organization_id
+      invoiceData["admin_id"] = admin_id;
+      invoiceData["organization_id"] = orgId;
+      invoiceData["created_by_id"] = admin_id;
+      invoiceData["last_modified_by_id"] = admin_id;
+
+      // Handle file upload
+      if (req.file) {
+        invoiceData["documents"] = req.file.filename;
+      }
+
+      // Generate unique Invoice ID
+      let invoiceUniqueId = await commonHelper.generateUniqueId(
+        InvoiceCollection,
+        "invoice_number",
+        7,
+        "INV"
+      );
+      invoiceData["invoice_number"] = invoiceUniqueId;
+
+      // Generate unique invoice_id for internal reference
+      const invoiceId = await commonHelper.generateUniqueId(
+        InvoiceCollection,
+        "invoice_id",
+        6
+      );
+      invoiceData["invoice_id"] = invoiceId;
+
+      // Set status defaults
+      invoiceData["status"] = invoiceData.status || "draft";
+      invoiceData["status_formatted"] = invoiceData.status_formatted || "Draft";
+
+      // Set dates
+      const currentDate = new Date();
+      invoiceData["date"] = invoiceData.date || currentDate.toISOString();
+      const parsedDate = new Date(invoiceData.date);
+      invoiceData["date_formatted"] = parsedDate.toLocaleDateString("en-GB");
+
+      const dueDate =
+        invoiceData.due_date ||
+        new Date(parsedDate.getTime() + 30 * 24 * 60 * 60 * 1000); // Add 30 days
+      invoiceData["due_date"] = dueDate;
+      invoiceData["due_date_formatted"] = new Date(dueDate).toLocaleDateString(
+        "en-GB"
+      );
+
+      // Set defaults for optional fields
+      const defaultFields = {
+        customer_name: "",
+        place_of_supply: "",
+        order_number: "",
+        vat_treatment: "",
+        tax_treatment: "",
+        is_reverse_charge_applied: false,
+        gst_treatment: "",
+        gst_no: "",
+        cfdi_usage: "",
+        reference_number: "",
+        invoiced_estimate_id: "",
+        salesperson_name: "",
+        allow_partial_payments: false,
+        custom_body: "",
+        custom_subject: "",
+        shipping_charge: 0,
+        adjustment: 0,
+        adjustment_description: "",
+        reason: "",
+        tax_authority_id: "",
+        tax_exemption_id: "",
+        billing_address_id: "",
+        shipping_address_id: "",
+        avatax_use_code: "",
+        avatax_exempt_no: "",
+        tax_id: invoiceData.tcs_id || invoiceData.tds_id || "",
+        expense_id: "",
+        salesorder_item_id: "",
+        avatax_tax_code: "",
+        time_entry_ids: [],
+        discount_amount: 0,
+        discount_percent: 0,
+        tax_type: "",
+        payment_terms_label: "",
+        payment_terms: "",
+        tds_option: "",
+        payment_made: 0,
+        credits_applied: 0,
+      };
+
+      // Apply defaults for undefined fields
+      for (const key in defaultFields) {
+        if (invoiceData[key] === undefined) {
+          invoiceData[key] = defaultFields[key];
+        }
+      }
+
+      const formatCurrency = (amount) => {
+        return `₹${Number(amount).toLocaleString("en-IN", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
+      };
+
+      // Handle line items calculation
+      let calculatedSubTotal = 0;
+      if (
+        Array.isArray(invoiceData.line_items) &&
+        invoiceData.line_items.length > 0
+      ) {
+        invoiceData.line_items.forEach((item) => {
+          // Generate line item ID if not present
+          if (!item.line_item_id) {
+            item.line_item_id = Math.random().toString(36).substring(2, 15);
+          }
+
+          const quantity = Number(item.quantity || 0);
+          const rate = Number(item.rate || 0);
+          const lineTotal = quantity * rate;
+
+          item.item_total = lineTotal;
+          item.item_total_formatted = formatCurrency(lineTotal);
+          item.item_total_inclusive_of_tax = lineTotal;
+          item.item_total_inclusive_of_tax_formatted =
+            formatCurrency(lineTotal);
+
+          // Progress invoice details
+          item.progress_invoice_details = {
+            invoiced_quantity: 0,
+            invoiced_quantity_formatted: "0.00",
+            invoiced_value: 0,
+            invoiced_value_formatted: "₹0.00",
+            balance_amount: lineTotal,
+            balance_amount_formatted: formatCurrency(lineTotal),
+            is_invoiced: false,
+          };
+
+          // Handle tags
+          item.tags = Array.isArray(item.tags)
+            ? item.tags.filter(
+                (tag) =>
+                  typeof tag.tag_id === "number" &&
+                  typeof tag.tag_option_id === "number"
+              )
+            : [];
+
+          calculatedSubTotal += lineTotal;
+        });
+      }
+
+      // Use calculated subtotal or provided subtotal
+      const sub_total = Number(invoiceData.sub_total || calculatedSubTotal);
+      const discount = Number(invoiceData.discount_amount || 0);
+      const adjustment = Number(invoiceData.adjustment || 0);
+      const tax_percentage = Number(invoiceData.tax_percentage || 0);
       const tax_type = invoiceData.tax_type; // "TDS" or "TCS"
-      const tax_amount = (tax_percentage / 100) * (sub_total - discount); // 40
+      const shipping_charge = Number(invoiceData.shipping_charge || 0);
+
+      // Calculate discount if percentage is provided
+      let discountAmount = discount;
+      if (
+        invoiceData.discount_type === "percentage" &&
+        invoiceData.discount_percent
+      ) {
+        discountAmount =
+          (sub_total * Number(invoiceData.discount_percent)) / 100;
+      }
+
+      // Calculate tax amount
+      const tax_amount = (tax_percentage / 100) * (sub_total - discountAmount);
+
+      // Calculate total receivable
       const total_receivable =
         sub_total -
-        discount +
+        discountAmount +
         (tax_type === "TCS" ? tax_amount : -tax_amount) +
-        adjustment; // 1960
+        adjustment +
+        shipping_charge;
+
+      // Set calculated values
+      invoiceData["sub_total"] = sub_total;
+      invoiceData["sub_total_formatted"] = formatCurrency(sub_total);
+      invoiceData["bcy_sub_total"] = sub_total;
+
+      invoiceData["discount_amount"] = discountAmount;
+      invoiceData["discount_total"] = discountAmount;
+      invoiceData["discount_total_formatted"] = formatCurrency(discountAmount);
+      invoiceData["bcy_discount_total"] = discountAmount;
+
+      const subTotalAfterDiscount = sub_total - discountAmount;
+      invoiceData["sub_total_exclusive_of_discount"] = subTotalAfterDiscount;
+      invoiceData["sub_total_exclusive_of_discount_formatted"] = formatCurrency(
+        subTotalAfterDiscount
+      );
+
+      invoiceData["tax_total"] = tax_amount;
+      invoiceData["tax_total_formatted"] = formatCurrency(tax_amount);
+      invoiceData["bcy_tax_total"] = tax_amount;
+
+      invoiceData["total"] = total_receivable;
+      invoiceData["total_formatted"] = formatCurrency(total_receivable);
+      invoiceData["bcy_total"] = total_receivable;
+
+      // Calculate balance
+      const paymentMade = Number(invoiceData.payment_made || 0);
+      const creditsApplied = Number(invoiceData.credits_applied || 0);
+      const balance = total_receivable - paymentMade - creditsApplied;
+      invoiceData["balance"] = balance;
+      invoiceData["balance_formatted"] = formatCurrency(balance);
+
+      // Generate unique Journal ID
       let journalUniqueId = await commonHelper.generateUniqueId(
         JournalCollection,
         "journal_id",
@@ -308,25 +519,19 @@ class InvoiceController {
         "JL"
       );
 
-      invoiceData["sub_total_formatted"] = formatCurrency(
-        invoiceData.sub_total
-      );
-      invoiceData["total_formatted"] = formatCurrency(invoiceData.total);
-      invoiceData["balance_formatted"] = formatCurrency(invoiceData.balance);
-      // console.log(invoiceData, "----------invoiceData");
-      // return;
+      // Create Journal Line Items
       const Journal_line_items = [
         {
           coa_account_id: "AC_046",
           coa_account_name: "Sales",
           creditOrDebit: "Credit",
           amount: sub_total,
-          amount_formatted: sub_total,
+          amount_formatted: formatCurrency(sub_total),
         },
       ];
 
       // Add tax-specific entry
-      if (tax_type === "TCS") {
+      if (tax_type === "TCS" && tax_amount > 0) {
         Journal_line_items.push({
           coa_account_id: "AC_025",
           coa_account_name: "TCS Payable",
@@ -334,7 +539,7 @@ class InvoiceController {
           amount: tax_amount,
           amount_formatted: formatCurrency(tax_amount),
         });
-      } else if (tax_type === "TDS") {
+      } else if (tax_type === "TDS" && tax_amount > 0) {
         Journal_line_items.push({
           coa_account_id: "AC_006",
           coa_account_name: "TDS Receivable",
@@ -344,27 +549,40 @@ class InvoiceController {
         });
       }
 
+      // Add discount if any
+      if (discountAmount > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_050",
+          coa_account_name: "Discount",
+          creditOrDebit: "Debit",
+          amount: discountAmount,
+          amount_formatted: formatCurrency(discountAmount),
+        });
+      }
+
+      // Add shipping charge if any
+      if (shipping_charge > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_051",
+          coa_account_name: "Shipping Charges",
+          creditOrDebit: "Credit",
+          amount: shipping_charge,
+          amount_formatted: formatCurrency(shipping_charge),
+        });
+      }
+
       // Add adjustment if any
       if (adjustment !== 0) {
         Journal_line_items.push({
           coa_account_id: "AC_044",
           coa_account_name: "Other Charges",
-          creditOrDebit: "Credit",
+          creditOrDebit: adjustment > 0 ? "Credit" : "Debit",
           amount: Math.abs(adjustment),
-          amount_formatted: formatCurrency(adjustment),
-        });
-      }
-      if (discount !== 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_050",
-          coa_account_name: "Discount",
-          creditOrDebit: "Debit",
-          amount: Math.abs(discount),
-          amount_formatted: formatCurrency(discount),
+          amount_formatted: formatCurrency(Math.abs(adjustment)),
         });
       }
 
-      // Final receivable
+      // Final receivable entry
       Journal_line_items.push({
         coa_account_id: "AC_019",
         coa_account_name: "Accounts Receivable",
@@ -373,33 +591,59 @@ class InvoiceController {
         amount_formatted: formatCurrency(total_receivable),
       });
 
-      // console.log(Journal_line_items, "Journal_line_items");
+      // Create journal data
       const journalData = {
-        organization_id: invoiceData.organization_id,
-        admin_id: invoiceData.admin_id,
+        organization_id: orgId,
+        admin_id: admin_id,
         journal_id: journalUniqueId,
         journal_date: invoiceData.date,
-        journal_date_formatted: invoiceData.date_formatted,
+        journal_date_formatted: commonHelper.formatDateString(invoiceData.date),
         total_amount: total_receivable,
         total_amount_formatted: formatCurrency(total_receivable),
         type: "Invoice",
         customer_name: invoiceData.customer_name,
         line_items: Journal_line_items,
       };
+
+      // Add journal_id to invoice data
       invoiceData["journal_id"] = journalUniqueId;
 
+      console.log("The Journal Data", journalData);
+
+      // Save journal entry
       const savedJournal = await JournalCollection.create(journalData);
 
-      const savedInvoice = await new InvoiceCollection(invoiceData).save();
-      res.status(200).json({
-        status: true,
-        message: "Invoice has been added",
-        data: savedInvoice,
+      // Create invoice using queryHelper
+      let createInvoice = await queryHelper.insertData(
+        InvoiceCollection,
+        invoiceData
+      );
+
+      // Log user activity
+      await userActivityHelper(
+        admin_id,
+        orgId,
+        invoiceData.customer_id,
+        `Invoice created for ${formatCurrency(total_receivable)}`,
+        "Invoice created",
+        createInvoice.msg._id,
+        "Invoice"
+      );
+
+      console.log("The Data saved for the Invoice", invoiceData);
+
+      return res.status(ST_CODES.CREATED).json({
+        success: true,
+        message: "Invoice created successfully.",
+        data: createInvoice.msg,
+        journalData: savedJournal,
       });
     } catch (error) {
-      res.status(500).json({
-        status: false,
-        message: error.message || "Something went wrong",
+      console.log("createInvoice error", error);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+        success: false,
+        message:
+          "Internal Server Error: Unable to create invoice. Please try again later.",
       });
     }
   }
@@ -947,21 +1191,30 @@ class InvoiceController {
   async updateInvoice(req, res) {
     try {
       const { organization_id, invoice_id } = req.query;
+      const admin_id = res.locals.user_id;
       let updateData = { ...req.body };
 
+      // Handle file upload
       let documents = updateData.documents;
       if (req.file) {
         documents = req.file.filename;
       }
-
       updateData["documents"] = documents;
 
       // Validate required query params
       if (!organization_id || !invoice_id) {
         return res.status(400).json({
-          code: 1,
+          success: false,
           message:
             "Missing required parameters: organization_id and invoice_id",
+        });
+      }
+
+      // Validate admin_id
+      if (!admin_id) {
+        return res.status(401).json({
+          success: false,
+          message: "User authentication required",
         });
       }
 
@@ -974,10 +1227,24 @@ class InvoiceController {
 
       if (!invoice) {
         return res.status(404).json({
-          code: 1,
+          success: false,
           message: "Unauthorized or invoice not found",
         });
       }
+
+      // Add admin_id and organization_id to update data
+      updateData["admin_id"] = admin_id;
+      updateData["organization_id"] = organization_id;
+      updateData["last_modified_by_id"] = admin_id;
+      updateData["updated_at"] = new Date();
+
+      // Currency formatting function
+      const formatCurrency = (amount) => {
+        return `₹${Number(amount).toLocaleString("en-IN", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
+      };
 
       // ✅ Recalculate totals using the same logic as createInvoice
       if (updateData.line_items && updateData.line_items.length > 0) {
@@ -985,12 +1252,50 @@ class InvoiceController {
 
         // Calculate sub-total from line items
         updateData.line_items.forEach((item) => {
-          const lineTotal = (item.quantity || 0) * (item.rate || 0);
+          // Generate line item ID if not present
+          if (!item.line_item_id) {
+            item.line_item_id = Math.random().toString(36).substring(2, 15);
+          }
+
+          const quantity = Number(item.quantity || 0);
+          const rate = Number(item.rate || 0);
+          const discount = Number(item.discount || 0);
+
+          // Calculate line total considering discount
+          const lineTotal = quantity * rate * (1 - discount / 100);
+
           item.item_total = lineTotal;
+          item.item_total_formatted = formatCurrency(lineTotal);
+          item.item_total_inclusive_of_tax = lineTotal;
+          item.item_total_inclusive_of_tax_formatted =
+            formatCurrency(lineTotal);
+
+          // Progress invoice details
+          item.progress_invoice_details = {
+            invoiced_quantity: 0,
+            invoiced_quantity_formatted: "0.00",
+            invoiced_value: 0,
+            invoiced_value_formatted: "₹0.00",
+            balance_amount: lineTotal,
+            balance_amount_formatted: formatCurrency(lineTotal),
+            is_invoiced: false,
+          };
+
+          // Handle tags
+          item.tags = Array.isArray(item.tags)
+            ? item.tags.filter(
+                (tag) =>
+                  typeof tag.tag_id === "number" &&
+                  typeof tag.tag_option_id === "number"
+              )
+            : [];
+
           subTotal += lineTotal;
         });
 
         updateData["sub_total"] = subTotal;
+        updateData["sub_total_formatted"] = formatCurrency(subTotal);
+        updateData["bcy_sub_total"] = subTotal;
       }
 
       // ✅ Use existing values or updated values for calculations
@@ -1001,30 +1306,66 @@ class InvoiceController {
       const adjustment = Number(
         updateData.adjustment || invoice.adjustment || 0
       );
+      const shipping_charge = Number(
+        updateData.shipping_charge || invoice.shipping_charge || 0
+      );
       const tax_percentage = Number(
         updateData.tax_percentage || invoice.tax_percentage || 0
       );
       const tax_type = updateData.tax_type || invoice.tax_type || "";
 
+      // Calculate discount if percentage is provided
+      let discountAmount = discount;
+      if (
+        updateData.discount_type === "percentage" &&
+        updateData.discount_percent
+      ) {
+        discountAmount =
+          (sub_total * Number(updateData.discount_percent)) / 100;
+      }
+
       // Calculate tax amount using same logic as createInvoice
-      const tax_amount = (tax_percentage / 100) * (sub_total - discount);
+      const tax_amount = (tax_percentage / 100) * (sub_total - discountAmount);
 
       // Calculate total receivable using same logic as createInvoice
       const total_receivable =
         sub_total -
-        discount +
+        discountAmount +
         (tax_type === "TCS" ? tax_amount : -tax_amount) +
-        adjustment;
+        adjustment +
+        shipping_charge;
 
       // Update calculated values
-      updateData["tax_amount"] = tax_amount;
-      updateData["total"] = total_receivable;
-      updateData["balance"] = total_receivable; // Assuming balance equals total for new invoices
+      updateData["discount_amount"] = discountAmount;
+      updateData["discount_total"] = discountAmount;
+      updateData["discount_total_formatted"] = formatCurrency(discountAmount);
+      updateData["bcy_discount_total"] = discountAmount;
 
-      // Add formatted currency fields
-      updateData["sub_total_formatted"] = formatCurrency(sub_total);
+      const subTotalAfterDiscount = sub_total - discountAmount;
+      updateData["sub_total_exclusive_of_discount"] = subTotalAfterDiscount;
+      updateData["sub_total_exclusive_of_discount_formatted"] = formatCurrency(
+        subTotalAfterDiscount
+      );
+
+      updateData["tax_total"] = tax_amount;
+      updateData["tax_total_formatted"] = formatCurrency(tax_amount);
+      updateData["bcy_tax_total"] = tax_amount;
+
+      updateData["total"] = total_receivable;
       updateData["total_formatted"] = formatCurrency(total_receivable);
-      updateData["balance_formatted"] = formatCurrency(total_receivable);
+      updateData["bcy_total"] = total_receivable;
+
+      // Calculate balance considering payments and credits
+      const paymentMade = Number(
+        updateData.payment_made || invoice.payment_made || 0
+      );
+      const creditsApplied = Number(
+        updateData.credits_applied || invoice.credits_applied || 0
+      );
+      const balance = total_receivable - paymentMade - creditsApplied;
+
+      updateData["balance"] = balance;
+      updateData["balance_formatted"] = formatCurrency(balance);
 
       // ✅ Prepare Journal Line Items using same structure as createInvoice
       const Journal_line_items = [
@@ -1056,6 +1397,28 @@ class InvoiceController {
         });
       }
 
+      // Add discount if any
+      if (discountAmount > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_050",
+          coa_account_name: "Discount",
+          creditOrDebit: "Debit",
+          amount: discountAmount,
+          amount_formatted: formatCurrency(discountAmount),
+        });
+      }
+
+      // Add shipping charge if any
+      if (shipping_charge > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_051",
+          coa_account_name: "Shipping Charges",
+          creditOrDebit: "Credit",
+          amount: shipping_charge,
+          amount_formatted: formatCurrency(shipping_charge),
+        });
+      }
+
       // Add adjustment if any
       if (adjustment !== 0) {
         Journal_line_items.push({
@@ -1064,17 +1427,6 @@ class InvoiceController {
           creditOrDebit: adjustment > 0 ? "Credit" : "Debit",
           amount: Math.abs(adjustment),
           amount_formatted: formatCurrency(Math.abs(adjustment)),
-        });
-      }
-
-      // Add discount if any
-      if (discount !== 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_050",
-          coa_account_name: "Discount",
-          creditOrDebit: "Debit",
-          amount: Math.abs(discount),
-          amount_formatted: formatCurrency(Math.abs(discount)),
         });
       }
 
@@ -1089,6 +1441,8 @@ class InvoiceController {
 
       // ✅ Prepare journal update data (keeping same journal_id)
       const updatedJournal = {
+        organization_id: organization_id,
+        admin_id: admin_id,
         journal_date: updateData.date || invoice.date,
         journal_date_formatted:
           updateData.date_formatted || invoice.date_formatted,
@@ -1096,117 +1450,277 @@ class InvoiceController {
         total_amount_formatted: formatCurrency(total_receivable),
         customer_name: updateData.customer_name || invoice.customer_name,
         line_items: Journal_line_items,
+        type: "Invoice",
+        updated_at: new Date(),
       };
+
+      console.log("Updated Journal Data:", updatedJournal);
 
       // ✅ Update the existing journal entry
       const updateJournal = await JournalCollection.findOneAndUpdate(
-        { journal_id: invoice.journal_id }, // Use existing journal_id
+        {
+          journal_id: invoice.journal_id,
+          organization_id: organization_id,
+        },
         { $set: updatedJournal },
         { new: true, runValidators: true }
       );
 
       if (!updateJournal) {
-        return res.status(404).json({
-          code: 1,
-          message: "Journal entry not found for this invoice",
-        });
+        console.warn(
+          `Journal entry not found for invoice ${invoice_id} with journal_id ${invoice.journal_id}`
+        );
+        // Don't fail the entire update if journal is not found, just log it
       }
 
-      // ✅ Update the invoice
-      let updatedInvoice = await InvoiceCollection.findOneAndUpdate(
-        { invoice_id, organization_id },
+      // ✅ Update the invoice directly using findOneAndUpdate
+      const updatedInvoice = await InvoiceCollection.findOneAndUpdate(
+        {
+          invoice_id: invoice_id,
+          organization_id: organization_id,
+          deleted_at: null,
+        },
         { $set: updateData },
-        { new: true }
+        {
+          new: true, // Return the updated document
+          runValidators: true, // Run schema validations
+        }
       );
 
       if (!updatedInvoice) {
         return res.status(404).json({
-          code: 1,
+          success: false,
           message: "Failed to update invoice",
         });
       }
 
+      // Log user activity
+      await userActivityHelper(
+        admin_id,
+        organization_id,
+        updateData.customer_id || invoice.customer_id,
+        `Invoice updated for ${formatCurrency(total_receivable)}`,
+        "Invoice updated",
+        invoice_id,
+        "Invoice"
+      );
+
+      console.log("Invoice updated successfully:", updateData);
+
       // Success Response
       return res.status(200).json({
-        code: 0,
-        message: "Invoice and journal updated successfully",
-        invoice: updatedInvoice,
-        journal: updateJournal,
+        success: true,
+        message: "Invoice updated successfully",
+        data: updatedInvoice,
+        journalData: updateJournal,
       });
     } catch (error) {
-      console.error("updateInvoice Error:", error.message);
+      console.error("updateInvoice Error:", error);
       return res.status(500).json({
-        code: 1,
+        success: false,
         message: "Internal Server Error: Unable to update invoice",
         error: error.message,
       });
     }
   }
   // 📌 Delete invoice (soft delete)
+  // async deleteInvoice(req, res) {
+  //   try {
+  //     const { organization_id, invoice_id } = req.query;
+
+  //     // Validate required parameters
+  //     if (!organization_id || !invoice_id) {
+  //       return res.status(400).json({
+  //         code: 1,
+  //         message:
+  //           "Missing required parameters: organization_id and invoice_id",
+  //       });
+  //     }
+
+  //     console.log("Input Parameters:", { organization_id, invoice_id });
+
+  //     // Convert invoice_id and organization_id to strings to match database format
+  //     const formattedInvoiceId = String(invoice_id);
+  //     const formattedOrganizationId = String(organization_id);
+  //     let findInvoice = await InvoiceCollection.findOne({
+  //       invoice_id: formattedInvoiceId,
+  //     });
+  //     if (findInvoice.journal_id != "") {
+  //       let findJournal = await JournalCollection.findOneAndDelete({
+  //         journal_id: findInvoice.journal_id,
+  //       });
+  //     }
+  //     let invoice = await InvoiceCollection.findOne({
+  //       invoice_id: formattedInvoiceId, // Ensure query uses the correct format
+  //       organization_id: formattedOrganizationId,
+  //       deleted_at: null, // Ensure it's not already soft-deleted
+  //     });
+
+  //     if (!invoice) {
+  //       console.warn("Invoice not found for the given parameters:", {
+  //         organization_id: formattedOrganizationId,
+  //         invoice_id: formattedInvoiceId,
+  //       });
+  //       return res.status(404).json({
+  //         code: 1,
+  //         message: "Invoice not found for this organization",
+  //       });
+  //     }
+
+  //     // Perform soft delete by setting deleted_at timestamp
+  //     invoice.deleted_at = new Date();
+  //     await invoice.save();
+
+  //     // Check if the invoice is a "convert invoice" (has estimate_id)
+  //     if (invoice.estimate_id) {
+  //       // Validate estimate_id to ensure it's a valid ObjectId
+  //       if (mongoose.Types.ObjectId.isValid(invoice.estimate_id)) {
+  //         const estimate = await EstimateCollection.findById(
+  //           invoice.estimate_id
+  //         );
+
+  //         if (estimate) {
+  //           // Remove the deleted invoice's ID from the invoice_ids array
+  //           estimate.invoice_ids = estimate.invoice_ids.filter(
+  //             (id) => id !== invoice.invoice_id
+  //           );
+
+  //           // Remove the deleted invoice's details from the invoices array
+  //           estimate.invoices = estimate.invoices.filter(
+  //             (inv) => inv.invoice_id !== invoice.invoice_id
+  //           );
+
+  //           // Check if this is the last invoice created by the estimate
+  //           if (estimate.invoice_ids.length === 0) {
+  //             // Restore the original status of the estimate
+  //             estimate.status = estimate.current_sub_status || "draft";
+  //             estimate.status_formatted =
+  //               estimate.current_sub_status_formatted || "Draft";
+
+  //             // Clear the invoiced amount fields
+  //             estimate.invoiced_amount = null;
+  //             estimate.invoiced_amount_formatted = null;
+
+  //             // Optionally, clear current_sub_status and current_sub_status_formatted
+  //             estimate.current_sub_status = null;
+  //             estimate.current_sub_status_formatted = null;
+  //           }
+
+  //           // Save the updated estimate
+  //           await estimate.save();
+  //         } else {
+  //           console.warn(`Estimate with ID ${invoice.estimate_id} not found.`);
+  //         }
+  //       } else {
+  //         console.warn(
+  //           `Invalid estimate_id (${invoice.estimate_id}) for invoice ${invoice.invoice_id}. Skipping estimate update.`
+  //         );
+  //       }
+  //     } else {
+  //       console.log("This is a direct invoice. No estimate to update.");
+  //     }
+
+  //     // Success Response
+  //     return res.status(200).json({
+  //       code: 0,
+  //       message: "Invoice deleted successfully", // Soft delete
+  //       invoice: invoice,
+  //     });
+  //   } catch (error) {
+  //     console.error("deleteInvoice Error:", error.message);
+  //     return res.status(500).json({
+  //       code: 1,
+  //       message: "Internal Server Error: Unable to delete invoice",
+  //     });
+  //   }
+  // }
+
   async deleteInvoice(req, res) {
-    try {
-      const { organization_id, invoice_id } = req.query;
+  try {
+    let { org_id, invoice_id } = req.query;
 
-      // Validate required parameters
-      if (!organization_id || !invoice_id) {
-        return res.status(400).json({
-          code: 1,
-          message:
-            "Missing required parameters: organization_id and invoice_id",
-        });
-      }
-
-      console.log("Input Parameters:", { organization_id, invoice_id });
-
-      // Convert invoice_id and organization_id to strings to match database format
-      const formattedInvoiceId = String(invoice_id);
-      const formattedOrganizationId = String(organization_id);
-      let findInvoice = await InvoiceCollection.findOne({
-        invoice_id: formattedInvoiceId,
+    // Validate required parameters
+    if (!org_id || !invoice_id) {
+      return res.status(ST_CODES.BAD_REQUEST).json({
+        success: false,
+        message: "Organization ID and Invoice ID are required for delete invoice.",
       });
-      if (findInvoice.journal_id != "") {
-        let findJournal = await JournalCollection.findOneAndDelete({
-          journal_id: findInvoice.journal_id,
-        });
-      }
-      let invoice = await InvoiceCollection.findOne({
-        invoice_id: formattedInvoiceId, // Ensure query uses the correct format
-        organization_id: formattedOrganizationId,
-        deleted_at: null, // Ensure it's not already soft-deleted
+    }
+
+    console.log("Input Parameters:", { org_id, invoice_id, admin_id: res.locals.user_id });
+
+    // First, find the invoice to get the journal_id
+    const findInvoice = await InvoiceCollection.findOne({
+      admin_id: res.locals.user_id,
+      invoice_id: invoice_id,
+      organization_id: org_id,
+    });
+
+    if (!findInvoice) {
+      return res.status(ST_CODES.NOT_FOUND).json({
+        success: false,
+        message: "Invoice not found for delete",
       });
+    }
 
-      if (!invoice) {
-        console.warn("Invoice not found for the given parameters:", {
-          organization_id: formattedOrganizationId,
-          invoice_id: formattedInvoiceId,
-        });
-        return res.status(404).json({
-          code: 1,
-          message: "Invoice not found for this organization",
-        });
-      }
+    // Get journal_id from the found invoice
+    const journal_id = findInvoice.journal_id;
 
-      // Perform soft delete by setting deleted_at timestamp
-      invoice.deleted_at = new Date();
-      await invoice.save();
+    if (!journal_id) {
+      return res.status(ST_CODES.BAD_REQUEST).json({
+        success: false,
+        message: "The Journal ID is required for delete invoice.",
+      });
+    }
 
-      // Check if the invoice is a "convert invoice" (has estimate_id)
-      if (invoice.estimate_id) {
+    // Delete the invoice
+    const deleteInvoice = await InvoiceCollection.findOneAndDelete({
+      admin_id: res.locals.user_id,
+      invoice_id: invoice_id,
+      organization_id: org_id,
+    });
+
+    // Delete the journal entry using the journal_id from invoice
+    const deleteJournal = await JournalCollection.findOneAndDelete({
+      journal_id: journal_id,
+      organization_id: org_id, // Add organization filter for security
+    });
+
+    if (!deleteInvoice) {
+      return res.status(ST_CODES.NOT_FOUND).json({
+        success: false,
+        message: "Invoice not found for delete",
+      });
+    }
+
+    // Currency formatting function
+    const formatCurrency = (amount) => {
+      return `₹${Number(amount).toLocaleString("en-IN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+    };
+
+    // Handle estimate update if this is a converted invoice
+    if (deleteInvoice.estimate_id) {
+      try {
         // Validate estimate_id to ensure it's a valid ObjectId
-        if (mongoose.Types.ObjectId.isValid(invoice.estimate_id)) {
-          const estimate = await EstimateCollection.findById(
-            invoice.estimate_id
-          );
+        if (mongoose.Types.ObjectId.isValid(deleteInvoice.estimate_id)) {
+          const estimate = await EstimateCollection.findOne({
+            _id: deleteInvoice.estimate_id,
+            organization_id: org_id,
+            deleted_at: null,
+          });
 
           if (estimate) {
             // Remove the deleted invoice's ID from the invoice_ids array
             estimate.invoice_ids = estimate.invoice_ids.filter(
-              (id) => id !== invoice.invoice_id
+              (id) => id !== deleteInvoice.invoice_id
             );
 
             // Remove the deleted invoice's details from the invoices array
             estimate.invoices = estimate.invoices.filter(
-              (inv) => inv.invoice_id !== invoice.invoice_id
+              (inv) => inv.invoice_id !== deleteInvoice.invoice_id
             );
 
             // Check if this is the last invoice created by the estimate
@@ -1220,39 +1734,136 @@ class InvoiceController {
               estimate.invoiced_amount = null;
               estimate.invoiced_amount_formatted = null;
 
-              // Optionally, clear current_sub_status and current_sub_status_formatted
+              // Clear current_sub_status fields
               estimate.current_sub_status = null;
               estimate.current_sub_status_formatted = null;
             }
 
+            // Add audit fields to estimate
+            estimate.last_modified_by_id = res.locals.user_id;
+            estimate.updated_at = new Date();
+
             // Save the updated estimate
             await estimate.save();
-          } else {
-            console.warn(`Estimate with ID ${invoice.estimate_id} not found.`);
+            console.log(`Estimate ${deleteInvoice.estimate_id} updated successfully`);
           }
-        } else {
-          console.warn(
-            `Invalid estimate_id (${invoice.estimate_id}) for invoice ${invoice.invoice_id}. Skipping estimate update.`
-          );
         }
-      } else {
-        console.log("This is a direct invoice. No estimate to update.");
+      } catch (estimateError) {
+        console.error("Error updating estimate:", estimateError);
+        // Don't fail the entire operation if estimate update fails
       }
-
-      // Success Response
-      return res.status(200).json({
-        code: 0,
-        message: "Invoice deleted successfully", // Soft delete
-        invoice: invoice,
-      });
-    } catch (error) {
-      console.error("deleteInvoice Error:", error.message);
-      return res.status(500).json({
-        code: 1,
-        message: "Internal Server Error: Unable to delete invoice",
-      });
     }
+
+    // Handle salesorder update if this is a converted invoice
+    if (deleteInvoice.salesorder_id) {
+      try {
+        const salesorder = await SalesOrderCollection.findOne({
+          salesorder_id: deleteInvoice.salesorder_id,
+          organization_id: org_id,
+          deleted_at: null,
+        });
+
+        if (salesorder) {
+          // Remove the deleted invoice's ID from the invoice_ids array
+          salesorder.invoice_ids = salesorder.invoice_ids.filter(
+            (id) => id !== deleteInvoice.invoice_id
+          );
+
+          // Remove the deleted invoice's details from the invoices array
+          salesorder.invoices = salesorder.invoices.filter(
+            (inv) => inv.invoice_id !== deleteInvoice.invoice_id
+          );
+
+          // Update status if no more invoices
+          if (salesorder.invoice_ids.length === 0) {
+            salesorder.status = salesorder.current_sub_status || "draft";
+            salesorder.status_formatted =
+              salesorder.current_sub_status_formatted || "Draft";
+          }
+
+          // Add audit fields
+          salesorder.last_modified_by_id = res.locals.user_id;
+          salesorder.updated_at = new Date();
+
+          await salesorder.save();
+          console.log(`Sales Order ${deleteInvoice.salesorder_id} updated successfully`);
+        }
+      } catch (salesorderError) {
+        console.error("Error updating sales order:", salesorderError);
+      }
+    }
+
+    // Handle delivery challan update if this is a converted invoice
+    if (deleteInvoice.deliverychallan_id) {
+      try {
+        const deliverychallan = await DeliveryChallanCollection.findOne({
+          deliverychallan_id: deleteInvoice.deliverychallan_id,
+          organization_id: org_id,
+          deleted_at: null,
+        });
+
+        if (deliverychallan) {
+          // Remove the deleted invoice's ID from the invoice_ids array
+          deliverychallan.invoice_ids = deliverychallan.invoice_ids.filter(
+            (id) => id !== deleteInvoice.invoice_id
+          );
+
+          // Remove the deleted invoice's details from the invoices array
+          deliverychallan.invoices = deliverychallan.invoices.filter(
+            (inv) => inv.invoice_id !== deleteInvoice.invoice_id
+          );
+
+          // Update status if no more invoices
+          if (deliverychallan.invoice_ids.length === 0) {
+            deliverychallan.status = deliverychallan.current_sub_status || "draft";
+            deliverychallan.status_formatted =
+              deliverychallan.current_sub_status_formatted || "Draft";
+          }
+
+          // Add audit fields
+          deliverychallan.last_modified_by_id = res.locals.user_id;
+          deliverychallan.updated_at = new Date();
+
+          await deliverychallan.save();
+          console.log(`Delivery Challan ${deleteInvoice.deliverychallan_id} updated successfully`);
+        }
+      } catch (challanError) {
+        console.error("Error updating delivery challan:", challanError);
+      }
+    }
+
+    // Log user activity
+    await userActivityHelper(
+      res.locals.user_id,
+      org_id,
+      deleteInvoice.customer_id,
+      `Invoice deleted for ${formatCurrency(deleteInvoice.total || 0)}`,
+      "Invoice deleted",
+      deleteInvoice.invoice_id,
+      "Invoice"
+    );
+
+    console.log("Invoice and Journal deleted successfully:", {
+      invoice_id: invoice_id,
+      journal_id: journal_id,
+      organization_id: org_id,
+      admin_id: res.locals.user_id,
+    });
+
+    return res.status(ST_CODES.OK).json({
+      success: true,
+      message: "Invoice deleted successfully",
+      data: deleteInvoice,
+    });
+
+  } catch (error) {
+    console.log("Error in Invoice delete", error);
+    return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: "Internal Server Error: Unable to delete invoice. Please try again later.",
+    });
   }
+}
   // 📌 get invoice unique Id
   async getUniqueId(req, res) {
     try {
