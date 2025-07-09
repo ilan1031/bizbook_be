@@ -3,6 +3,13 @@ const Schema = mongoose.Schema;
 
 // Define the LineItem schema
 const LineItemSchema = new Schema({
+  admin_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "user",
+  },
+  organization_id: {
+    type: Number,
+  },
   line_item_id: { type: String },
   item_id: { type: String },
   item_order: { type: Number },
@@ -113,6 +120,7 @@ const ContactPersonSchema = new Schema({
 // Define the Invoice schema
 const RecurringInvoiceSchema = new Schema({
   // organization_id: { type: String , required: true, default: "" },
+  admin_id: { type: String },
   recurring_number: { type: String },
   date: { type: String },
   date_formatted: { type: String },
