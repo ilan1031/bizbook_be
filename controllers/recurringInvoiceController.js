@@ -358,6 +358,96 @@ class RecurringInvoiceController {
         attention: bData.shipping_address?.attention || "",
       };
 
+      // Create Journal Line Items for recurring invoice
+      const Journal_line_items = [
+        {
+          coa_account_id: "AC_046",
+          coa_account_name: "Sales",
+          creditOrDebit: "Credit",
+          amount: bData.sub_total || 0,
+          amount_formatted: formatCurrency(bData.sub_total || 0),
+        },
+      ];
+
+      // Add tax-specific entry
+      if (bData.tax_type === "TCS" && bData.tax_total > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_025",
+          coa_account_name: "TCS Payable",
+          creditOrDebit: "Credit",
+          amount: bData.tax_total,
+          amount_formatted: formatCurrency(bData.tax_total),
+        });
+      } else if (bData.tax_type === "TDS" && bData.tax_total > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_006",
+          coa_account_name: "TDS Receivable",
+          creditOrDebit: "Debit",
+          amount: bData.tax_total,
+          amount_formatted: formatCurrency(bData.tax_total),
+        });
+      }
+
+      // Add discount if any
+      if (bData.discount_amount > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_050",
+          coa_account_name: "Discount",
+          creditOrDebit: "Debit",
+          amount: bData.discount_amount,
+          amount_formatted: formatCurrency(bData.discount_amount),
+        });
+      }
+
+      // Add shipping charge if any
+      if (bData.shipping_charge > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_051",
+          coa_account_name: "Shipping Charges",
+          creditOrDebit: "Credit",
+          amount: bData.shipping_charge,
+          amount_formatted: formatCurrency(bData.shipping_charge),
+        });
+      }
+
+      // Add adjustment if any
+      if (bData.adjustment !== 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_044",
+          coa_account_name: "Other Charges",
+          creditOrDebit: bData.adjustment > 0 ? "Credit" : "Debit",
+          amount: Math.abs(bData.adjustment),
+          amount_formatted: formatCurrency(Math.abs(bData.adjustment)),
+        });
+      }
+
+      // Final receivable entry
+      Journal_line_items.push({
+        coa_account_id: "AC_019",
+        coa_account_name: "Accounts Receivable",
+        creditOrDebit: "Debit",
+        amount: bData.total,
+        amount_formatted: formatCurrency(bData.total),
+      });
+
+      // Create journal data
+      const journalData = {
+        organization_id: organization_id,
+        admin_id: admin_id,
+        journal_id: journalUniqueId,
+        journal_date: bData.date,
+        journal_date_formatted: bData.date_formatted,
+        total_amount: bData.total,
+        total_amount_formatted: formatCurrency(bData.total),
+        type: "Recurring Invoice",
+        customer_name: bData.customer_name,
+        line_items: Journal_line_items,
+      };
+
+      // Save journal entry
+      const savedJournal = await JournalCollection.create(journalData);
+      console.log("Journal entry created for recurring invoice:", savedJournal);
+
       // Create comment
       const commentData = {
         comment_id: await commonHelper.generateUniqueId(
@@ -451,6 +541,7 @@ class RecurringInvoiceController {
         code: 0,
         message: "Recurring invoice created successfully",
         data: result.msg,
+        journalData: savedJournal,
       });
     } catch (err) {
       console.error("Create Recurring Invoice Error:", err);
@@ -1911,6 +2002,27 @@ class RecurringInvoiceController {
         sentiment: "negative",
       };
 
+      // Delete the corresponding journal entry if it exists
+      let deletedJournal = null;
+      if (existingInvoice.journal_id) {
+        try {
+          console.log("Deleting journal entry:", existingInvoice.journal_id);
+          deletedJournal = await JournalCollection.findOneAndDelete({
+            journal_id: existingInvoice.journal_id
+          });
+          
+          if (deletedJournal) {
+            console.log("Journal entry deleted successfully:", existingInvoice.journal_id);
+          } else {
+            console.warn("Journal entry not found for deletion:", existingInvoice.journal_id);
+          }
+        } catch (journalError) {
+          console.error("Journal deletion error:", journalError);
+          // Continue with invoice deletion even if journal deletion fails
+          deletedJournal = null;
+        }
+      }
+
       // Execute the soft delete with comment addition
       try {
         const updateResult = await RecurringInvoiceCollection.findOneAndUpdate(
@@ -1921,7 +2033,7 @@ class RecurringInvoiceController {
           },
           {
             $set: updateData,
-            $push: { comments: commentData }, // Use comments instead of history
+            $push: { comments: commentData },
           },
           { new: true }
         ).lean();
@@ -1936,7 +2048,14 @@ class RecurringInvoiceController {
 
         return res.status(200).json({
           code: 0,
-          message: "Recurring invoice deleted successfully",
+          message: "Recurring invoice and journal entry deleted successfully",
+          data: {
+            deleted_invoice: updateResult,
+            deleted_journal: deletedJournal ? {
+              journal_id: deletedJournal.journal_id,
+              deleted_at: currentDate
+            } : null
+          }
         });
       } catch (dbError) {
         console.error("Database Delete Error:", dbError);
