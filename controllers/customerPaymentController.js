@@ -1046,6 +1046,9 @@ class CustomerPaymentController {
         {},
       ];
 
+      // Check if there are actual changes before proceeding
+      let hasChanges = false;
+      
       basicFields.forEach((field) => {
         if (
           updateData[field] !== undefined &&
@@ -1057,8 +1060,18 @@ class CustomerPaymentController {
             old_value: existingPayment[field],
             new_value: updateData[field],
           });
+          hasChanges = true;
         }
       });
+
+      // If no changes detected, return early
+      if (!hasChanges && (!updateData.invoices || updateData.invoices.length === 0)) {
+        return res.status(200).json({
+          code: 0,
+          message: "No changes detected, payment not updated",
+          data: existingPayment,
+        });
+      }
 
       // Handle invoices updates - the most complex part
       if (

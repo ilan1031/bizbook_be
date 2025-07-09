@@ -17,6 +17,14 @@ const numWords = require("num-words");
 
 require("dotenv").config();
 
+const formatCurrency = (amount) => {
+  if (amount === undefined || amount === null) return "₹0.00";
+  return `₹${Number(amount).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+};
+
 function numberToWordsINR(num) {
   if (typeof num !== "number") return "";
   const integerPart = Math.floor(num);
@@ -1044,6 +1052,10 @@ class RecurringInvoiceController {
   // 📌update Recurring Invoice
   async updateRecurringInvoice(req, res) {
     try {
+      console.log("=== UPDATE RECURRING INVOICE STARTED ===");
+      console.log("Request body:", JSON.stringify(req.body, null, 2));
+      console.log("Query params:", req.query);
+      
       const bData = req.body;
       const { organization_id, recurring_invoice_id } = req.query;
       const admin_id = res.locals.user_id;
@@ -1057,6 +1069,7 @@ class RecurringInvoiceController {
       }
 
       // Find the existing recurring invoice
+      console.log("Searching for recurring invoice with:", { organization_id, recurring_invoice_id });
       const existingInvoice = await RecurringInvoiceCollection.findOne({
         organization_id,
         recurring_invoice_id,
@@ -1064,11 +1077,14 @@ class RecurringInvoiceController {
       }).lean();
 
       if (!existingInvoice) {
+        console.log("Recurring invoice not found");
         return res.status(404).json({
           status: false,
           message: "Recurring invoice not found",
         });
       }
+      
+      console.log("Found existing invoice:", existingInvoice.recurring_invoice_id);
 
       // Track changes for comment generation
       const changesTracking = [];
@@ -1658,17 +1674,144 @@ class RecurringInvoiceController {
       }
       bData.comments.push(commentData);
 
+      // Update the journal entry if journal_id exists
+      let updatedJournal = null;
+      if (bData.journal_id && existingInvoice.journal_id) {
+        try {
+          // Calculate journal line items based on updated data
+          const sub_total = Number(bData.sub_total || existingInvoice.sub_total || 0);
+          const discount = Number(bData.discount_amount || existingInvoice.discount_amount || 0);
+          const adjustment = Number(bData.adjustment || existingInvoice.adjustment || 0);
+          const tax_percentage = Number(bData.tax_percentage || existingInvoice.tax_percentage || 0);
+          const tax_type = bData.tax_type || existingInvoice.tax_type || "";
+          
+          // Calculate tax amount
+          const tax_amount = (tax_percentage / 100) * (sub_total - discount);
+          
+          // Calculate total receivable
+          const total_receivable = sub_total - discount + (tax_type === "TCS" ? tax_amount : -tax_amount) + adjustment;
+
+          // Prepare journal line items
+          const Journal_line_items = [
+            {
+              coa_account_id: "AC_046",
+              coa_account_name: "Sales",
+              creditOrDebit: "Credit",
+              amount: sub_total,
+              amount_formatted: formatCurrency(sub_total),
+            },
+          ];
+
+          // Add tax-specific entry
+          if (tax_type === "TCS" && tax_amount > 0) {
+            Journal_line_items.push({
+              coa_account_id: "AC_025",
+              coa_account_name: "TCS Payable",
+              creditOrDebit: "Credit",
+              amount: tax_amount,
+              amount_formatted: formatCurrency(tax_amount),
+            });
+          } else if (tax_type === "TDS" && tax_amount > 0) {
+            Journal_line_items.push({
+              coa_account_id: "AC_006",
+              coa_account_name: "TDS Receivable",
+              creditOrDebit: "Debit",
+              amount: tax_amount,
+              amount_formatted: formatCurrency(tax_amount),
+            });
+          }
+
+          // Add adjustment if any
+          if (adjustment !== 0) {
+            Journal_line_items.push({
+              coa_account_id: "AC_044",
+              coa_account_name: "Other Charges",
+              creditOrDebit: adjustment > 0 ? "Credit" : "Debit",
+              amount: Math.abs(adjustment),
+              amount_formatted: formatCurrency(Math.abs(adjustment)),
+            });
+          }
+
+          // Add discount if any
+          if (discount !== 0) {
+            Journal_line_items.push({
+              coa_account_id: "AC_050",
+              coa_account_name: "Discount",
+              creditOrDebit: "Debit",
+              amount: Math.abs(discount),
+              amount_formatted: formatCurrency(Math.abs(discount)),
+            });
+          }
+
+          // Final receivable entry
+          Journal_line_items.push({
+            coa_account_id: "AC_019",
+            coa_account_name: "Accounts Receivable",
+            creditOrDebit: "Debit",
+            amount: total_receivable,
+            amount_formatted: formatCurrency(total_receivable),
+          });
+
+          // Update journal data
+          const journalUpdateData = {
+            journal_date: bData.date || existingInvoice.date,
+            journal_date_formatted: bData.date_formatted || existingInvoice.date_formatted,
+            total_amount: total_receivable,
+            total_amount_formatted: formatCurrency(total_receivable),
+            customer_name: bData.customer_name || existingInvoice.customer_name,
+            line_items: Journal_line_items,
+          };
+
+          // Update the journal entry
+          updatedJournal = await JournalCollection.findOneAndUpdate(
+            { journal_id: existingInvoice.journal_id },
+            { $set: journalUpdateData },
+            { new: true, runValidators: true }
+          );
+
+          if (!updatedJournal) {
+            console.warn("Journal entry not found for recurring invoice:", existingInvoice.journal_id);
+          }
+        } catch (journalError) {
+          console.error("Journal update error:", journalError);
+          // Continue with invoice update even if journal update fails
+          updatedJournal = null;
+        }
+      }
+
+      // Check if there are actual changes before updating
+      const hasChanges = Object.keys(bData).some(key => {
+        if (key === 'documents' || key === 'comments') return false; // Skip documents and comments comparison
+        try {
+          return JSON.stringify(bData[key]) !== JSON.stringify(existingInvoice[key]);
+        } catch (error) {
+          console.error(`Error comparing field ${key}:`, error);
+          return false; // Skip this field if comparison fails
+        }
+      });
+
       // Execute the update
       try {
-        const updateResult = await RecurringInvoiceCollection.findOneAndUpdate(
-          {
-            organization_id,
-            recurring_invoice_id,
-            deleted_at: null,
-          },
-          { $set: bData },
-          { new: true }
-        ).lean();
+        let updateResult;
+        console.log("Has changes:", hasChanges);
+        if (hasChanges) {
+          // Execute the update only if there are changes
+          console.log("Updating recurring invoice with data:", Object.keys(bData));
+          updateResult = await RecurringInvoiceCollection.findOneAndUpdate(
+            {
+              organization_id,
+              recurring_invoice_id,
+              deleted_at: null,
+            },
+            { $set: bData },
+            { new: true }
+          ).lean();
+          console.log("Update completed successfully");
+        } else {
+          // No changes, return existing invoice
+          updateResult = existingInvoice;
+          console.log(`No changes detected for recurring invoice ${recurring_invoice_id}, skipping update`);
+        }
 
         if (!updateResult) {
           return res.status(404).json({
@@ -1680,8 +1823,9 @@ class RecurringInvoiceController {
 
         return res.status(200).json({
           code: 0,
-          message: "Recurring invoice updated successfully",
+          message: "Recurring invoice and journal updated successfully",
           data: updateResult,
+          journal: updatedJournal,
         });
       } catch (dbError) {
         console.error("Database Update Error:", dbError);
