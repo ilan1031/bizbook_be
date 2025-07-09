@@ -5,45 +5,73 @@ const dayjs = require("dayjs");
 
 class journalController {
   async getAllJournal(req, res) {
-    try {
-      let admin_id = res.locals.user_id;
-      let organization_id = req.query.org_id;
-      const today = dayjs();
-      let from = req.query.from;
-      let to = req.query.to;
-      if (!from || !to) {
-        let fromDate = today.startOf("month");
-        let toDate = today.endOf("month");
-
-        from = fromDate.format("DD-MM-YYYY");
-        to = toDate.format("DD-MM-YYYY");
-      }
-      if (!organization_id) {
-        return res
-          .status(ST_CODES.NOT_FOUND)
-          .json({ message: "Organization ID is required" });
-      }
-      if (!admin_id) {
-        return res
-          .status(ST_CODES.UNAUTHORIZED)
-          .json({ message: "Admin ID is required" });
-      }
-      // Convert DD-MM-YYYY format to Date objects for MongoDB query
-      const fromDate = dayjs.utc(from, "DD-MM-YYYY").startOf("day").toDate();
-      const toDate = dayjs.utc(to, "DD-MM-YYYY").endOf("day").toDate();
-      let journal = await JournalCollection.find({
-        organization_id: organization_id,
-        admin_id: admin_id,
-        createdAt: {
-          $gte: fromDate,
-          $lte: toDate,
-        },
-      }).sort({ createdAt: -1 });
-      res.status(ST_CODES.OK).send({ data: journal });
-    } catch (error) {
-      console.log("The error is getting all journal", error);
+  try {
+    let admin_id = res.locals.user_id;
+    let organization_id = req.query.org_id;
+    const today = dayjs();
+    let from = req.query.from;
+    let to = req.query.to;
+    
+    // Pagination parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    
+    if (!from || !to) {
+      let fromDate = today.startOf("month");
+      let toDate = today.endOf("month");
+      from = fromDate.format("DD-MM-YYYY");
+      to = toDate.format("DD-MM-YYYY");
     }
-  } 
+    
+    if (!organization_id) {
+      return res
+        .status(ST_CODES.NOT_FOUND)
+        .json({ message: "Organization ID is required" });
+    }
+    
+    if (!admin_id) {
+      return res
+        .status(ST_CODES.UNAUTHORIZED)
+        .json({ message: "Admin ID is required" });
+    }
+    
+    const fromDate = dayjs(from, "DD-MM-YYYY").startOf("day").toDate();
+    const toDate = dayjs(to, "DD-MM-YYYY").endOf("day").toDate();
+    
+    const query = {
+      organization_id: organization_id,
+      admin_id: admin_id,
+      createdAt: {
+        $gte: fromDate,
+        $lte: toDate,
+      },
+    };
+    
+    const [journal, totalCount] = await Promise.all([
+      JournalCollection.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      JournalCollection.countDocuments(query)
+    ]);
+    
+    res.status(ST_CODES.OK).send({ 
+      data: journal,
+      count: journal.length, // Current page count
+      totalCount: totalCount, // Total documents count
+      page: page,
+      totalPages: Math.ceil(totalCount / limit)
+    });
+    
+  } catch (error) {
+    console.log("The error is getting all journal", error);
+    return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ 
+      message: "Failed to retrieve journal data",
+      error: error.message 
+    });
+  }
+}
 
   async getIndividualJournal(req, res) {
     try {

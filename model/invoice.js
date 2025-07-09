@@ -112,6 +112,13 @@ const ContactPersonSchema = new Schema({
 
 // Define the Invoice schema
 const InvoiceSchema = new Schema({
+      admin_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "user",
+      },
+      organization_id: {
+        type: Number,
+      },
   // organization_id: { type: String , required: true, default: "" },
   invoice_id: { type: String },
   journal_id: { type: String },
