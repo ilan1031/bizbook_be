@@ -1,5 +1,6 @@
 // invoiceController.js
 const mongoose = require("mongoose");
+const JournalCollection = mongoose.model("Journal");
 const RecurringInvoiceCollection = require("../model/recurringInvoice");
 const InvoiceCollection = require("../model/invoice");
 const SalesOrderCollection = require("../model/salesOrder");
@@ -30,7 +31,11 @@ class RecurringInvoiceController {
   async createRecurringInvoice(req, res) {
     try {
       const bData = req.body;
-
+      const admin_id = res.locals.user_id;
+      const organization_id = req.query.organization_id;
+      console.log(organization_id, "organization_id");
+      console.log(admin_id, "admin_id");
+      
       let documents = req.body.documents;
       if (req.file) {
         documents = req.file.filename;
@@ -38,7 +43,7 @@ class RecurringInvoiceController {
 
       bData.documents = documents;
 
-      const { organization_id } = req.query;
+      // const { organization_id } = req.query;
 
       // Add debug logging
       console.log("Received recurrence_frequency:", bData.recurrence_frequency);
@@ -51,6 +56,8 @@ class RecurringInvoiceController {
           message: "Organization ID is required",
         });
       }
+
+
 
       // Check if customer data exists
       if (!bData.customer_id && !bData.customer_name) {
@@ -66,6 +73,7 @@ class RecurringInvoiceController {
         "recurring_invoice_id"
       );
       bData.recurring_invoice_id = invoiceId;
+      console.log("Generated recurring_invoice_id:", invoiceId);
 
       // Generate invoice number if not provided
       if (!bData.recurring_number) {
@@ -138,9 +146,19 @@ class RecurringInvoiceController {
       const nextBillDate = startDate.clone().add(repeatEvery, frequency);
       bData.next_invoice_date = nextBillDate.format("YYYY-MM-DD");
 
+      // Generate journal_id for recurring invoice
+      let journalUniqueId = await commonHelper.generateUniqueId(
+        JournalCollection,
+        "journal_id",
+        5,
+        "JL"
+      );
+
       // Metadata fields
-      bData.created_by_id = res.locals.user_id;
-      bData.last_modified_by_id = res.locals.user_id;
+      bData.admin_id = admin_id;
+      bData.created_by_id = admin_id;
+      bData.last_modified_by_id = admin_id;
+      bData.journal_id = journalUniqueId; // Set the generated journal_id
       bData.status = bData.status || "draft";
       bData.status_formatted = bData.status_formatted || "Draft";
       bData.organization_id = organization_id;
@@ -341,7 +359,7 @@ class RecurringInvoiceController {
           "CMT"
         ),
         description: `Recurring invoice created ${bData.total_formatted}`,
-        commented_by_id: res.locals.user_id,
+        commented_by_id: admin_id,
         commented_by: bData.customer_name || res.locals.user_name || "System",
         comment_type: "system",
         date: currentDate.toISOString(),
@@ -363,6 +381,14 @@ class RecurringInvoiceController {
       bData.comments.push(commentData);
 
       // Insert into DB
+      console.log("Inserting recurring invoice with data:", {
+        recurring_invoice_id: bData.recurring_invoice_id,
+        organization_id: bData.organization_id,
+        admin_id: bData.admin_id,
+        created_by_id: bData.created_by_id,
+        last_modified_by_id: bData.last_modified_by_id
+      });
+      
       const result = await queryHelper.insertData(
         RecurringInvoiceCollection,
         bData
@@ -374,6 +400,9 @@ class RecurringInvoiceController {
           message: result.msg || "Failed to create recurring invoice",
         });
       }
+      
+      console.log("Recurring invoice created successfully:", result.msg);
+      console.log("Full result data:", JSON.stringify(result.msg, null, 2));
 
       // Now create a regular invoice using the same data
       try {
@@ -385,7 +414,17 @@ class RecurringInvoiceController {
           throw new Error("Authentication token not found");
         }
 
-        const invoiceResponse = await axios.post(invoiceCreateUrl, bData, {
+        // Add admin and organization details to the invoice data
+        const invoiceData = {
+          ...bData,
+          admin_id: admin_id,
+          organization_id: organization_id,
+          journal_id: journalUniqueId, // Use the generated journal_id
+          created_by_id: admin_id,
+          last_modified_by_id: admin_id,
+        };
+
+        const invoiceResponse = await axios.post(invoiceCreateUrl, invoiceData, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -436,6 +475,12 @@ class RecurringInvoiceController {
       const limitNum = parseInt(limit, 10);
       const skip = (pageNum - 1) * limitNum;
       // Find recurring invoice with proper error handling
+      console.log("Searching for recurring invoice with:", {
+        organization_id,
+        recurring_invoice_id,
+        deleted_at: null
+      });
+      
       let recurringInvoice;
       try {
         recurringInvoice = await RecurringInvoiceCollection.findOne({
@@ -443,6 +488,16 @@ class RecurringInvoiceController {
           recurring_invoice_id,
           deleted_at: null,
         }).lean();
+        
+        console.log("Query result:", recurringInvoice ? "Found" : "Not found");
+        if (recurringInvoice) {
+          console.log("Recurring invoice data from DB:", {
+            admin_id: recurringInvoice.admin_id,
+            created_by_id: recurringInvoice.created_by_id,
+            last_modified_by_id: recurringInvoice.last_modified_by_id,
+            organization_id: recurringInvoice.organization_id
+          });
+        }
       } catch (dbError) {
         console.error("Database Error:", dbError);
         return res.status(500).json({
@@ -451,6 +506,10 @@ class RecurringInvoiceController {
         });
       }
       if (!recurringInvoice) {
+        console.log("Recurring invoice not found. Query params:", {
+          organization_id,
+          recurring_invoice_id
+        });
         return res.status(404).json({
           code: 1,
           message: "Recurring invoice not found or unauthorized access",
@@ -579,7 +638,9 @@ class RecurringInvoiceController {
         }
       }
       const responseData = {
+        admin_id: recurringInvoice.admin_id,
         recurring_invoice_id: recurringInvoice.recurring_invoice_id,
+        journal_id: recurringInvoice.journal_id || "", // Add journal_id to response
         status: recurringInvoice.status,
         status_formatted: recurringInvoice.status_formatted,
         next_invoice_date: recurringInvoice.next_invoice_date,
@@ -658,6 +719,10 @@ class RecurringInvoiceController {
         },
         customer_Data: customerDetails,
       };
+      
+      console.log("Response data admin_id:", responseData.admin_id);
+      console.log("Full response data keys:", Object.keys(responseData));
+      
       return res.status(200).json({
         code: 0,
         message: "Recurring invoice retrieved successfully",
@@ -752,6 +817,7 @@ class RecurringInvoiceController {
       // Fetch specific fields
       const projection = {
         _id: 1,
+        admin_id: 1,
         recurring_invoice_id: 1,
         customer_id: 1,
         customer_name: 1,
@@ -894,12 +960,14 @@ class RecurringInvoiceController {
           }
 
           return {
-            recurring_invoice_id:
-              recurringInvoiceData.recurring_invoice_id || "",
-            _id: recurringInvoiceData._id || "",
-            customer_id: recurringInvoiceData.customer_id || "",
-            customer_name: customer_name,
-            company_name: company_name,
+                    admin_id: recurringInvoiceData.admin_id || "",
+        recurring_invoice_id:
+          recurringInvoiceData.recurring_invoice_id || "",
+        journal_id: recurringInvoiceData.journal_id || "", // Add journal_id to list response
+        _id: recurringInvoiceData._id || "",
+        customer_id: recurringInvoiceData.customer_id || "",
+        customer_name: customer_name,
+        company_name: company_name,
             status: recurringInvoiceData.status || "",
             status_formatted: recurringInvoiceData.status_formatted || "",
             recurrence_status: recurrenceStatus,
@@ -978,6 +1046,7 @@ class RecurringInvoiceController {
     try {
       const bData = req.body;
       const { organization_id, recurring_invoice_id } = req.query;
+      const admin_id = res.locals.user_id;
 
       // Validate required fields
       if (!organization_id || !recurring_invoice_id) {
@@ -1079,8 +1148,26 @@ class RecurringInvoiceController {
       }
 
       // Update metadata fields
-      bData.last_modified_by_id = res.locals.user_id;
+      bData.last_modified_by_id = admin_id;
       bData.last_modified_time = currentDate;
+      
+      // Generate new journal_id for update if needed
+      if (bData.journal_id === undefined || bData.journal_id === "") {
+        let journalUniqueId = await commonHelper.generateUniqueId(
+          JournalCollection,
+          "journal_id",
+          5,
+          "JL"
+        );
+        bData.journal_id = journalUniqueId;
+        changesTracking.push(
+          `Journal ID generated: ${journalUniqueId}`
+        );
+      } else if (bData.journal_id !== existingInvoice.journal_id) {
+        changesTracking.push(
+          `Journal ID changed from ${existingInvoice.journal_id || "Not set"} to ${bData.journal_id}`
+        );
+      }
 
       // If status is being updated, format it properly and track change
       if (bData.status) {
@@ -1546,7 +1633,7 @@ class RecurringInvoiceController {
           "CMT"
         ),
         description: commentDescription,
-        commented_by_id: res.locals.user_id,
+        commented_by_id: admin_id,
         commented_by: res.locals.user_name || "System",
         comment_type: "system",
         date: currentDate.toISOString(),
@@ -1617,6 +1704,7 @@ class RecurringInvoiceController {
   async deleteRecurringInvoice(req, res) {
     try {
       const { organization_id, recurring_invoice_id } = req.query;
+      const admin_id = res.locals.user_id;
 
       // Validate required parameters
       if (!organization_id || !recurring_invoice_id) {
@@ -1648,7 +1736,7 @@ class RecurringInvoiceController {
         deleted_at: currentDate,
         status: "deleted",
         status_formatted: "Deleted",
-        last_modified_by_id: res.locals.user_id,
+        last_modified_by_id: admin_id,
         last_modified_time: currentDate,
       };
 
@@ -1661,7 +1749,7 @@ class RecurringInvoiceController {
           "CMT"
         ),
         description: `Recurring invoice deleted ${existingInvoice.total_formatted}`,
-        commented_by_id: res.locals.user_id,
+        commented_by_id: admin_id,
         commented_by: res.locals.user_name || "System",
         comment_type: "system",
         date: currentDate.toISOString(),
@@ -1689,7 +1777,7 @@ class RecurringInvoiceController {
           },
           {
             $set: updateData,
-            $push: { history: commentData },
+            $push: { comments: commentData }, // Use comments instead of history
           },
           { new: true }
         ).lean();
