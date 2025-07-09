@@ -1112,25 +1112,12 @@ class InvoiceController {
         });
       }
 
-      // Check if there are actual changes before updating
-      const hasChanges = Object.keys(updateData).some(key => {
-        if (key === 'documents') return false; // Skip documents comparison
-        return JSON.stringify(updateData[key]) !== JSON.stringify(invoice[key]);
-      });
-
-      let updatedInvoice;
-      if (hasChanges) {
-        // ✅ Update the invoice only if there are changes
-        updatedInvoice = await InvoiceCollection.findOneAndUpdate(
-          { invoice_id, organization_id },
-          { $set: updateData },
-          { new: true }
-        );
-      } else {
-        // No changes, return existing invoice
-        updatedInvoice = invoice;
-        console.log(`No changes detected for invoice ${invoice_id}, skipping update`);
-      }
+      // ✅ Update the invoice
+      let updatedInvoice = await InvoiceCollection.findOneAndUpdate(
+        { invoice_id, organization_id },
+        { $set: updateData },
+        { new: true }
+      );
 
       if (!updatedInvoice) {
         return res.status(404).json({
