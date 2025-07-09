@@ -1065,13 +1065,13 @@ class CustomerPaymentController {
       });
 
       // If no changes detected, return early
-      if (!hasChanges && (!updateData.invoices || updateData.invoices.length === 0)) {
-        return res.status(200).json({
-          code: 0,
-          message: "No changes detected, payment not updated",
-          data: existingPayment,
-        });
-      }
+      // if (!hasChanges && (!updateData.invoices || updateData.invoices.length === 0)) {
+      //   return res.status(200).json({
+      //     code: 0,
+      //     message: "No changes detected, payment not updated",
+      //     data: existingPayment,
+      //   });
+      // }
 
       // Handle invoices updates - the most complex part
       if (
