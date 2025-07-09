@@ -166,6 +166,7 @@ const RecurringInvoiceSchema = new Schema({
   is_progress_invoice: { type: Boolean, default: false },
   line_items: [LineItemSchema],
   credits: [{ type: Object }],
+  journal_id: String,
   journal_credits: [{ type: Object }],
   exchange_rate: { type: Number, default: 1 },
   is_autobill_enabled: { type: Boolean, default: false },

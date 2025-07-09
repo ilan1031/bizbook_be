@@ -1,5 +1,6 @@
 // invoiceController.js
 const mongoose = require("mongoose");
+const JournalCollection = mongoose.model("Journal");
 const RecurringInvoiceCollection = require("../model/recurringInvoice");
 const InvoiceCollection = require("../model/invoice");
 const SalesOrderCollection = require("../model/salesOrder");
@@ -145,10 +146,19 @@ class RecurringInvoiceController {
       const nextBillDate = startDate.clone().add(repeatEvery, frequency);
       bData.next_invoice_date = nextBillDate.format("YYYY-MM-DD");
 
+      // Generate journal_id for recurring invoice
+      let journalUniqueId = await commonHelper.generateUniqueId(
+        JournalCollection,
+        "journal_id",
+        5,
+        "JL"
+      );
+
       // Metadata fields
       bData.admin_id = admin_id;
       bData.created_by_id = admin_id;
       bData.last_modified_by_id = admin_id;
+      bData.journal_id = journalUniqueId; // Set the generated journal_id
       bData.status = bData.status || "draft";
       bData.status_formatted = bData.status_formatted || "Draft";
       bData.organization_id = organization_id;
@@ -409,6 +419,7 @@ class RecurringInvoiceController {
           ...bData,
           admin_id: admin_id,
           organization_id: organization_id,
+          journal_id: journalUniqueId, // Use the generated journal_id
           created_by_id: admin_id,
           last_modified_by_id: admin_id,
         };
@@ -629,6 +640,7 @@ class RecurringInvoiceController {
       const responseData = {
         admin_id: recurringInvoice.admin_id,
         recurring_invoice_id: recurringInvoice.recurring_invoice_id,
+        journal_id: recurringInvoice.journal_id || "", // Add journal_id to response
         status: recurringInvoice.status,
         status_formatted: recurringInvoice.status_formatted,
         next_invoice_date: recurringInvoice.next_invoice_date,
@@ -948,13 +960,14 @@ class RecurringInvoiceController {
           }
 
           return {
-            admin_id: recurringInvoiceData.admin_id || "",
-            recurring_invoice_id:
-              recurringInvoiceData.recurring_invoice_id || "",
-            _id: recurringInvoiceData._id || "",
-            customer_id: recurringInvoiceData.customer_id || "",
-            customer_name: customer_name,
-            company_name: company_name,
+                    admin_id: recurringInvoiceData.admin_id || "",
+        recurring_invoice_id:
+          recurringInvoiceData.recurring_invoice_id || "",
+        journal_id: recurringInvoiceData.journal_id || "", // Add journal_id to list response
+        _id: recurringInvoiceData._id || "",
+        customer_id: recurringInvoiceData.customer_id || "",
+        customer_name: customer_name,
+        company_name: company_name,
             status: recurringInvoiceData.status || "",
             status_formatted: recurringInvoiceData.status_formatted || "",
             recurrence_status: recurrenceStatus,
@@ -1137,6 +1150,24 @@ class RecurringInvoiceController {
       // Update metadata fields
       bData.last_modified_by_id = admin_id;
       bData.last_modified_time = currentDate;
+      
+      // Generate new journal_id for update if needed
+      if (bData.journal_id === undefined || bData.journal_id === "") {
+        let journalUniqueId = await commonHelper.generateUniqueId(
+          JournalCollection,
+          "journal_id",
+          5,
+          "JL"
+        );
+        bData.journal_id = journalUniqueId;
+        changesTracking.push(
+          `Journal ID generated: ${journalUniqueId}`
+        );
+      } else if (bData.journal_id !== existingInvoice.journal_id) {
+        changesTracking.push(
+          `Journal ID changed from ${existingInvoice.journal_id || "Not set"} to ${bData.journal_id}`
+        );
+      }
 
       // If status is being updated, format it properly and track change
       if (bData.status) {
@@ -1746,7 +1777,7 @@ class RecurringInvoiceController {
           },
           {
             $set: updateData,
-            $push: { history: commentData },
+            $push: { comments: commentData }, // Use comments instead of history
           },
           { new: true }
         ).lean();
