@@ -1,5 +1,6 @@
 // invoiceController.js
 const mongoose = require("mongoose");
+const JournalCollection = mongoose.model("Journal");
 const RecurringInvoiceCollection = require("../model/recurringInvoice");
 const InvoiceCollection = require("../model/invoice");
 const SalesOrderCollection = require("../model/salesOrder");
@@ -16,6 +17,14 @@ const numWords = require("num-words");
 
 require("dotenv").config();
 
+const formatCurrency = (amount) => {
+  if (amount === undefined || amount === null) return "₹0.00";
+  return `₹${Number(amount).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+};
+
 function numberToWordsINR(num) {
   if (typeof num !== "number") return "";
   const integerPart = Math.floor(num);
@@ -30,7 +39,11 @@ class RecurringInvoiceController {
   async createRecurringInvoice(req, res) {
     try {
       const bData = req.body;
-
+      const admin_id = res.locals.user_id;
+      const organization_id = req.query.organization_id;
+      console.log(organization_id, "organization_id");
+      console.log(admin_id, "admin_id");
+      
       let documents = req.body.documents;
       if (req.file) {
         documents = req.file.filename;
@@ -38,7 +51,7 @@ class RecurringInvoiceController {
 
       bData.documents = documents;
 
-      const { organization_id } = req.query;
+      // const { organization_id } = req.query;
 
       // Add debug logging
       console.log("Received recurrence_frequency:", bData.recurrence_frequency);
@@ -51,6 +64,8 @@ class RecurringInvoiceController {
           message: "Organization ID is required",
         });
       }
+
+
 
       // Check if customer data exists
       if (!bData.customer_id && !bData.customer_name) {
@@ -66,6 +81,7 @@ class RecurringInvoiceController {
         "recurring_invoice_id"
       );
       bData.recurring_invoice_id = invoiceId;
+      console.log("Generated recurring_invoice_id:", invoiceId);
 
       // Generate invoice number if not provided
       if (!bData.recurring_number) {
@@ -138,9 +154,19 @@ class RecurringInvoiceController {
       const nextBillDate = startDate.clone().add(repeatEvery, frequency);
       bData.next_invoice_date = nextBillDate.format("YYYY-MM-DD");
 
+      // Generate journal_id for recurring invoice
+      let journalUniqueId = await commonHelper.generateUniqueId(
+        JournalCollection,
+        "journal_id",
+        5,
+        "JL"
+      );
+
       // Metadata fields
-      bData.created_by_id = res.locals.user_id;
-      bData.last_modified_by_id = res.locals.user_id;
+      bData.admin_id = admin_id;
+      bData.created_by_id = admin_id;
+      bData.last_modified_by_id = admin_id;
+      bData.journal_id = journalUniqueId; // Set the generated journal_id
       bData.status = bData.status || "draft";
       bData.status_formatted = bData.status_formatted || "Draft";
       bData.organization_id = organization_id;
@@ -332,6 +358,96 @@ class RecurringInvoiceController {
         attention: bData.shipping_address?.attention || "",
       };
 
+      // Create Journal Line Items for recurring invoice
+      const Journal_line_items = [
+        {
+          coa_account_id: "AC_046",
+          coa_account_name: "Sales",
+          creditOrDebit: "Credit",
+          amount: bData.sub_total || 0,
+          amount_formatted: formatCurrency(bData.sub_total || 0),
+        },
+      ];
+
+      // Add tax-specific entry
+      if (bData.tax_type === "TCS" && bData.tax_total > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_025",
+          coa_account_name: "TCS Payable",
+          creditOrDebit: "Credit",
+          amount: bData.tax_total,
+          amount_formatted: formatCurrency(bData.tax_total),
+        });
+      } else if (bData.tax_type === "TDS" && bData.tax_total > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_006",
+          coa_account_name: "TDS Receivable",
+          creditOrDebit: "Debit",
+          amount: bData.tax_total,
+          amount_formatted: formatCurrency(bData.tax_total),
+        });
+      }
+
+      // Add discount if any
+      if (bData.discount_amount > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_050",
+          coa_account_name: "Discount",
+          creditOrDebit: "Debit",
+          amount: bData.discount_amount,
+          amount_formatted: formatCurrency(bData.discount_amount),
+        });
+      }
+
+      // Add shipping charge if any
+      if (bData.shipping_charge > 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_051",
+          coa_account_name: "Shipping Charges",
+          creditOrDebit: "Credit",
+          amount: bData.shipping_charge,
+          amount_formatted: formatCurrency(bData.shipping_charge),
+        });
+      }
+
+      // Add adjustment if any
+      if (bData.adjustment !== 0) {
+        Journal_line_items.push({
+          coa_account_id: "AC_044",
+          coa_account_name: "Other Charges",
+          creditOrDebit: bData.adjustment > 0 ? "Credit" : "Debit",
+          amount: Math.abs(bData.adjustment),
+          amount_formatted: formatCurrency(Math.abs(bData.adjustment)),
+        });
+      }
+
+      // Final receivable entry
+      Journal_line_items.push({
+        coa_account_id: "AC_019",
+        coa_account_name: "Accounts Receivable",
+        creditOrDebit: "Debit",
+        amount: bData.total,
+        amount_formatted: formatCurrency(bData.total),
+      });
+
+      // Create journal data
+      const journalData = {
+        organization_id: organization_id,
+        admin_id: admin_id,
+        journal_id: journalUniqueId,
+        journal_date: bData.date,
+        journal_date_formatted: bData.date_formatted,
+        total_amount: bData.total,
+        total_amount_formatted: formatCurrency(bData.total),
+        type: "Recurring Invoice",
+        customer_name: bData.customer_name,
+        line_items: Journal_line_items,
+      };
+
+      // Save journal entry
+      const savedJournal = await JournalCollection.create(journalData);
+      console.log("Journal entry created for recurring invoice:", savedJournal);
+
       // Create comment
       const commentData = {
         comment_id: await commonHelper.generateUniqueId(
@@ -341,7 +457,7 @@ class RecurringInvoiceController {
           "CMT"
         ),
         description: `Recurring invoice created ${bData.total_formatted}`,
-        commented_by_id: res.locals.user_id,
+        commented_by_id: admin_id,
         commented_by: bData.customer_name || res.locals.user_name || "System",
         comment_type: "system",
         date: currentDate.toISOString(),
@@ -363,6 +479,14 @@ class RecurringInvoiceController {
       bData.comments.push(commentData);
 
       // Insert into DB
+      console.log("Inserting recurring invoice with data:", {
+        recurring_invoice_id: bData.recurring_invoice_id,
+        organization_id: bData.organization_id,
+        admin_id: bData.admin_id,
+        created_by_id: bData.created_by_id,
+        last_modified_by_id: bData.last_modified_by_id
+      });
+      
       const result = await queryHelper.insertData(
         RecurringInvoiceCollection,
         bData
@@ -374,6 +498,9 @@ class RecurringInvoiceController {
           message: result.msg || "Failed to create recurring invoice",
         });
       }
+      
+      console.log("Recurring invoice created successfully:", result.msg);
+      console.log("Full result data:", JSON.stringify(result.msg, null, 2));
 
       // Now create a regular invoice using the same data
       try {
@@ -385,7 +512,17 @@ class RecurringInvoiceController {
           throw new Error("Authentication token not found");
         }
 
-        const invoiceResponse = await axios.post(invoiceCreateUrl, bData, {
+        // Add admin and organization details to the invoice data
+        const invoiceData = {
+          ...bData,
+          admin_id: admin_id,
+          organization_id: organization_id,
+          journal_id: journalUniqueId, // Use the generated journal_id
+          created_by_id: admin_id,
+          last_modified_by_id: admin_id,
+        };
+
+        const invoiceResponse = await axios.post(invoiceCreateUrl, invoiceData, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -404,6 +541,7 @@ class RecurringInvoiceController {
         code: 0,
         message: "Recurring invoice created successfully",
         data: result.msg,
+        journalData: savedJournal,
       });
     } catch (err) {
       console.error("Create Recurring Invoice Error:", err);
@@ -436,6 +574,12 @@ class RecurringInvoiceController {
       const limitNum = parseInt(limit, 10);
       const skip = (pageNum - 1) * limitNum;
       // Find recurring invoice with proper error handling
+      console.log("Searching for recurring invoice with:", {
+        organization_id,
+        recurring_invoice_id,
+        deleted_at: null
+      });
+      
       let recurringInvoice;
       try {
         recurringInvoice = await RecurringInvoiceCollection.findOne({
@@ -443,6 +587,16 @@ class RecurringInvoiceController {
           recurring_invoice_id,
           deleted_at: null,
         }).lean();
+        
+        console.log("Query result:", recurringInvoice ? "Found" : "Not found");
+        if (recurringInvoice) {
+          console.log("Recurring invoice data from DB:", {
+            admin_id: recurringInvoice.admin_id,
+            created_by_id: recurringInvoice.created_by_id,
+            last_modified_by_id: recurringInvoice.last_modified_by_id,
+            organization_id: recurringInvoice.organization_id
+          });
+        }
       } catch (dbError) {
         console.error("Database Error:", dbError);
         return res.status(500).json({
@@ -451,6 +605,10 @@ class RecurringInvoiceController {
         });
       }
       if (!recurringInvoice) {
+        console.log("Recurring invoice not found. Query params:", {
+          organization_id,
+          recurring_invoice_id
+        });
         return res.status(404).json({
           code: 1,
           message: "Recurring invoice not found or unauthorized access",
@@ -579,7 +737,9 @@ class RecurringInvoiceController {
         }
       }
       const responseData = {
+        admin_id: recurringInvoice.admin_id,
         recurring_invoice_id: recurringInvoice.recurring_invoice_id,
+        journal_id: recurringInvoice.journal_id || "", // Add journal_id to response
         status: recurringInvoice.status,
         status_formatted: recurringInvoice.status_formatted,
         next_invoice_date: recurringInvoice.next_invoice_date,
@@ -658,6 +818,10 @@ class RecurringInvoiceController {
         },
         customer_Data: customerDetails,
       };
+      
+      console.log("Response data admin_id:", responseData.admin_id);
+      console.log("Full response data keys:", Object.keys(responseData));
+      
       return res.status(200).json({
         code: 0,
         message: "Recurring invoice retrieved successfully",
@@ -752,6 +916,7 @@ class RecurringInvoiceController {
       // Fetch specific fields
       const projection = {
         _id: 1,
+        admin_id: 1,
         recurring_invoice_id: 1,
         customer_id: 1,
         customer_name: 1,
@@ -894,12 +1059,14 @@ class RecurringInvoiceController {
           }
 
           return {
-            recurring_invoice_id:
-              recurringInvoiceData.recurring_invoice_id || "",
-            _id: recurringInvoiceData._id || "",
-            customer_id: recurringInvoiceData.customer_id || "",
-            customer_name: customer_name,
-            company_name: company_name,
+                    admin_id: recurringInvoiceData.admin_id || "",
+        recurring_invoice_id:
+          recurringInvoiceData.recurring_invoice_id || "",
+        journal_id: recurringInvoiceData.journal_id || "", // Add journal_id to list response
+        _id: recurringInvoiceData._id || "",
+        customer_id: recurringInvoiceData.customer_id || "",
+        customer_name: customer_name,
+        company_name: company_name,
             status: recurringInvoiceData.status || "",
             status_formatted: recurringInvoiceData.status_formatted || "",
             recurrence_status: recurrenceStatus,
@@ -976,8 +1143,13 @@ class RecurringInvoiceController {
   // 📌update Recurring Invoice
   async updateRecurringInvoice(req, res) {
     try {
+      console.log("=== UPDATE RECURRING INVOICE STARTED ===");
+      console.log("Request body:", JSON.stringify(req.body, null, 2));
+      console.log("Query params:", req.query);
+      
       const bData = req.body;
       const { organization_id, recurring_invoice_id } = req.query;
+      const admin_id = res.locals.user_id;
 
       // Validate required fields
       if (!organization_id || !recurring_invoice_id) {
@@ -988,6 +1160,7 @@ class RecurringInvoiceController {
       }
 
       // Find the existing recurring invoice
+      console.log("Searching for recurring invoice with:", { organization_id, recurring_invoice_id });
       const existingInvoice = await RecurringInvoiceCollection.findOne({
         organization_id,
         recurring_invoice_id,
@@ -995,11 +1168,14 @@ class RecurringInvoiceController {
       }).lean();
 
       if (!existingInvoice) {
+        console.log("Recurring invoice not found");
         return res.status(404).json({
           status: false,
           message: "Recurring invoice not found",
         });
       }
+      
+      console.log("Found existing invoice:", existingInvoice.recurring_invoice_id);
 
       // Track changes for comment generation
       const changesTracking = [];
@@ -1079,8 +1255,26 @@ class RecurringInvoiceController {
       }
 
       // Update metadata fields
-      bData.last_modified_by_id = res.locals.user_id;
+      bData.last_modified_by_id = admin_id;
       bData.last_modified_time = currentDate;
+      
+      // Generate new journal_id for update if needed
+      if (bData.journal_id === undefined || bData.journal_id === "") {
+        let journalUniqueId = await commonHelper.generateUniqueId(
+          JournalCollection,
+          "journal_id",
+          5,
+          "JL"
+        );
+        bData.journal_id = journalUniqueId;
+        changesTracking.push(
+          `Journal ID generated: ${journalUniqueId}`
+        );
+      } else if (bData.journal_id !== existingInvoice.journal_id) {
+        changesTracking.push(
+          `Journal ID changed from ${existingInvoice.journal_id || "Not set"} to ${bData.journal_id}`
+        );
+      }
 
       // If status is being updated, format it properly and track change
       if (bData.status) {
@@ -1546,7 +1740,7 @@ class RecurringInvoiceController {
           "CMT"
         ),
         description: commentDescription,
-        commented_by_id: res.locals.user_id,
+        commented_by_id: admin_id,
         commented_by: res.locals.user_name || "System",
         comment_type: "system",
         date: currentDate.toISOString(),
@@ -1571,17 +1765,144 @@ class RecurringInvoiceController {
       }
       bData.comments.push(commentData);
 
+      // Update the journal entry if journal_id exists
+      let updatedJournal = null;
+      if (bData.journal_id && existingInvoice.journal_id) {
+        try {
+          // Calculate journal line items based on updated data
+          const sub_total = Number(bData.sub_total || existingInvoice.sub_total || 0);
+          const discount = Number(bData.discount_amount || existingInvoice.discount_amount || 0);
+          const adjustment = Number(bData.adjustment || existingInvoice.adjustment || 0);
+          const tax_percentage = Number(bData.tax_percentage || existingInvoice.tax_percentage || 0);
+          const tax_type = bData.tax_type || existingInvoice.tax_type || "";
+          
+          // Calculate tax amount
+          const tax_amount = (tax_percentage / 100) * (sub_total - discount);
+          
+          // Calculate total receivable
+          const total_receivable = sub_total - discount + (tax_type === "TCS" ? tax_amount : -tax_amount) + adjustment;
+
+          // Prepare journal line items
+          const Journal_line_items = [
+            {
+              coa_account_id: "AC_046",
+              coa_account_name: "Sales",
+              creditOrDebit: "Credit",
+              amount: sub_total,
+              amount_formatted: formatCurrency(sub_total),
+            },
+          ];
+
+          // Add tax-specific entry
+          if (tax_type === "TCS" && tax_amount > 0) {
+            Journal_line_items.push({
+              coa_account_id: "AC_025",
+              coa_account_name: "TCS Payable",
+              creditOrDebit: "Credit",
+              amount: tax_amount,
+              amount_formatted: formatCurrency(tax_amount),
+            });
+          } else if (tax_type === "TDS" && tax_amount > 0) {
+            Journal_line_items.push({
+              coa_account_id: "AC_006",
+              coa_account_name: "TDS Receivable",
+              creditOrDebit: "Debit",
+              amount: tax_amount,
+              amount_formatted: formatCurrency(tax_amount),
+            });
+          }
+
+          // Add adjustment if any
+          if (adjustment !== 0) {
+            Journal_line_items.push({
+              coa_account_id: "AC_044",
+              coa_account_name: "Other Charges",
+              creditOrDebit: adjustment > 0 ? "Credit" : "Debit",
+              amount: Math.abs(adjustment),
+              amount_formatted: formatCurrency(Math.abs(adjustment)),
+            });
+          }
+
+          // Add discount if any
+          if (discount !== 0) {
+            Journal_line_items.push({
+              coa_account_id: "AC_050",
+              coa_account_name: "Discount",
+              creditOrDebit: "Debit",
+              amount: Math.abs(discount),
+              amount_formatted: formatCurrency(Math.abs(discount)),
+            });
+          }
+
+          // Final receivable entry
+          Journal_line_items.push({
+            coa_account_id: "AC_019",
+            coa_account_name: "Accounts Receivable",
+            creditOrDebit: "Debit",
+            amount: total_receivable,
+            amount_formatted: formatCurrency(total_receivable),
+          });
+
+          // Update journal data
+          const journalUpdateData = {
+            journal_date: bData.date || existingInvoice.date,
+            journal_date_formatted: bData.date_formatted || existingInvoice.date_formatted,
+            total_amount: total_receivable,
+            total_amount_formatted: formatCurrency(total_receivable),
+            customer_name: bData.customer_name || existingInvoice.customer_name,
+            line_items: Journal_line_items,
+          };
+
+          // Update the journal entry
+          updatedJournal = await JournalCollection.findOneAndUpdate(
+            { journal_id: existingInvoice.journal_id },
+            { $set: journalUpdateData },
+            { new: true, runValidators: true }
+          );
+
+          if (!updatedJournal) {
+            console.warn("Journal entry not found for recurring invoice:", existingInvoice.journal_id);
+          }
+        } catch (journalError) {
+          console.error("Journal update error:", journalError);
+          // Continue with invoice update even if journal update fails
+          updatedJournal = null;
+        }
+      }
+
+      // Check if there are actual changes before updating
+      const hasChanges = Object.keys(bData).some(key => {
+        if (key === 'documents' || key === 'comments') return false; // Skip documents and comments comparison
+        try {
+          return JSON.stringify(bData[key]) !== JSON.stringify(existingInvoice[key]);
+        } catch (error) {
+          console.error(`Error comparing field ${key}:`, error);
+          return false; // Skip this field if comparison fails
+        }
+      });
+
       // Execute the update
       try {
-        const updateResult = await RecurringInvoiceCollection.findOneAndUpdate(
-          {
-            organization_id,
-            recurring_invoice_id,
-            deleted_at: null,
-          },
-          { $set: bData },
-          { new: true }
-        ).lean();
+        let updateResult;
+        console.log("Has changes:", hasChanges);
+        if (hasChanges) {
+          // Execute the update only if there are changes
+          console.log("Updating recurring invoice with data:", Object.keys(bData));
+          updateResult = await RecurringInvoiceCollection.findOneAndUpdate(
+            {
+              organization_id,
+              recurring_invoice_id,
+              deleted_at: null,
+            },
+            { $set: bData },
+            { new: true }
+          ).lean();
+          console.log("Update completed successfully");
+        } else {
+          // No changes, return existing invoice
+          updateResult = existingInvoice;
+          console.log(`No changes detected for recurring invoice ${recurring_invoice_id}, skipping update`);
+        }
 
         if (!updateResult) {
           return res.status(404).json({
@@ -1593,8 +1914,9 @@ class RecurringInvoiceController {
 
         return res.status(200).json({
           code: 0,
-          message: "Recurring invoice updated successfully",
+          message: "Recurring invoice and journal updated successfully",
           data: updateResult,
+          journal: updatedJournal,
         });
       } catch (dbError) {
         console.error("Database Update Error:", dbError);
@@ -1617,6 +1939,7 @@ class RecurringInvoiceController {
   async deleteRecurringInvoice(req, res) {
     try {
       const { organization_id, recurring_invoice_id } = req.query;
+      const admin_id = res.locals.user_id;
 
       // Validate required parameters
       if (!organization_id || !recurring_invoice_id) {
@@ -1648,7 +1971,7 @@ class RecurringInvoiceController {
         deleted_at: currentDate,
         status: "deleted",
         status_formatted: "Deleted",
-        last_modified_by_id: res.locals.user_id,
+        last_modified_by_id: admin_id,
         last_modified_time: currentDate,
       };
 
@@ -1661,7 +1984,7 @@ class RecurringInvoiceController {
           "CMT"
         ),
         description: `Recurring invoice deleted ${existingInvoice.total_formatted}`,
-        commented_by_id: res.locals.user_id,
+        commented_by_id: admin_id,
         commented_by: res.locals.user_name || "System",
         comment_type: "system",
         date: currentDate.toISOString(),
@@ -1679,6 +2002,27 @@ class RecurringInvoiceController {
         sentiment: "negative",
       };
 
+      // Delete the corresponding journal entry if it exists
+      let deletedJournal = null;
+      if (existingInvoice.journal_id) {
+        try {
+          console.log("Deleting journal entry:", existingInvoice.journal_id);
+          deletedJournal = await JournalCollection.findOneAndDelete({
+            journal_id: existingInvoice.journal_id
+          });
+          
+          if (deletedJournal) {
+            console.log("Journal entry deleted successfully:", existingInvoice.journal_id);
+          } else {
+            console.warn("Journal entry not found for deletion:", existingInvoice.journal_id);
+          }
+        } catch (journalError) {
+          console.error("Journal deletion error:", journalError);
+          // Continue with invoice deletion even if journal deletion fails
+          deletedJournal = null;
+        }
+      }
+
       // Execute the soft delete with comment addition
       try {
         const updateResult = await RecurringInvoiceCollection.findOneAndUpdate(
@@ -1689,7 +2033,7 @@ class RecurringInvoiceController {
           },
           {
             $set: updateData,
-            $push: { history: commentData },
+            $push: { comments: commentData },
           },
           { new: true }
         ).lean();
@@ -1704,7 +2048,14 @@ class RecurringInvoiceController {
 
         return res.status(200).json({
           code: 0,
-          message: "Recurring invoice deleted successfully",
+          message: "Recurring invoice and journal entry deleted successfully",
+          data: {
+            deleted_invoice: updateResult,
+            deleted_journal: deletedJournal ? {
+              journal_id: deletedJournal.journal_id,
+              deleted_at: currentDate
+            } : null
+          }
         });
       } catch (dbError) {
         console.error("Database Delete Error:", dbError);
