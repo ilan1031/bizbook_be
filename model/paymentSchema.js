@@ -54,6 +54,23 @@ const PaymentSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "user",
     },
+    // Status management fields
+    status: {
+      type: Number,
+      default: 1, // 1 = DRAFT, 2 = PAID, 3 = VOID
+    },
+    status_type: {
+      type: String,
+      default: "DRAFT", // DRAFT, PAID, VOID
+    },
+    status_formatted: {
+      type: String,
+      default: "Draft", // Draft, Paid, Void
+    },
+    status_updated_at: {
+      type: Date,
+      default: null,
+    },
     is_deleted: {
       type: Boolean,
       default: false,
