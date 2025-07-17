@@ -66,6 +66,11 @@ class PaymentController {
         journal_id: journalUniqueId,
         admin_id: admin_id, // Using the admin_id from server session
         organization_id: organization_id,
+        // Set initial status as DRAFT
+        status: 1,
+        status_type: "DRAFT",
+        status_formatted: "Draft",
+        status_updated_at: new Date(),
         ...bData, // Spread all other fields from req.body
       };
       if (modelData.is_advance_payment === undefined) {
@@ -1047,6 +1052,15 @@ class PaymentController {
       };
 
       switch (filter) {
+        case "Status.Draft":
+          query.status_type = "DRAFT";
+          break;
+        case "Status.Paid":
+          query.status_type = "PAID";
+          break;
+        case "Status.Void":
+          query.status_type = "VOID";
+          break;
         case "Status.Advanced":
           query.payment_type = "VendorAdvance";
           break;
@@ -1064,9 +1078,6 @@ class PaymentController {
           break;
         case "Status.Cleared":
           query.check_status = "CLEARED";
-          break;
-        case "Status.Void":
-          query.status_type = "VOID";
           break;
         case "Status.All":
         default:
@@ -1105,6 +1116,9 @@ class PaymentController {
         "amount",
         "amount_formatted",
         "unused_amount",
+        "status",
+        "status_type",
+        "status_formatted",
       ];
 
       let payments = [];
@@ -1195,6 +1209,14 @@ class PaymentController {
         obj.bill_numbers = Array.isArray(obj.bills)
           ? obj.bills.map((bill) => bill.billNumber)
           : [];
+
+        // Add status information
+        obj.status_info = {
+          status: obj.status || 1,
+          status_type: obj.status_type || "DRAFT",
+          status_formatted: obj.status_formatted || "Draft",
+          status_updated_at: obj.status_updated_at || null
+        };
 
         return obj;
       });
@@ -1716,6 +1738,182 @@ class PaymentController {
         success: false,
         message:
           error.message || "Something went wrong while updating payment.",
+      });
+    }
+  }
+  // 📌 Update Payment Status (Single method for all status changes)
+  async updatePaymentStatus(req, res) {
+    try {
+      const { organization_id, payment_id } = req.query;
+      const { status } = req.body;
+
+      console.log("Payment Status Update Request:", {
+        organization_id,
+        payment_id,
+        status,
+        statusType: typeof status,
+        body: req.body
+      });
+
+      if (!organization_id || !payment_id || !status) {
+        return res.status(ST_CODES.BAD_REQUEST).send({
+          status: false,
+          message: "Missing required parameters: organization_id, payment_id, or status",
+        });
+      }
+
+      // Ensure status is a number - handle various input types
+      let statusNumber;
+      if (typeof status === 'string') {
+        // Handle string status values
+        const statusLower = status.toLowerCase();
+        if (statusLower === 'draft' || statusLower === '1') {
+          statusNumber = 1;
+        } else if (statusLower === 'paid' || statusLower === '2') {
+          statusNumber = 2;
+        } else if (statusLower === 'void' || statusLower === '3') {
+          statusNumber = 3;
+        } else {
+          statusNumber = parseInt(status);
+        }
+      } else if (typeof status === 'number') {
+        statusNumber = status;
+      } else {
+        statusNumber = parseInt(String(status));
+      }
+
+      console.log("Status conversion:", {
+        originalStatus: status,
+        statusType: typeof status,
+        statusNumber: statusNumber,
+        isValid: ![1, 2, 3].includes(statusNumber)
+      });
+
+      if (isNaN(statusNumber) || ![1, 2, 3].includes(statusNumber)) {
+        return res.status(ST_CODES.BAD_REQUEST).send({
+          status: false,
+          message: `Invalid status value: "${status}". Must be 1 (Draft), 2 (Paid), or 3 (Void)`,
+        });
+      }
+
+      // Find the current payment to validate status transition
+      const currentPayment = await PaymentCollection.findOne({
+        payment_id: payment_id,
+        organization_id: organization_id,
+        admin_id: res.locals.user_id,
+        is_deleted: { $ne: true },
+      });
+
+      if (!currentPayment) {
+        return res.status(ST_CODES.NOT_FOUND).send({
+          status: false,
+          message: "Payment not found or unauthorized access",
+        });
+      }
+
+      // Validate status transitions
+      let currentStatus = currentPayment.status;
+      
+      // Handle case where status might be stored as string or missing
+      if (currentStatus === undefined || currentStatus === null) {
+        // Try to determine status from status_type
+        if (currentPayment.status_type === "DRAFT") currentStatus = 1;
+        else if (currentPayment.status_type === "PAID") currentStatus = 2;
+        else if (currentPayment.status_type === "VOID") currentStatus = 3;
+        else currentStatus = 1; // Default to Draft
+      }
+      
+      // Ensure currentStatus is a number
+      currentStatus = parseInt(currentStatus) || 1;
+      
+      console.log("Payment Status Debug:", {
+        payment_id: payment_id,
+        currentStatus: currentStatus,
+        currentStatusType: currentPayment.status_type,
+        requestedStatus: status,
+        currentPayment: {
+          status: currentPayment.status,
+          status_type: currentPayment.status_type,
+          status_formatted: currentPayment.status_formatted
+        }
+      });
+
+      const validTransitions = {
+        1: [2], // DRAFT -> PAID
+        2: [3], // PAID -> VOID
+        3: [1], // VOID -> DRAFT
+      };
+
+      if (!validTransitions[currentStatus] || !validTransitions[currentStatus].includes(statusNumber)) {
+        const statusNames = { 1: "Draft", 2: "Paid", 3: "Void" };
+        const currentStatusName = statusNames[currentStatus] || "Unknown";
+        const validTransitionsList = validTransitions[currentStatus] ? validTransitions[currentStatus].map(s => statusNames[s]).join(", ") : "None";
+        return res.status(ST_CODES.BAD_REQUEST).send({
+          status: false,
+          message: `Invalid status transition. Current status is ${currentStatusName} (${currentStatus}). Valid transitions: ${validTransitionsList}`,
+        });
+      }
+
+      const updateFields = {
+        status_updated_at: new Date(),
+      };
+
+      // Assign correct field updates based on status code
+      switch (statusNumber) {
+        case 1: // Draft
+          updateFields.status = 1;
+          updateFields.status_type = "DRAFT";
+          updateFields.status_formatted = "Draft";
+          break;
+
+        case 2: // Paid
+          updateFields.status = 2;
+          updateFields.status_type = "PAID";
+          updateFields.status_formatted = "Paid";
+          break;
+
+        case 3: // Void
+          updateFields.status = 3;
+          updateFields.status_type = "VOID";
+          updateFields.status_formatted = "Void";
+          break;
+
+        default:
+          return res.status(ST_CODES.BAD_REQUEST).send({
+            status: false,
+            message: "Invalid status code. Allowed values: 1 (Draft), 2 (Paid), 3 (Void)",
+          });
+      }
+
+      // Perform the update
+      const updatedPayment = await PaymentCollection.findOneAndUpdate(
+        {
+          payment_id: payment_id,
+          organization_id: organization_id,
+          admin_id: res.locals.user_id,
+          is_deleted: { $ne: true },
+        },
+        { $set: updateFields },
+        { new: true }
+      );
+
+      if (!updatedPayment) {
+        return res.status(ST_CODES.NOT_FOUND).send({
+          status: false,
+          message: "Payment not found or unauthorized access",
+        });
+      }
+
+      return res.status(ST_CODES.OK).send({
+        status: true,
+        message: "Payment status updated successfully.",
+        data: updatedPayment,
+      });
+    } catch (error) {
+      console.error("updatePaymentStatus Error:", error);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).send({
+        status: false,
+        message: "Something went wrong while updating payment status",
       });
     }
   }

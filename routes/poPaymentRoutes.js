@@ -57,4 +57,7 @@ router.post(
   PaymentController.removeDocumentFromPayment
 );
 
+// 📌 Payment Status Management - Single Route (like sales order)
+router.put("/payments/status", authMiddleware, PaymentController.updatePaymentStatus);
+
 module.exports = router;
