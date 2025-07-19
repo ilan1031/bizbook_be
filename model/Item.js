@@ -1,6 +1,23 @@
 // models/Item.js
 const mongoose = require("mongoose");
 
+const CommentSchema = new mongoose.Schema({
+  comment_id: { type: String },
+  description: { type: String },
+  commented_by_id: { type: String },
+  commented_by: { type: String },
+  comment_type: { type: String },
+  date: { type: String },
+  date_formatted: { type: String },
+  date_with_time: { type: String },
+  date_description: { type: String },
+  time: { type: String },
+  operation_type: { type: String },
+  transaction_id: { type: String, default: "" },
+  transaction_type: { type: String },
+  sentiment: { type: String, default: "none" },
+});
+
 const ItemSchema = new mongoose.Schema(
   {
     item_id: { type: String },
@@ -48,6 +65,7 @@ const ItemSchema = new mongoose.Schema(
     last_modified_time: String,
     hsn_or_sac: String,
     tags: Array,
+    comments: [CommentSchema], // Added comments field if needed
   },
   {
     timestamps: true,
