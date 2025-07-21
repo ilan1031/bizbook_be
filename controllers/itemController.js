@@ -712,99 +712,60 @@ class itemController {
     }
   }
 
-  async deleteItem(req, res) {
-    try {
-      const { id } = req.params;
-      const admin_id = res.locals.user_id;
+ async deleteItem(req, res) {
+  try {
+    const { id } = req.params;
+    const admin_id = res.locals.user_id;
+    console.log("Deleting item with ID:", id, "by admin:", admin_id);
 
-      // Validate required parameters
-      if (!id) {
-        return res.status(ST_CODES.BAD_REQUEST).json({
-          status: false,
-          message: "Item ID is required",
-        });
-      }
-
-      if (!admin_id) {
-        return res.status(ST_CODES.BAD_REQUEST).json({
-          status: false,
-          message: "Admin ID is required",
-        });
-      }
-
-      // Check if item exists
-      const existingItem = await queryHelper.findData(
-        Item,
-        { item_id: id, admin_id: admin_id },
-        {},
-        {},
-        0,
-        1
-      );
-
-      if (
-        !existingItem.status ||
-        !existingItem.msg ||
-        existingItem.msg.length === 0
-      ) {
-        return res.status(ST_CODES.NOT_FOUND).json({
-          status: false,
-          message:
-            "Item not found or you don't have permission to delete this item",
-        });
-      }
-
-      // Create deletion comment
-      const deleteComment = createComment(
-        id,
-        `Item deleted: ${
-          existingItem.msg[0].name || existingItem.msg[0].item_name
-        }`,
-        "Deleted",
-        admin_id,
-        "System"
-      );
-
-      // Soft delete - set deleted_at and add comment
-      const deleteResult = await queryHelper.updateData(
-        Item,
-        { item_id: id, admin_id: admin_id },
-        {
-          deleted_at: new Date(),
-          status: "deleted",
-          updatedAt: new Date(),
-        }
-      );
-
-      if (deleteResult.status) {
-        // Add deletion comment
-        await Item.updateOne(
-          { item_id: id, admin_id: admin_id },
-          { $push: { comments: deleteComment } }
-        );
-
-        return res.status(ST_CODES.OK).json({
-          status: true,
-          message: "Item deleted successfully",
-          data: {
-            item_id: id,
-            comment_added: deleteComment.description,
-          },
-        });
-      } else {
-        return res.status(ST_CODES.BAD_REQUEST).json({
-          status: false,
-          message: deleteResult.msg || "Failed to delete item",
-        });
-      }
-    } catch (error) {
-      console.error("Error in deleteItem:", error);
-      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+    // Validate required parameters
+    if (!id) {
+      return res.status(ST_CODES.BAD_REQUEST).json({
         status: false,
-        message: "Internal server error",
+        message: "Item ID is required",
       });
     }
+
+    if (!admin_id) {
+      return res.status(ST_CODES.BAD_REQUEST).json({
+        status: false,
+        message: "Admin ID is required",
+      });
+    }
+
+    // Delete the item directly using item_id
+    const deleteResult = await Item.findOneAndDelete({
+      item_id: id,
+      admin_id: admin_id
+    });
+
+    console.log("Delete result:", deleteResult ? "Success" : "Failed");
+
+    if (deleteResult) {
+      return res.status(ST_CODES.OK).json({
+        status: true,
+        message: "Item deleted successfully",
+        data: {
+          item_id: id,
+          deleted_item_name: deleteResult.name || deleteResult.item_name || "Unknown"
+        }
+      });
+    }
+
+    // If no item found or delete fails
+    return res.status(ST_CODES.NOT_FOUND).json({
+      status: false,
+      message: "Item not found or you don't have permission to delete this item"
+    });
+
+  } catch (error) {
+    console.error("Delete item error:", error);
+    return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+      status: false,
+      message: "Internal server error: Unable to delete item"
+    });
   }
+}
 }
 
 module.exports = new itemController();
