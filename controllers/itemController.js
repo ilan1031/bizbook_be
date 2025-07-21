@@ -5,6 +5,8 @@ const queryHelper = require("../helpers/query");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
 const EstimateCollection = require("../model/quotes");
+  const SalesOrderCollection = require("../model/salesOrder"); // Add this at the top
+
 
 // Helper function to create comment (outside class)
 const createComment = async (
@@ -394,181 +396,378 @@ class itemController {
     }
   }
 
-  async getItemById(req, res) {
-    try {
-      const { id } = req.params;
+  // async getItemById(req, res) {
+  //   try {
+  //     const { id } = req.params;
 
-      if (!id) {
-        return res
-          .status(ST_CODES.BAD_REQUEST)
-          .json({ status: false, msg: "ID is required" });
-      }
+  //     if (!id) {
+  //       return res
+  //         .status(ST_CODES.BAD_REQUEST)
+  //         .json({ status: false, msg: "ID is required" });
+  //     }
 
-      // Get item details from Item collection
-      const itemResult = await queryHelper.findData(
-        Item,
-        { item_id: id },
-        {},
-        {},
-        0,
-        1
-      );
+  //     // Get item details from Item collection
+  //     const itemResult = await queryHelper.findData(
+  //       Item,
+  //       { item_id: id },
+  //       {},
+  //       {},
+  //       0,
+  //       1
+  //     );
 
-      if (
-        !itemResult.status ||
-        !itemResult.msg ||
-        itemResult.msg.length === 0
-      ) {
-        return res.status(ST_CODES.NOT_FOUND).json({
-          status: false,
-          msg: "Item not found",
-        });
-      }
+  //     if (
+  //       !itemResult.status ||
+  //       !itemResult.msg ||
+  //       itemResult.msg.length === 0
+  //     ) {
+  //       return res.status(ST_CODES.NOT_FOUND).json({
+  //         status: false,
+  //         msg: "Item not found",
+  //       });
+  //     }
 
-      // Get the ObjectId (_id) from the item result (data is in msg field)
-      const itemObjectId = itemResult.msg[0]._id;
-      console.log("Item ObjectId:", itemObjectId);
-      console.log("Item data:", itemResult.msg[0]);
+  //     // Get the ObjectId (_id) from the item result (data is in msg field)
+  //     const itemObjectId = itemResult.msg[0]._id;
+  //     console.log("Item ObjectId:", itemObjectId);
+  //     console.log("Item data:", itemResult.msg[0]);
 
-      // Get estimates that contain this item using the ObjectId
-      const estimatesResult = await queryHelper.findData(
-        EstimateCollection,
-        { "line_items.item_id": itemObjectId },
-        {
-          date_formatted: 1,
-          estimate_number: 1,
-          customer_name: 1,
-          line_items: 1,
-          status_formatted: 1,
-        },
-        {},
-        0,
-        0 // Get all matching estimates
-      );
+  //     // Get estimates that contain this item using the ObjectId
+  //     const estimatesResult = await queryHelper.findData(
+  //       EstimateCollection,
+  //       { "line_items.item_id": itemObjectId },
+  //       {
+  //         date_formatted: 1,
+  //         estimate_number: 1,
+  //         customer_name: 1,
+  //         line_items: 1,
+  //         status_formatted: 1,
+  //       },
+  //       {},
+  //       0,
+  //       0 // Get all matching estimates
+  //     );
 
-      // Process estimate data and flatten into array format
-      let estimateData = [];
+  //     // Process estimate data and flatten into array format
+  //     let estimateData = [];
 
-      if (
-        estimatesResult.status &&
-        estimatesResult.msg &&
-        estimatesResult.msg.length > 0
-      ) {
-        // Flatten the estimates into a simple array format
-        estimatesResult.msg.forEach((estimate) => {
-          // Filter line items to only include the requested item using ObjectId
-          const relevantLineItems = estimate.line_items.filter(
-            (lineItem) =>
-              lineItem.item_id.toString() === itemObjectId.toString()
-          );
+  //     if (
+  //       estimatesResult.status &&
+  //       estimatesResult.msg &&
+  //       estimatesResult.msg.length > 0
+  //     ) {
+  //       // Flatten the estimates into a simple array format
+  //       estimatesResult.msg.forEach((estimate) => {
+  //         // Filter line items to only include the requested item using ObjectId
+  //         const relevantLineItems = estimate.line_items.filter(
+  //           (lineItem) =>
+  //             lineItem.item_id.toString() === itemObjectId.toString()
+  //         );
 
-          // Add each relevant line item as a separate entry in the array
-          relevantLineItems.forEach((lineItem) => {
-            estimateData.push({
-              date_formatted: estimate.date_formatted,
-              estimate_number: estimate.estimate_number,
-              customer_name: estimate.customer_name,
-              status_formatted: estimate.status_formatted,
-              quantity: lineItem.quantity,
-              item_total_formatted: lineItem.item_total_formatted,
-            });
+  //         // Add each relevant line item as a separate entry in the array
+  //         relevantLineItems.forEach((lineItem) => {
+  //           estimateData.push({
+  //             date_formatted: estimate.date_formatted,
+  //             estimate_number: estimate.estimate_number,
+  //             customer_name: estimate.customer_name,
+  //             status_formatted: estimate.status_formatted,
+  //             quantity: lineItem.quantity,
+  //             item_total_formatted: lineItem.item_total_formatted,
+  //           });
+  //         });
+  //       });
+  //     }
+
+  //     // Format the item details
+  //     const rawItem = itemResult.msg[0];
+  //     const formattedItemDetails = {
+  //       _id: rawItem._id,
+  //       item_id: rawItem.item_id,
+  //       admin_id: rawItem.admin_id,
+  //       organization_id: rawItem.organization_id,
+  //       name: rawItem.name,
+  //       item_name: rawItem.item_name,
+  //       unit: rawItem.unit || "",
+  //       status: rawItem.status,
+  //       status_formatted:
+  //         rawItem.status === "active"
+  //           ? "Active"
+  //           : rawItem.status === "inactive"
+  //           ? "InActive"
+  //           : rawItem.status
+  //           ? rawItem.status.charAt(0).toUpperCase() +
+  //             rawItem.status.slice(1).toLowerCase()
+  //           : "Active",
+  //       description: rawItem.description || "",
+  //       rate: rawItem.rate || 0,
+  //       rate_formatted:
+  //         rawItem.rate !== undefined && rawItem.rate !== null
+  //           ? `₹${parseFloat(rawItem.rate).toFixed(2)}`
+  //           : "₹0.00",
+  //       tax_id: rawItem.tax_id || "",
+  //       purchase_account_id: rawItem.purchase_account_id || "",
+  //       purchase_account_name: rawItem.purchase_account_name || "",
+  //       account_id: rawItem.account_id || "",
+  //       account_name: rawItem.account_name || "",
+  //       purchase_description: rawItem.purchase_description || "",
+  //       purchase_rate: rawItem.purchase_rate || 0,
+  //       opening_stock: rawItem.opening_stock,
+  //       opening_stock_rate: rawItem.opening_stock_rate,
+  //       purchase_rate_formatted:
+  //         rawItem.purchase_rate !== undefined && rawItem.purchase_rate !== null
+  //           ? `₹${parseFloat(rawItem.purchase_rate).toFixed(2)}`
+  //           : "₹0.00",
+  //       can_be_sold: rawItem.can_be_sold || false,
+  //       can_be_purchased: rawItem.can_be_purchased || false,
+  //       track_inventory: rawItem.track_inventory || false,
+  //       item_type: rawItem.item_type || "goods",
+  //       item_type_formatted:
+  //         rawItem.item_type && typeof rawItem.item_type === "string"
+  //           ? rawItem.item_type.charAt(0).toUpperCase() +
+  //             rawItem.item_type.slice(1).toLowerCase()
+  //           : "Goods",
+  //       is_taxable: rawItem.is_taxable || false,
+  //       sku: rawItem.sku || "",
+  //       hsn_or_sac: rawItem.hsn_or_sac || "",
+  //       tags: rawItem.tags || [],
+  //       // Filter out incomplete comments and format properly
+  //       comments: (rawItem.comments || [])
+  //         .filter((comment) => comment.comment_id && comment.description)
+  //         .map((comment) => ({
+  //           comment_id: comment.comment_id,
+  //           description: comment.description,
+  //           commented_by_id: comment.commented_by_id,
+  //           commented_by: comment.commented_by,
+  //           comment_type: comment.comment_type,
+  //           date: comment.date,
+  //           date_formatted: comment.date_formatted,
+  //           date_with_time: comment.date_with_time,
+  //           date_description: comment.date_description,
+  //           time: comment.time,
+  //           operation_type: comment.operation_type,
+  //           transaction_id: comment.transaction_id,
+  //           transaction_type: comment.transaction_type,
+  //           sentiment: comment.sentiment || "none",
+  //         })),
+  //       createdAt: rawItem.createdAt,
+  //       updatedAt: rawItem.updatedAt,
+  //       __v: rawItem.__v,
+  //     };
+
+  //     // Combine item details with estimate data
+  //     const response = {
+  //       status: true,
+  //       data: {
+  //         item_details: formattedItemDetails,
+  //         estimates: estimateData,
+  //       },
+  //     };
+
+  //     return res.json(response);
+  //   } catch (error) {
+  //     console.error("Error in GET /items/:id:", error);
+  //     return res
+  //       .status(ST_CODES.INTERNAL_SERVER_ERROR)
+  //       .json({ status: false, msg: "Internal server error" });
+  //   }
+  // }
+
+
+async getItemById(req, res) {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res
+        .status(ST_CODES.BAD_REQUEST)
+        .json({ status: false, msg: "ID is required" });
+    }
+
+    // Get item details from Item collection
+    const itemResult = await queryHelper.findData(
+      Item,
+      { item_id: id },
+      {},
+      {},
+      0,
+      1
+    );
+
+    if (!itemResult.status || !itemResult.msg || itemResult.msg.length === 0) {
+      return res.status(ST_CODES.NOT_FOUND).json({
+        status: false,
+        msg: "Item not found",
+      });
+    }
+
+    const itemObjectId = itemResult.msg[0]._id;
+
+    // ===== ESTIMATES =====
+    const estimatesResult = await queryHelper.findData(
+      EstimateCollection,
+      { "line_items.item_id": itemObjectId },
+      {
+        date_formatted: 1,
+        estimate_number: 1,
+        customer_name: 1,
+        line_items: 1,
+        status_formatted: 1,
+      },
+      {},
+      0,
+      0
+    );
+
+    let estimateData = [];
+    if (estimatesResult.status && estimatesResult.msg?.length > 0) {
+      estimatesResult.msg.forEach((estimate) => {
+        const relevantLineItems = estimate.line_items.filter(
+          (lineItem) =>
+            lineItem.item_id.toString() === itemObjectId.toString()
+        );
+        relevantLineItems.forEach((lineItem) => {
+          estimateData.push({
+            date_formatted: estimate.date_formatted,
+            estimate_number: estimate.estimate_number,
+            customer_name: estimate.customer_name,
+            status_formatted: estimate.status_formatted,
+            quantity: lineItem.quantity,
+            item_total_formatted: lineItem.item_total_formatted,
           });
         });
-      }
-
-      // Format the item details
-      const rawItem = itemResult.msg[0];
-      const formattedItemDetails = {
-        _id: rawItem._id,
-        item_id: rawItem.item_id,
-        admin_id: rawItem.admin_id,
-        organization_id: rawItem.organization_id,
-        name: rawItem.name,
-        item_name: rawItem.item_name,
-        unit: rawItem.unit || "",
-        status: rawItem.status,
-        status_formatted:
-          rawItem.status === "active"
-            ? "Active"
-            : rawItem.status === "inactive"
-            ? "InActive"
-            : rawItem.status
-            ? rawItem.status.charAt(0).toUpperCase() +
-              rawItem.status.slice(1).toLowerCase()
-            : "Active",
-        description: rawItem.description || "",
-        rate: rawItem.rate || 0,
-        rate_formatted:
-          rawItem.rate !== undefined && rawItem.rate !== null
-            ? `₹${parseFloat(rawItem.rate).toFixed(2)}`
-            : "₹0.00",
-        tax_id: rawItem.tax_id || "",
-        purchase_account_id: rawItem.purchase_account_id || "",
-        purchase_account_name: rawItem.purchase_account_name || "",
-        account_id: rawItem.account_id || "",
-        account_name: rawItem.account_name || "",
-        purchase_description: rawItem.purchase_description || "",
-        purchase_rate: rawItem.purchase_rate || 0,
-        opening_stock: rawItem.opening_stock,
-        opening_stock_rate: rawItem.opening_stock_rate,
-        purchase_rate_formatted:
-          rawItem.purchase_rate !== undefined && rawItem.purchase_rate !== null
-            ? `₹${parseFloat(rawItem.purchase_rate).toFixed(2)}`
-            : "₹0.00",
-        can_be_sold: rawItem.can_be_sold || false,
-        can_be_purchased: rawItem.can_be_purchased || false,
-        track_inventory: rawItem.track_inventory || false,
-        item_type: rawItem.item_type || "goods",
-        item_type_formatted:
-          rawItem.item_type && typeof rawItem.item_type === "string"
-            ? rawItem.item_type.charAt(0).toUpperCase() +
-              rawItem.item_type.slice(1).toLowerCase()
-            : "Goods",
-        is_taxable: rawItem.is_taxable || false,
-        sku: rawItem.sku || "",
-        hsn_or_sac: rawItem.hsn_or_sac || "",
-        tags: rawItem.tags || [],
-        // Filter out incomplete comments and format properly
-        comments: (rawItem.comments || [])
-          .filter((comment) => comment.comment_id && comment.description)
-          .map((comment) => ({
-            comment_id: comment.comment_id,
-            description: comment.description,
-            commented_by_id: comment.commented_by_id,
-            commented_by: comment.commented_by,
-            comment_type: comment.comment_type,
-            date: comment.date,
-            date_formatted: comment.date_formatted,
-            date_with_time: comment.date_with_time,
-            date_description: comment.date_description,
-            time: comment.time,
-            operation_type: comment.operation_type,
-            transaction_id: comment.transaction_id,
-            transaction_type: comment.transaction_type,
-            sentiment: comment.sentiment || "none",
-          })),
-        createdAt: rawItem.createdAt,
-        updatedAt: rawItem.updatedAt,
-        __v: rawItem.__v,
-      };
-
-      // Combine item details with estimate data
-      const response = {
-        status: true,
-        data: {
-          item_details: formattedItemDetails,
-          estimates: estimateData,
-        },
-      };
-
-      return res.json(response);
-    } catch (error) {
-      console.error("Error in GET /items/:id:", error);
-      return res
-        .status(ST_CODES.INTERNAL_SERVER_ERROR)
-        .json({ status: false, msg: "Internal server error" });
+      });
     }
+
+    // ===== SALES ORDERS =====
+    const salesOrderResult = await queryHelper.findData(
+      SalesOrderCollection,
+      { "line_items.item_id": itemObjectId },
+      {
+        date_formatted: 1,
+        sales_order_number: 1,
+        customer_name: 1,
+        line_items: 1,
+        status_formatted: 1,
+        rate:1,
+      },
+      {},
+      0,
+      0
+    );
+
+    let salesOrderData = [];
+    if (salesOrderResult.status && salesOrderResult.msg?.length > 0) {
+      salesOrderResult.msg.forEach((order) => {
+        const relevantLineItems = order.line_items.filter(
+          (lineItem) =>
+            lineItem.item_id.toString() === itemObjectId.toString()
+        );
+        relevantLineItems.forEach((lineItem) => {
+          salesOrderData.push({
+            date_formatted: order.date_formatted,
+            sales_order_number: order.sales_order_number,
+            customer_name: order.customer_name,
+            status_formatted: order.status_formatted,
+            quantity: lineItem.quantity,
+            item_total_formatted: lineItem.item_total_formatted,
+            rate: lineItem.rate || order.rate || 0,
+          });
+        });
+      });
+    }
+
+    // ===== FORMAT ITEM DETAILS =====
+    const rawItem = itemResult.msg[0];
+    const formattedItemDetails = {
+      _id: rawItem._id,
+      item_id: rawItem.item_id,
+      admin_id: rawItem.admin_id,
+      organization_id: rawItem.organization_id,
+      name: rawItem.name,
+      item_name: rawItem.item_name,
+      unit: rawItem.unit || "",
+      status: rawItem.status,
+      status_formatted:
+        rawItem.status === "active"
+          ? "Active"
+          : rawItem.status === "inactive"
+          ? "InActive"
+          : rawItem.status
+          ? rawItem.status.charAt(0).toUpperCase() +
+            rawItem.status.slice(1).toLowerCase()
+          : "Active",
+      description: rawItem.description || "",
+      rate: rawItem.rate || 0,
+      rate_formatted:
+        rawItem.rate !== undefined && rawItem.rate !== null
+          ? `₹${parseFloat(rawItem.rate).toFixed(2)}`
+          : "₹0.00",
+      tax_id: rawItem.tax_id || "",
+      purchase_account_id: rawItem.purchase_account_id || "",
+      purchase_account_name: rawItem.purchase_account_name || "",
+      account_id: rawItem.account_id || "",
+      account_name: rawItem.account_name || "",
+      purchase_description: rawItem.purchase_description || "",
+      purchase_rate: rawItem.purchase_rate || 0,
+      opening_stock: rawItem.opening_stock,
+      opening_stock_rate: rawItem.opening_stock_rate,
+      purchase_rate_formatted:
+        rawItem.purchase_rate !== undefined && rawItem.purchase_rate !== null
+          ? `₹${parseFloat(rawItem.purchase_rate).toFixed(2)}`
+          : "₹0.00",
+      can_be_sold: rawItem.can_be_sold || false,
+      can_be_purchased: rawItem.can_be_purchased || false,
+      track_inventory: rawItem.track_inventory || false,
+      item_type: rawItem.item_type || "goods",
+      item_type_formatted:
+        rawItem.item_type && typeof rawItem.item_type === "string"
+          ? rawItem.item_type.charAt(0).toUpperCase() +
+            rawItem.item_type.slice(1).toLowerCase()
+          : "Goods",
+      is_taxable: rawItem.is_taxable || false,
+      sku: rawItem.sku || "",
+      hsn_or_sac: rawItem.hsn_or_sac || "",
+      tags: rawItem.tags || [],
+      comments: (rawItem.comments || [])
+        .filter((comment) => comment.comment_id && comment.description)
+        .map((comment) => ({
+          comment_id: comment.comment_id,
+          description: comment.description,
+          commented_by_id: comment.commented_by_id,
+          commented_by: comment.commented_by,
+          comment_type: comment.comment_type,
+          date: comment.date,
+          date_formatted: comment.date_formatted,
+          date_with_time: comment.date_with_time,
+          date_description: comment.date_description,
+          time: comment.time,
+          operation_type: comment.operation_type,
+          transaction_id: comment.transaction_id,
+          transaction_type: comment.transaction_type,
+          sentiment: comment.sentiment || "none",
+        })),
+      createdAt: rawItem.createdAt,
+      updatedAt: rawItem.updatedAt,
+      __v: rawItem.__v,
+    };
+
+    // ===== FINAL RESPONSE =====
+    return res.json({
+      status: true,
+      data: {
+        item_details: formattedItemDetails,
+        estimates: estimateData,
+        sales_orders: salesOrderData,
+      },
+    });
+  } catch (error) {
+    console.error("Error in GET /items/:id:", error);
+    return res
+      .status(ST_CODES.INTERNAL_SERVER_ERROR)
+      .json({ status: false, msg: "Internal server error" });
   }
+}
+
 
   async updateItem(req, res) {
     try {
