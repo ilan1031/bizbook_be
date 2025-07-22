@@ -15,7 +15,9 @@ const authMiddleware = require("../middleware/userMiddleware");
 //   uploadBills.single("file"),
 //   ImportController.uploadFiles
 // );
+// Get collection keys (columns) for SO import
 router.get("/get-column", authMiddleware, SoImportController.sendCollecetionKeys);
+// Import quote for sales order
 router.post("/quote", authMiddleware, SoImportController.importQuote);
 // router.post(
 //   "/purchase-order",
