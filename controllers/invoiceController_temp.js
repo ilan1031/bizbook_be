@@ -28,267 +28,6 @@ const formatCurrency = (amount) => {
 
 class InvoiceController {
   // 📌 Create a new invoice
-  // async createInvoice(req, res) {
-  //   try {
-  //     let bData = req.body;
-  //     const { organization_id } = req.query;
-
-  //     let documents = bData.documents;
-
-  //     if (req.file) {
-  //       documents = req.file.filename;
-  //     }
-
-  //     console.log("documents of invoice", documents);
-
-  //     // Validate required organization ID
-  //     if (!organization_id) {
-  //       return res.status(400).json({
-  //         status: false,
-  //         message: "Organization ID is required",
-  //       });
-  //     }
-
-  //     // Generate unique invoice ID
-  //     const invoiceUniqueId = await commonHelper.generateUniqueId(
-  //       InvoiceCollection,
-  //       "invoice_id",
-  //       6
-  //     );
-  //     bData.invoice_id = invoiceUniqueId;
-
-  //     // Generate or validate invoice number
-  //     if (!bData.invoice_number) {
-  //       const uniqueInvoiceNumber = await commonHelper.generateUniqueId(
-  //         InvoiceCollection,
-  //         "invoice_number",
-  //         6,
-  //         "INV"
-  //       );
-  //       bData.invoice_number = uniqueInvoiceNumber;
-  //     } else {
-  //       const providedInvoiceNumber = bData.invoice_number.trim();
-  //       if (!providedInvoiceNumber.startsWith("INV-")) {
-  //         return res.status(400).json({
-  //           code: 1,
-  //           message:
-  //             "Invalid invoice_number format. It must start with 'INV-'.",
-  //         });
-  //       }
-  //       bData.invoice_number = providedInvoiceNumber;
-  //     }
-
-  //     // Add user and status information
-  //     const userId = res.locals.user_id;
-  //     bData.created_by_id = userId;
-  //     bData.last_modified_by_id = userId;
-  //     bData.status = bData.status || "draft";
-  //     bData.status_formatted = bData.status_formatted || "Draft";
-  //     bData.organization_id = organization_id;
-
-  //     // Set dates
-  //     const currentDate = new Date();
-  //     bData.date = bData.date || currentDate.toISOString();
-  //     const parsedDate = new Date(bData.date);
-  //     bData.date_formatted = parsedDate.toLocaleDateString("en-GB");
-
-  //     const dueDate =
-  //       bData.due_date ||
-  //       new Date(parsedDate.setDate(parsedDate.getDate() + 30));
-  //     bData.due_date = dueDate;
-  //     bData.due_date_formatted = new Date(dueDate).toLocaleDateString("en-GB");
-
-  //     // Defaults for optional fields
-  //     const defaultFields = {
-  //       customer_name: "",
-  //       place_of_supply: "",
-  //       order_number: "",
-  //       vat_treatment: "",
-  //       tax_treatment: "",
-  //       is_reverse_charge_applied: false,
-  //       gst_treatment: "",
-  //       gst_no: "",
-  //       cfdi_usage: "",
-  //       reference_number: "",
-  //       invoiced_estimate_id: "",
-  //       salesperson_name: "",
-  //       allow_partial_payments: false,
-  //       custom_body: "",
-  //       custom_subject: "",
-  //       shipping_charge: 0,
-  //       adjustment: 0,
-  //       adjustment_description: "",
-  //       reason: "",
-  //       tax_authority_id: "",
-  //       tax_exemption_id: "",
-  //       billing_address_id: "",
-  //       shipping_address_id: "",
-  //       avatax_use_code: "",
-  //       avatax_exempt_no: "",
-  //       tax_id: bData.tcs_id || bData.tds_id || "",
-  //       expense_id: "",
-  //       salesorder_item_id: "",
-  //       avatax_tax_code: "",
-  //       time_entry_ids: [],
-  //       discount_amount: 0,
-  //       discount_percent: 0,
-  //       tax_type: "",
-  //       payment_terms_label: "",
-  //       payment_terms: "",
-  //       tds_option: "",
-  //     };
-
-  //     for (const key in defaultFields) {
-  //       if (bData[key] === undefined) {
-  //         bData[key] = defaultFields[key];
-  //       }
-  //     }
-
-  //     // Handle line items
-  //     if (Array.isArray(bData.line_items) && bData.line_items.length > 0) {
-  //       let subTotal = 0;
-
-  //       bData.line_items.forEach((item) => {
-  //         if (!item.line_item_id) {
-  //           item.line_item_id = Math.random().toString(36).substring(2, 15);
-  //         }
-
-  //         const quantity = item.quantity || 0;
-  //         const rate = item.rate || 0;
-  //         const lineTotal = quantity * rate;
-
-  //         item.item_total = lineTotal;
-  //         item.item_total_formatted = `₹${lineTotal.toFixed(2)}`;
-  //         item.item_total_inclusive_of_tax = lineTotal;
-  //         item.item_total_inclusive_of_tax_formatted = `₹${lineTotal.toFixed(
-  //           2
-  //         )}`;
-
-  //         item.progress_invoice_details = {
-  //           invoiced_quantity: 0,
-  //           invoiced_quantity_formatted: "0.00",
-  //           invoiced_value: 0,
-  //           invoiced_value_formatted: "₹0.00",
-  //           balance_amount: lineTotal,
-  //           balance_amount_formatted: `₹${lineTotal.toFixed(2)}`,
-  //           is_invoiced: false,
-  //         };
-
-  //         item.tags = Array.isArray(item.tags)
-  //           ? item.tags.filter(
-  //               (tag) =>
-  //                 typeof tag.tag_id === "number" &&
-  //                 typeof tag.tag_option_id === "number"
-  //             )
-  //           : [];
-
-  //         subTotal += lineTotal;
-  //       });
-
-  //       bData.sub_total = subTotal;
-  //       bData.sub_total_formatted = `₹${subTotal.toFixed(2)}`;
-  //       bData.bcy_sub_total = subTotal;
-
-  //       // Calculate discount
-  //       let discountAmount = bData.discount_amount || 0;
-  //       if (bData.discount_type === "percentage" && bData.discount_percent) {
-  //         discountAmount = (subTotal * bData.discount_percent) / 100;
-  //       }
-
-  //       let discountAmt = Number(discountAmount) || 0;
-
-  //       bData.discount_amount = discountAmt;
-  //       bData.discount_total = discountAmt;
-  //       bData.discount_total_formatted = `₹${discountAmt.toFixed(2)}`;
-  //       bData.bcy_discount_total = discountAmt;
-
-  //       const subTotalAfterDiscount = subTotal - discountAmt;
-  //       bData.sub_total_exclusive_of_discount = subTotalAfterDiscount;
-  //       bData.sub_total_exclusive_of_discount_formatted = `₹${subTotalAfterDiscount.toFixed(
-  //         2
-  //       )}`;
-
-  //       // Tax calculations
-  //       let taxTotal = 0;
-  //       if (Array.isArray(bData.taxes)) {
-  //         bData.taxes.forEach((tax) => {
-  //           const taxBase = bData.is_discount_before_tax
-  //             ? subTotalAfterDiscount
-  //             : subTotal;
-  //           const taxAmount = (
-  //             (taxBase * (tax.tax_percentage || 0)) /
-  //             100
-  //           ).toFixed(2);
-  //           tax.tax_amount = taxAmount;
-  //           taxTotal += parseFloat(taxAmount);
-  //         });
-  //       }
-
-  //       bData.tax_total = taxTotal;
-  //       bData.tax_total_formatted = `₹${taxTotal.toFixed(2)}`;
-  //       bData.bcy_tax_total = taxTotal;
-
-  //       // Final total
-  //       const shippingCharge = bData.shipping_charge || 0;
-  //       const adjustment = bData.adjustment || 0;
-  //       const total = Number(
-  //         subTotal - discountAmount + taxTotal + shippingCharge + adjustment
-  //       );
-
-  //       bData.total = total;
-  //       bData.total_formatted = `₹${total.toFixed(2)}`;
-  //       bData.bcy_total = total;
-
-  //       // Final balance
-  //       const paymentMade = bData.payment_made || 0;
-  //       const creditsApplied = bData.credits_applied || 0;
-  //       const balance = total - paymentMade - creditsApplied;
-  //       bData.balance = balance;
-  //       bData.balance_formatted = `₹${balance.toFixed(2)}`;
-  //     }
-
-  //     // Billing and shipping address structure
-  //     // const addressFields = [
-  //     //   "address",
-  //     //   "street2",
-  //     //   "city",
-  //     //   "state",
-  //     //   "zip",
-  //     //   "country",
-  //     //   "fax",
-  //     //   "phone",
-  //     //   "attention",
-  //     // ];
-
-  //     // // bData.billing_address = {};
-  //     // // bData.shipping_address = {};
-
-  //     // addressFields.forEach((field) => {
-  //     //   bData.billing_address[field] = bData.billing_address?.[field] || "";
-  //     //   bData.shipping_address[field] = bData.shipping_address?.[field] || "";
-  //     // });
-
-  //     // Attach document if any
-  //     bData.documents = documents;
-
-  //     // Save to database
-  //     const invoiceCreated = await InvoiceCollection.create(bData);
-
-  //     res.status(200).json({
-  //       status: true,
-  //       message: "Invoice created successfully",
-  //       data: invoiceCreated,
-  //     });
-  //   } catch (error) {
-  //     console.error("Error creating invoice:", error);
-  //     res.status(500).json({
-  //       status: false,
-  //       message: "Internal server error",
-  //       error: error.message,
-  //     });
-  //   }
-  // }
-
   async createInvoice(req, res) {
     try {
       let invoiceData = req.body;
@@ -1102,92 +841,7 @@ class InvoiceController {
       });
     }
   }
-  // 📌 Update invoice
-  // async updateInvoice(req, res) {
-  //   try {
-  //     const { organization_id, invoice_id } = req.query;
-  //     let updateData = { ...req.body };
-
-  //     let documents = updateData.documents;
-  //     if (req.file) {
-  //       documents = req.file.filename;
-  //     }
-
-  //     updateData["documents"] = documents;
-
-  //     // Validate required query params
-  //     if (!organization_id || !invoice_id) {
-  //       return res.status(400).json({
-  //         code: 1,
-  //         message:
-  //           "Missing required parameters: organization_id and invoice_id",
-  //       });
-  //     }
-
-  //     // Find existing invoice
-  //     let invoice = await InvoiceCollection.findOne({
-  //       invoice_id,
-  //       organization_id,
-  //       deleted_at: null, // Ensure it's not already soft-deleted
-  //     });
-
-  //     if (!invoice) {
-  //       return res.status(404).json({
-  //         code: 1,
-  //         message: "Unauthorized or invoice not found",
-  //       });
-  //     }
-
-  //     // Recalculate totals if line items are updated
-  //     if (updateData.line_items && updateData.line_items.length > 0) {
-  //       let subTotal = 0;
-
-  //       // Calculate sub-total from line items
-  //       updateData.line_items.forEach((item) => {
-  //         const lineTotal = (item.quantity || 0) * (item.rate || 0);
-  //         item.item_total = lineTotal;
-  //         subTotal += lineTotal;
-  //       });
-
-  //       updateData["sub_total"] = subTotal;
-
-  //       // Calculate tax amount if applicable
-  //       const taxRate =
-  //         updateData.tax_percentage || invoice.tax_percentage || 0;
-  //       const taxAmount = (subTotal * taxRate) / 100;
-  //       updateData["tax_total"] = taxAmount;
-
-  //       // Calculate discount if applicable
-  //       const discountAmount =
-  //         updateData.discount_amount || invoice.discount_amount || 0;
-
-  //       // Calculate final total
-  //       updateData["total"] = subTotal + taxAmount - discountAmount;
-  //     }
-
-  //     // Perform the update
-  //     let updatedInvoice = await InvoiceCollection.findOneAndUpdate(
-  //       { invoice_id, organization_id },
-  //       { $set: updateData },
-  //       { new: true } // Return the updated document
-  //     );
-
-  //     // Success Response
-  //     return res.status(200).json({
-  //       code: 0,
-  //       message: "Invoice updated successfully",
-  //       invoice: updatedInvoice,
-  //     });
-  //   } catch (error) {
-  //     console.error("updateInvoice Error:", error.message);
-  //     return res.status(500).json({
-  //       code: 1,
-  //       message: "Internal Server Error: Unable to update invoice",
-  //       error: error.message,
-  //     });
-  //   }
-  // }
-
+  // 📌 Get email logs with pagination
   async updateInvoice(req, res) {
     try {
       const { organization_id, invoice_id } = req.query;
@@ -1523,347 +1177,248 @@ class InvoiceController {
       });
     }
   }
-  // 📌 Delete invoice (soft delete)
-  // async deleteInvoice(req, res) {
-  //   try {
-  //     const { organization_id, invoice_id } = req.query;
-
-  //     // Validate required parameters
-  //     if (!organization_id || !invoice_id) {
-  //       return res.status(400).json({
-  //         code: 1,
-  //         message:
-  //           "Missing required parameters: organization_id and invoice_id",
-  //       });
-  //     }
-
-  //     console.log("Input Parameters:", { organization_id, invoice_id });
-
-  //     // Convert invoice_id and organization_id to strings to match database format
-  //     const formattedInvoiceId = String(invoice_id);
-  //     const formattedOrganizationId = String(organization_id);
-  //     let findInvoice = await InvoiceCollection.findOne({
-  //       invoice_id: formattedInvoiceId,
-  //     });
-  //     if (findInvoice.journal_id != "") {
-  //       let findJournal = await JournalCollection.findOneAndDelete({
-  //         journal_id: findInvoice.journal_id,
-  //       });
-  //     }
-  //     let invoice = await InvoiceCollection.findOne({
-  //       invoice_id: formattedInvoiceId, // Ensure query uses the correct format
-  //       organization_id: formattedOrganizationId,
-  //       deleted_at: null, // Ensure it's not already soft-deleted
-  //     });
-
-  //     if (!invoice) {
-  //       console.warn("Invoice not found for the given parameters:", {
-  //         organization_id: formattedOrganizationId,
-  //         invoice_id: formattedInvoiceId,
-  //       });
-  //       return res.status(404).json({
-  //         code: 1,
-  //         message: "Invoice not found for this organization",
-  //       });
-  //     }
-
-  //     // Perform soft delete by setting deleted_at timestamp
-  //     invoice.deleted_at = new Date();
-  //     await invoice.save();
-
-  //     // Check if the invoice is a "convert invoice" (has estimate_id)
-  //     if (invoice.estimate_id) {
-  //       // Validate estimate_id to ensure it's a valid ObjectId
-  //       if (mongoose.Types.ObjectId.isValid(invoice.estimate_id)) {
-  //         const estimate = await EstimateCollection.findById(
-  //           invoice.estimate_id
-  //         );
-
-  //         if (estimate) {
-  //           // Remove the deleted invoice's ID from the invoice_ids array
-  //           estimate.invoice_ids = estimate.invoice_ids.filter(
-  //             (id) => id !== invoice.invoice_id
-  //           );
-
-  //           // Remove the deleted invoice's details from the invoices array
-  //           estimate.invoices = estimate.invoices.filter(
-  //             (inv) => inv.invoice_id !== invoice.invoice_id
-  //           );
-
-  //           // Check if this is the last invoice created by the estimate
-  //           if (estimate.invoice_ids.length === 0) {
-  //             // Restore the original status of the estimate
-  //             estimate.status = estimate.current_sub_status || "draft";
-  //             estimate.status_formatted =
-  //               estimate.current_sub_status_formatted || "Draft";
-
-  //             // Clear the invoiced amount fields
-  //             estimate.invoiced_amount = null;
-  //             estimate.invoiced_amount_formatted = null;
-
-  //             // Optionally, clear current_sub_status and current_sub_status_formatted
-  //             estimate.current_sub_status = null;
-  //             estimate.current_sub_status_formatted = null;
-  //           }
-
-  //           // Save the updated estimate
-  //           await estimate.save();
-  //         } else {
-  //           console.warn(`Estimate with ID ${invoice.estimate_id} not found.`);
-  //         }
-  //       } else {
-  //         console.warn(
-  //           `Invalid estimate_id (${invoice.estimate_id}) for invoice ${invoice.invoice_id}. Skipping estimate update.`
-  //         );
-  //       }
-  //     } else {
-  //       console.log("This is a direct invoice. No estimate to update.");
-  //     }
-
-  //     // Success Response
-  //     return res.status(200).json({
-  //       code: 0,
-  //       message: "Invoice deleted successfully", // Soft delete
-  //       invoice: invoice,
-  //     });
-  //   } catch (error) {
-  //     console.error("deleteInvoice Error:", error.message);
-  //     return res.status(500).json({
-  //       code: 1,
-  //       message: "Internal Server Error: Unable to delete invoice",
-  //     });
-  //   }
-  // }
-
+  // 📌 Delete invoice
   async deleteInvoice(req, res) {
-  try {
-    let { org_id, invoice_id } = req.query;
+    try {
+      let { org_id, invoice_id } = req.query;
 
-    // Validate required parameters
-    if (!org_id || !invoice_id) {
-      return res.status(ST_CODES.BAD_REQUEST).json({
-        success: false,
-        message: "Organization ID and Invoice ID are required for delete invoice.",
+      // Validate required parameters
+      if (!org_id || !invoice_id) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message:
+            "Organization ID and Invoice ID are required for delete invoice.",
+        });
+      }
+
+      console.log("Input Parameters:", {
+        org_id,
+        invoice_id,
+        admin_id: res.locals.user_id,
       });
-    }
 
-    console.log("Input Parameters:", { org_id, invoice_id, admin_id: res.locals.user_id });
-
-    // First, find the invoice to get the journal_id
-    const findInvoice = await InvoiceCollection.findOne({
-      admin_id: res.locals.user_id,
-      invoice_id: invoice_id,
-      organization_id: org_id,
-    });
-
-    if (!findInvoice) {
-      return res.status(ST_CODES.NOT_FOUND).json({
-        success: false,
-        message: "Invoice not found for delete",
+      // First, find the invoice to get the journal_id
+      const findInvoice = await InvoiceCollection.findOne({
+        admin_id: res.locals.user_id,
+        invoice_id: invoice_id,
+        organization_id: org_id,
       });
-    }
 
-    // Get journal_id from the found invoice
-    const journal_id = findInvoice.journal_id;
+      if (!findInvoice) {
+        return res.status(ST_CODES.NOT_FOUND).json({
+          success: false,
+          message: "Invoice not found for delete",
+        });
+      }
 
-    if (!journal_id) {
-      return res.status(ST_CODES.BAD_REQUEST).json({
-        success: false,
-        message: "The Journal ID is required for delete invoice.",
+      // Get journal_id from the found invoice
+      const journal_id = findInvoice.journal_id;
+
+      if (!journal_id) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: "The Journal ID is required for delete invoice.",
+        });
+      }
+
+      // Delete the invoice
+      const deleteInvoice = await InvoiceCollection.findOneAndDelete({
+        admin_id: res.locals.user_id,
+        invoice_id: invoice_id,
+        organization_id: org_id,
       });
-    }
 
-    // Delete the invoice
-    const deleteInvoice = await InvoiceCollection.findOneAndDelete({
-      admin_id: res.locals.user_id,
-      invoice_id: invoice_id,
-      organization_id: org_id,
-    });
-
-    // Delete the journal entry using the journal_id from invoice
-    const deleteJournal = await JournalCollection.findOneAndDelete({
-      journal_id: journal_id,
-      organization_id: org_id, // Add organization filter for security
-    });
-
-    if (!deleteInvoice) {
-      return res.status(ST_CODES.NOT_FOUND).json({
-        success: false,
-        message: "Invoice not found for delete",
+      // Delete the journal entry using the journal_id from invoice
+      const deleteJournal = await JournalCollection.findOneAndDelete({
+        journal_id: journal_id,
+        organization_id: org_id, // Add organization filter for security
       });
-    }
 
-    // Currency formatting function
-    const formatCurrency = (amount) => {
-      return `₹${Number(amount).toLocaleString("en-IN", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })}`;
-    };
+      if (!deleteInvoice) {
+        return res.status(ST_CODES.NOT_FOUND).json({
+          success: false,
+          message: "Invoice not found for delete",
+        });
+      }
 
-    // Handle estimate update if this is a converted invoice
-    if (deleteInvoice.estimate_id) {
-      try {
-        // Validate estimate_id to ensure it's a valid ObjectId
-        if (mongoose.Types.ObjectId.isValid(deleteInvoice.estimate_id)) {
-          const estimate = await EstimateCollection.findOne({
-            _id: deleteInvoice.estimate_id,
+      // Currency formatting function
+      const formatCurrency = (amount) => {
+        return `₹${Number(amount).toLocaleString("en-IN", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
+      };
+
+      // Handle estimate update if this is a converted invoice
+      if (deleteInvoice.estimate_id) {
+        try {
+          // Validate estimate_id to ensure it's a valid ObjectId
+          if (mongoose.Types.ObjectId.isValid(deleteInvoice.estimate_id)) {
+            const estimate = await EstimateCollection.findOne({
+              _id: deleteInvoice.estimate_id,
+              organization_id: org_id,
+              deleted_at: null,
+            });
+
+            if (estimate) {
+              // Remove the deleted invoice's ID from the invoice_ids array
+              estimate.invoice_ids = estimate.invoice_ids.filter(
+                (id) => id !== deleteInvoice.invoice_id
+              );
+
+              // Remove the deleted invoice's details from the invoices array
+              estimate.invoices = estimate.invoices.filter(
+                (inv) => inv.invoice_id !== deleteInvoice.invoice_id
+              );
+
+              // Check if this is the last invoice created by the estimate
+              if (estimate.invoice_ids.length === 0) {
+                // Restore the original status of the estimate
+                estimate.status = estimate.current_sub_status || "draft";
+                estimate.status_formatted =
+                  estimate.current_sub_status_formatted || "Draft";
+
+                // Clear the invoiced amount fields
+                estimate.invoiced_amount = null;
+                estimate.invoiced_amount_formatted = null;
+
+                // Clear current_sub_status fields
+                estimate.current_sub_status = null;
+                estimate.current_sub_status_formatted = null;
+              }
+
+              // Add audit fields to estimate
+              estimate.last_modified_by_id = res.locals.user_id;
+              estimate.updated_at = new Date();
+
+              // Save the updated estimate
+              await estimate.save();
+              console.log(
+                `Estimate ${deleteInvoice.estimate_id} updated successfully`
+              );
+            }
+          }
+        } catch (estimateError) {
+          console.error("Error updating estimate:", estimateError);
+          // Don't fail the entire operation if estimate update fails
+        }
+      }
+
+      // Handle salesorder update if this is a converted invoice
+      if (deleteInvoice.salesorder_id) {
+        try {
+          const salesorder = await SalesOrderCollection.findOne({
+            salesorder_id: deleteInvoice.salesorder_id,
             organization_id: org_id,
             deleted_at: null,
           });
 
-          if (estimate) {
+          if (salesorder) {
             // Remove the deleted invoice's ID from the invoice_ids array
-            estimate.invoice_ids = estimate.invoice_ids.filter(
+            salesorder.invoice_ids = salesorder.invoice_ids.filter(
               (id) => id !== deleteInvoice.invoice_id
             );
 
             // Remove the deleted invoice's details from the invoices array
-            estimate.invoices = estimate.invoices.filter(
+            salesorder.invoices = salesorder.invoices.filter(
               (inv) => inv.invoice_id !== deleteInvoice.invoice_id
             );
 
-            // Check if this is the last invoice created by the estimate
-            if (estimate.invoice_ids.length === 0) {
-              // Restore the original status of the estimate
-              estimate.status = estimate.current_sub_status || "draft";
-              estimate.status_formatted =
-                estimate.current_sub_status_formatted || "Draft";
-
-              // Clear the invoiced amount fields
-              estimate.invoiced_amount = null;
-              estimate.invoiced_amount_formatted = null;
-
-              // Clear current_sub_status fields
-              estimate.current_sub_status = null;
-              estimate.current_sub_status_formatted = null;
+            // Update status if no more invoices
+            if (salesorder.invoice_ids.length === 0) {
+              salesorder.status = salesorder.current_sub_status || "draft";
+              salesorder.status_formatted =
+                salesorder.current_sub_status_formatted || "Draft";
             }
 
-            // Add audit fields to estimate
-            estimate.last_modified_by_id = res.locals.user_id;
-            estimate.updated_at = new Date();
+            // Add audit fields
+            salesorder.last_modified_by_id = res.locals.user_id;
+            salesorder.updated_at = new Date();
 
-            // Save the updated estimate
-            await estimate.save();
-            console.log(`Estimate ${deleteInvoice.estimate_id} updated successfully`);
+            await salesorder.save();
+            console.log(
+              `Sales Order ${deleteInvoice.salesorder_id} updated successfully`
+            );
           }
+        } catch (salesorderError) {
+          console.error("Error updating sales order:", salesorderError);
         }
-      } catch (estimateError) {
-        console.error("Error updating estimate:", estimateError);
-        // Don't fail the entire operation if estimate update fails
       }
-    }
 
-    // Handle salesorder update if this is a converted invoice
-    if (deleteInvoice.salesorder_id) {
-      try {
-        const salesorder = await SalesOrderCollection.findOne({
-          salesorder_id: deleteInvoice.salesorder_id,
-          organization_id: org_id,
-          deleted_at: null,
-        });
+      // Handle delivery challan update if this is a converted invoice
+      if (deleteInvoice.deliverychallan_id) {
+        try {
+          const deliverychallan = await DeliveryChallanCollection.findOne({
+            deliverychallan_id: deleteInvoice.deliverychallan_id,
+            organization_id: org_id,
+            deleted_at: null,
+          });
 
-        if (salesorder) {
-          // Remove the deleted invoice's ID from the invoice_ids array
-          salesorder.invoice_ids = salesorder.invoice_ids.filter(
-            (id) => id !== deleteInvoice.invoice_id
-          );
+          if (deliverychallan) {
+            // Remove the deleted invoice's ID from the invoice_ids array
+            deliverychallan.invoice_ids = deliverychallan.invoice_ids.filter(
+              (id) => id !== deleteInvoice.invoice_id
+            );
 
-          // Remove the deleted invoice's details from the invoices array
-          salesorder.invoices = salesorder.invoices.filter(
-            (inv) => inv.invoice_id !== deleteInvoice.invoice_id
-          );
+            // Remove the deleted invoice's details from the invoices array
+            deliverychallan.invoices = deliverychallan.invoices.filter(
+              (inv) => inv.invoice_id !== deleteInvoice.invoice_id
+            );
 
-          // Update status if no more invoices
-          if (salesorder.invoice_ids.length === 0) {
-            salesorder.status = salesorder.current_sub_status || "draft";
-            salesorder.status_formatted =
-              salesorder.current_sub_status_formatted || "Draft";
+            // Update status if no more invoices
+            if (deliverychallan.invoice_ids.length === 0) {
+              deliverychallan.status =
+                deliverychallan.current_sub_status || "draft";
+              deliverychallan.status_formatted =
+                deliverychallan.current_sub_status_formatted || "Draft";
+            }
+
+            // Add audit fields
+            deliverychallan.last_modified_by_id = res.locals.user_id;
+            deliverychallan.updated_at = new Date();
+
+            await deliverychallan.save();
+            console.log(
+              `Delivery Challan ${deleteInvoice.deliverychallan_id} updated successfully`
+            );
           }
-
-          // Add audit fields
-          salesorder.last_modified_by_id = res.locals.user_id;
-          salesorder.updated_at = new Date();
-
-          await salesorder.save();
-          console.log(`Sales Order ${deleteInvoice.salesorder_id} updated successfully`);
+        } catch (challanError) {
+          console.error("Error updating delivery challan:", challanError);
         }
-      } catch (salesorderError) {
-        console.error("Error updating sales order:", salesorderError);
       }
+
+      // Log user activity
+      await userActivityHelper(
+        res.locals.user_id,
+        org_id,
+        deleteInvoice.customer_id,
+        `Invoice deleted for ${formatCurrency(deleteInvoice.total || 0)}`,
+        "Invoice deleted",
+        deleteInvoice.invoice_id,
+        "Invoice"
+      );
+
+      console.log("Invoice and Journal deleted successfully:", {
+        invoice_id: invoice_id,
+        journal_id: journal_id,
+        organization_id: org_id,
+        admin_id: res.locals.user_id,
+      });
+
+      return res.status(ST_CODES.OK).json({
+        success: true,
+        message: "Invoice deleted successfully",
+        data: deleteInvoice,
+      });
+    } catch (error) {
+      console.log("Error in Invoice delete", error);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+        success: false,
+        message:
+          "Internal Server Error: Unable to delete invoice. Please try again later.",
+      });
     }
-
-    // Handle delivery challan update if this is a converted invoice
-    if (deleteInvoice.deliverychallan_id) {
-      try {
-        const deliverychallan = await DeliveryChallanCollection.findOne({
-          deliverychallan_id: deleteInvoice.deliverychallan_id,
-          organization_id: org_id,
-          deleted_at: null,
-        });
-
-        if (deliverychallan) {
-          // Remove the deleted invoice's ID from the invoice_ids array
-          deliverychallan.invoice_ids = deliverychallan.invoice_ids.filter(
-            (id) => id !== deleteInvoice.invoice_id
-          );
-
-          // Remove the deleted invoice's details from the invoices array
-          deliverychallan.invoices = deliverychallan.invoices.filter(
-            (inv) => inv.invoice_id !== deleteInvoice.invoice_id
-          );
-
-          // Update status if no more invoices
-          if (deliverychallan.invoice_ids.length === 0) {
-            deliverychallan.status = deliverychallan.current_sub_status || "draft";
-            deliverychallan.status_formatted =
-              deliverychallan.current_sub_status_formatted || "Draft";
-          }
-
-          // Add audit fields
-          deliverychallan.last_modified_by_id = res.locals.user_id;
-          deliverychallan.updated_at = new Date();
-
-          await deliverychallan.save();
-          console.log(`Delivery Challan ${deleteInvoice.deliverychallan_id} updated successfully`);
-        }
-      } catch (challanError) {
-        console.error("Error updating delivery challan:", challanError);
-      }
-    }
-
-    // Log user activity
-    await userActivityHelper(
-      res.locals.user_id,
-      org_id,
-      deleteInvoice.customer_id,
-      `Invoice deleted for ${formatCurrency(deleteInvoice.total || 0)}`,
-      "Invoice deleted",
-      deleteInvoice.invoice_id,
-      "Invoice"
-    );
-
-    console.log("Invoice and Journal deleted successfully:", {
-      invoice_id: invoice_id,
-      journal_id: journal_id,
-      organization_id: org_id,
-      admin_id: res.locals.user_id,
-    });
-
-    return res.status(ST_CODES.OK).json({
-      success: true,
-      message: "Invoice deleted successfully",
-      data: deleteInvoice,
-    });
-
-  } catch (error) {
-    console.log("Error in Invoice delete", error);
-    return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
-      success: false,
-      message: "Internal Server Error: Unable to delete invoice. Please try again later.",
-    });
   }
-}
   // 📌 get invoice unique Id
   async getUniqueId(req, res) {
     try {
@@ -1886,7 +1441,6 @@ class InvoiceController {
       });
     }
   }
-
   askAI = async (req, res) => {
     try {
       const { question } = req.body;
@@ -2140,7 +1694,6 @@ class InvoiceController {
       });
     }
   }
-
   // 📌 Change sales order status
   async updateInvoiceStatus(req, res) {
     try {

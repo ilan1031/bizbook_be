@@ -15,11 +15,10 @@ const authMiddleware = require("../middleware/userMiddleware");
 //   uploadBills.single("file"),
 //   ImportController.uploadFiles
 // );
+// Get collection keys (columns) for import
 router.get("/get-column", authMiddleware, ImportController.sendCollecetionKeys);
+// Import bills from uploaded file
 router.post("/import-bills", authMiddleware, ImportController.uploadBills);
-router.post(
-  "/purchase-order",
-  authMiddleware,
-  ImportController.uploadPurchaseOrder
-);
+// Import purchase order from uploaded file
+router.post("/purchase-order", authMiddleware, ImportController.uploadPurchaseOrder);
 module.exports = router;

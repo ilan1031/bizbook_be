@@ -4,18 +4,19 @@ const recurringInvoiceController = require("../controllers/recurringInvoiceContr
 const authMiddleware = require("../middleware/userMiddleware");
 const { uploadRecurringInvoice } = require("../helpers/multer");
 
-// 📌Recurring Invoice 
-router.post("/RecurringInvoices/recurring",authMiddleware, uploadRecurringInvoice.single("documents") ,recurringInvoiceController.createRecurringInvoice);
-// 📌get INdividual Recurring Invoice 
-router.get( "/RecurringInvoices/individual/:recurring_invoice_id",authMiddleware,recurringInvoiceController.getRecurringInvoiceById);
 
-router.get( "/RecurringInvoices/individual",authMiddleware,recurringInvoiceController.getRecurringInvoiceById);
-// 📌Update   Recurring Invoice 
-router.put("/RecurringInvoices/individual/update",authMiddleware,recurringInvoiceController.updateRecurringInvoice);
-// 📌get  Recurring Invoice 
-router.get("/RecurringInvoices/getall",authMiddleware,recurringInvoiceController.getRecurringInvoices);
-// 📌Soft Delete Recurring Invoice 
-router.delete("/RecurringInvoices/individual/delete",authMiddleware,recurringInvoiceController.deleteRecurringInvoice);
+// Create a recurring invoice
+router.post("/RecurringInvoices/recurring", authMiddleware, uploadRecurringInvoice.single("documents"), recurringInvoiceController.createRecurringInvoice);
+// Get an individual recurring invoice by ID
+router.get("/RecurringInvoices/individual/:recurring_invoice_id", authMiddleware, recurringInvoiceController.getRecurringInvoiceById);
+// Get an individual recurring invoice (alternate route)
+router.get("/RecurringInvoices/individual", authMiddleware, recurringInvoiceController.getRecurringInvoiceById);
+// Update a recurring invoice
+router.put("/RecurringInvoices/individual/update", authMiddleware, recurringInvoiceController.updateRecurringInvoice);
+// Get all recurring invoices
+router.get("/RecurringInvoices/getall", authMiddleware, recurringInvoiceController.getRecurringInvoices);
+// Soft delete a recurring invoice
+router.delete("/RecurringInvoices/individual/delete", authMiddleware, recurringInvoiceController.deleteRecurringInvoice);
 
 
 

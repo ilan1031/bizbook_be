@@ -11,9 +11,6 @@ class ContactPersonController {
       let bData = req.body;
       const admin_id = res.locals.user_id;
       const { organization_id, contact_id } = req.query;
-      console.log(contact_id, organization_id, "second/////////////////////");
-      console.log(req.body, "first*--------------");
-
       // return
 
       if (!organization_id || !contact_id) {
@@ -191,89 +188,6 @@ class ContactPersonController {
       });
     }
   }
-
-  // async getcontactPersonsByContactId(req, res) {
-  //   try {
-  //     const { page = 1, limit = 10 } = req.query;
-  //     const { contact_id}=req.params;
-  //     // console.log(req.params,"-*-*-*-*-");
-  //     // return
-
-  //     if (!contact_id) {
-  //       return res.status(ST_CODES.BAD_REQUEST).json({
-  //         success: false,
-  //         message: "contact_id is required",
-  //       });
-  //     }
-
-  //     const query = { contact_id: contact_id };
-  //     console.log(query);
-
-  //     let sort = { createdAt: -1 };
-  //     const projection = {
-  //       contact_person_id: 1,
-  //       contact_id: 1,
-  //       organization_id: 1,
-  //       salutation: 1,
-  //       first_name: 1,
-  //       last_name: 1,
-  //       email: 1,
-  //       phone: 1,
-  //       mobile: 1,
-  //       skype: 1,
-  //       department: 1,
-  //       designation: 1,
-  //       is_primary_contact: 1,
-  //       is_portal_invitation_accepted: 1,
-  //       createdAt: 1,
-  //     };
-
-  //     const limitInt = parseInt(limit, 10);
-  //     const pageInt = parseInt(page, 10);
-  //     const results = await queryHelper.findData(ContactPersonCollection, query, projection, sort, limitInt, pageInt);
-
-  //     if (!results.status || !results.msg || results.msg.length === 0) {
-  //       return res.status(ST_CODES.NOT_FOUND).json({
-  //         success: false,
-  //         message: "No contact persons found for the given contact_id",
-  //       });
-  //     }
-
-  //     const formattedData = results.msg.map(contactPerson => ({
-  //       contact_person_id: contactPerson.contact_person_id || "",
-  //       contact_id: contactPerson.contact_id || "",
-  //       organization_id: contactPerson.organization_id || "",
-  //       salutation: contactPerson.salutation || "",
-  //       first_name: contactPerson.first_name || "",
-  //       last_name: contactPerson.last_name || "",
-  //       email: contactPerson.email || "",
-  //       phone: contactPerson.phone || "",
-  //       mobile: contactPerson.mobile || "",
-  //       skype: contactPerson.skype || "",
-  //       department: contactPerson.department || "",
-  //       designation: contactPerson.designation || "",
-  //       is_primary_contact: contactPerson.is_primary_contact || false,
-  //       is_portal_invitation_accepted: contactPerson.is_portal_invitation_accepted || false
-  //     }));
-
-  //     res.status(ST_CODES.OK).json({
-  //       success: true,
-  //       data: formattedData,
-  //       pagination: {
-  //         page: pageInt,
-  //         limit: limitInt,
-  //         total: results.total || 0
-  //       }
-  //     });
-  //   } catch (error) {
-  //     console.error("getcontactPersonsByContactId Error:", error.message);
-  //     res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
-  //       success: false,
-  //       message: "Something went wrong"
-  //     });
-  //   }
-  // }
-
   async getcontactPersonsByContactId(req, res) {
     try {
       const { page = 1, limit = 10 } = req.query;
@@ -435,7 +349,6 @@ class ContactPersonController {
       });
     }
   }
-
   async updatecontactPerson(req, res) {
     try {
       const { contact_person_id } = req.params;
@@ -507,8 +420,6 @@ class ContactPersonController {
     }
   }
   async getContactPersonById(req, res) {
-    console.log("coming------------");
-    
     try {
       const { contact_person_id } = req.params;
       

@@ -4,7 +4,9 @@ const TaxExemptionController = require("../controllers/taxExemptionController");
 const authMiddleware = require("../middleware/userMiddleware");
 
 
-router.post("/taxes", authMiddleware,TaxExemptionController.create);
-router.get("/taxes",TaxExemptionController.getTaxByType);
+// Create a new tax exemption
+router.post("/taxes", authMiddleware, TaxExemptionController.create);
+// Get tax exemptions by type
+router.get("/taxes", TaxExemptionController.getTaxByType);
 
 module.exports = router;

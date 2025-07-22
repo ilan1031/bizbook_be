@@ -116,7 +116,9 @@ class DeliveryChallanController {
         discount_amount_formatted: req.body.discount_amount_formatted || "",
         discount_amount: req.body.discount_amount || 0,
         discount: req.body.discount || "",
-        discount_applied_on_amount_formatted: `₹${parseFloat(req.body.sub_total).toFixed(2)}`,
+        discount_applied_on_amount_formatted: `₹${parseFloat(
+          req.body.sub_total
+        ).toFixed(2)}`,
         discount_applied_on_amount: req.body.sub_total,
         is_discount_before_tax: req.body.is_discount_before_tax || true,
         discount_type: req.body.discount_type || "",
@@ -135,7 +137,9 @@ class DeliveryChallanController {
         sub_total: req.body.sub_total,
         sub_total_formatted: `₹${parseFloat(req.body.sub_total).toFixed(2)}`,
         sub_total_inclusive_of_tax: req.body.sub_total,
-        sub_total_inclusive_of_tax_formatted: `₹${parseFloat(req.body.sub_total).toFixed(2)}`,
+        sub_total_inclusive_of_tax_formatted: `₹${parseFloat(
+          req.body.sub_total
+        ).toFixed(2)}`,
         tax_total: req.body.tax_total || 0.0,
         tax_total_formatted: `₹${
           req.body.tax_amount
@@ -145,7 +149,9 @@ class DeliveryChallanController {
         total: req.body.total,
         total_formatted: `₹${parseFloat(req.body.total).toFixed(2)}`,
         adjustment: parseFloat(req.body.adjustment) || 0,
-        adjustment_formatted: `₹${parseFloat(req.body.adjustment || 0).toFixed(2)}`,
+        adjustment_formatted: `₹${parseFloat(req.body.adjustment || 0).toFixed(
+          2
+        )}`,
         adjustment_description: adjustment_description || "",
         transaction_rounding_type:
           req.body.transaction_rounding_type || "no_rounding",
@@ -153,7 +159,9 @@ class DeliveryChallanController {
         price_precision: req.body.price_precision || 2,
         comments: [
           {
-            description: `Delivery Challan created for ₹${parseFloat(req.body.total).toFixed(2)}`,
+            description: `Delivery Challan created for ₹${parseFloat(
+              req.body.total
+            ).toFixed(2)}`,
             commented_by_id: created_by_id || "",
             commented_by: req.body.commented_by || "",
             comment_type: req.body.comment_type || "system",
@@ -225,7 +233,6 @@ class DeliveryChallanController {
       });
     }
   }
-
   // 📝 Get all delivery challans with pagination
   async getDeliveryChallans(req, res) {
     try {
@@ -464,46 +471,43 @@ class DeliveryChallanController {
       });
     }
   }
-
   // 📝 Get single delivery challan by ID
   async getDeliveryChallanById(req, res) {
-  try {
-    const { organization_id } = req.query;
-    const { deliverychallan_id } = req.params;
+    try {
+      const { organization_id } = req.query;
+      const { deliverychallan_id } = req.params;
 
-    // Fetch the delivery challan from the database
-    const deliveryChallan = await DeliveryChallan.findOne({
-      organization_id: organization_id,
-      deliverychallan_id: deliverychallan_id,
-    });
+      // Fetch the delivery challan from the database
+      const deliveryChallan = await DeliveryChallan.findOne({
+        organization_id: organization_id,
+        deliverychallan_id: deliverychallan_id,
+      });
 
-    // Check if the delivery challan exists
-    if (!deliveryChallan) {
-      return res.status(ST_CODES.NOT_FOUND).send({
+      // Check if the delivery challan exists
+      if (!deliveryChallan) {
+        return res.status(ST_CODES.NOT_FOUND).send({
+          status: false,
+          message: "Delivery Challan not found or unauthorized access",
+        });
+      }
+
+      // Fetch organization details
+      const org_details = await Organization.findOne({ organization_id });
+
+      // Return the delivery challan data with organizationData
+      res.status(ST_CODES.OK).send({
+        status: true,
+        data: deliveryChallan,
+        organizationData: org_details, // this is the additional key
+      });
+    } catch (error) {
+      console.error("getDeliveryChallanById Error:", error);
+      res.status(ST_CODES.INTERNAL_SERVER_ERROR).send({
         status: false,
-        message: "Delivery Challan not found or unauthorized access",
+        message: "Something went wrong",
       });
     }
-
-    // Fetch organization details
-    const org_details = await Organization.findOne({ organization_id });
-
-    // Return the delivery challan data with organizationData
-    res.status(ST_CODES.OK).send({
-      status: true,
-      data: deliveryChallan,
-      organizationData: org_details, // this is the additional key
-    });
-  } catch (error) {
-    console.error("getDeliveryChallanById Error:", error);
-    res.status(ST_CODES.INTERNAL_SERVER_ERROR).send({
-      status: false,
-      message: "Something went wrong",
-    });
   }
-}
-
-
   // 📝 Update delivery challan
   async updateDeliveryChallan(req, res) {
     try {
@@ -555,7 +559,6 @@ class DeliveryChallanController {
       });
     }
   }
-
   // 📝 Delete delivery challan (soft delete)
   async deleteDeliveryChallan(req, res) {
     try {
@@ -667,7 +670,6 @@ class DeliveryChallanController {
       });
     }
   }
-
   // get deliveryChallan unique Id
   async getUniqueId(req, res) {
     try {
@@ -765,7 +767,6 @@ class DeliveryChallanController {
       });
     }
   }
-
   //Convert to Invoice
   async convertToInvoice(req, res) {
     try {
@@ -821,7 +822,7 @@ class DeliveryChallanController {
       //     },
       //   }
       // );
-      
+
       // console.log("createInvoiceResponse", createInvoiceResponse.data);
 
       // // Extract the created invoice
