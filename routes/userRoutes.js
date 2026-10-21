@@ -8,6 +8,10 @@ const router = express.Router();
 router.post("/user/user-register", usersController.userRegister);
 // User login
 router.post("/user/user-login", usersController.userLogin);
+// Second login step when signing in from a new IP (SMS code)
+router.post("/user/verify-login-otp", usersController.verifyLoginOtp);
+// Current user's role, status and page permissions
+router.get("/user/me", authMiddleware, usersController.getMe);
 // Fetch user by token
 router.get("/user/fetch/:token", usersController.fetchUser);
 // Get admin user data (requires auth)

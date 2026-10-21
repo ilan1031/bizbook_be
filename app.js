@@ -116,6 +116,7 @@ const journalRoutes = require("./routes/journalRoutes");
 const ProfitAndLossRoutes = require("./routes/ProfitAndLossRoutes");
 const manualJournalRoutes = require("./routes/manualJournalRoutes");
 const balanceSheetRoutes = require("./routes/balanceSheetRoutes");
+const adminRoutes = require("./routes/adminRoutes");
 
 // const emailRoutes = require('./routes/emailRoutes');
 // const itemRoutes = require("./routes/itemRoutes");
@@ -138,10 +139,24 @@ app.set("view engine", "ejs");
 // but it's a landmine (the previous code did both at once). Reflect an
 // allow-listed origin instead so credentialed cross-origin requests stay
 // restricted to our own frontend(s).
+// FRONTEND_URL may list several origins separated by commas
+// (e.g. the Vercel production URL and a preview URL).
 const allowedOrigins = [
-  process.env.FRONTEND_URL,
+  ...String(process.env.FRONTEND_URL || "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter(Boolean),
   "http://localhost:3000",
-].filter(Boolean);
+];
+
+// Behind a reverse proxy (Render, etc.) the client's IP arrives in
+// X-Forwarded-For. TRUST_PROXY tells Express how many proxy hops to trust
+// (Render: 1). Leave it unset when not behind a proxy, otherwise clients
+// could fake their IP - which the per-user IP allow-list relies on.
+if (process.env.TRUST_PROXY) {
+  const hops = Number(process.env.TRUST_PROXY);
+  app.set("trust proxy", Number.isNaN(hops) ? process.env.TRUST_PROXY : hops);
+}
 
 app.use(
   cors({
@@ -158,6 +173,12 @@ app.use(
   })
 );
 
+// Health check for the hosting platform (Render's healthCheckPath).
+app.get("/api-health", (req, res) => {
+  const dbUp = require("mongoose").connection.readyState === 1;
+  res.status(dbUp ? 200 : 503).json({ ok: dbUp, db: dbUp ? "connected" : "disconnected" });
+});
+
 app.use(bodyParser.json({ limit: "10mb" }));
 app.use(bodyParser.urlencoded({ limit: "10mb", extended: true }));
 
@@ -171,7 +192,8 @@ app.use(
   "/api/v1",
   rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 300,
+    // Per client IP; each page makes several API calls.
+    max: 1500,
     standardHeaders: true,
     legacyHeaders: false,
   })
@@ -190,6 +212,7 @@ app.use(
   [
     "/api/v1/user/user-login",
     "/api/v1/user/user-register",
+    "/api/v1/user/verify-login-otp",
     "/api/v1/client/login",
     "/api/v1/client/register",
   ],
@@ -252,6 +275,7 @@ app.use("/api/v1", journalRoutes);
 app.use("/api/v1", ProfitAndLossRoutes);
 app.use("/api/v1", manualJournalRoutes);
 app.use("/api/v1", balanceSheetRoutes);
+app.use("/api/v1", adminRoutes);
 
 // catch 404 and forward to error handler
 app.use(function (req, res, next) {

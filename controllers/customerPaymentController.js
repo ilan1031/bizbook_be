@@ -14,12 +14,26 @@ require("dotenv").config();
 const JournalCollection = mongoose.model("Journal");
 const COA_collection = mongoose.model("Chart_of_account");
 
-// Razorpay instance
-const razorpayInstance = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID, // test key
-  key_secret: process.env.RAZORPAY_SECRET_ID, // test secret
-  key_secret: process.env.RAZORPAY_KEY_SECRET, // test secret
-});
+// Razorpay client, created on first use: the constructor throws when the
+// keys are missing, which used to crash the whole server on startup.
+let razorpayClient = null;
+const razorpayInstance = new Proxy(
+  {},
+  {
+    get: (_, prop) => {
+      if (!razorpayClient) {
+        if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+          throw new Error("Razorpay is not configured (set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)");
+        }
+        razorpayClient = new Razorpay({
+          key_id: process.env.RAZORPAY_KEY_ID,
+          key_secret: process.env.RAZORPAY_KEY_SECRET,
+        });
+      }
+      return razorpayClient[prop];
+    },
+  }
+);
 
 class CustomerPaymentController {
   // 📝 Get Customer Payment and filter by customer ID
