@@ -3,6 +3,7 @@ const CustomerPaymentCollection = require("../model/customerPayment");
 const InvoiceCollection = require("../model/invoice");
 const queryHelper = require("../helpers/query");
 const commonHelper = require("../helpers/commonHelpers");
+const { toPaise, fromPaise, syncJournalPosting } = require("../helpers/accountingHelper");
 const { default: axios } = require("axios");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const CustomerCollection = require("../model/contactModel");
@@ -34,6 +35,35 @@ const razorpayInstance = new Proxy(
     },
   }
 );
+
+// Applies a recorded payment to its invoices: lowers each balance by the
+// amount applied plus any TDS the customer withheld, and marks the invoice
+// paid or partially paid.
+const applyPaymentToInvoices = async (organization_id, payment) => {
+  for (const inv of payment.invoices || []) {
+    const reduce = toPaise(Number(inv.amount_applied || 0) + Number(inv.tax_amount_withheld || 0));
+    if (reduce <= 0) continue;
+    const filter = {
+      organization_id: { $in: [String(organization_id), Number(organization_id)] },
+      invoice_id: inv.invoice_id,
+      deleted_at: null,
+    };
+    const existing = await InvoiceCollection.findOne(filter).lean();
+    if (!existing) continue;
+    const balance = Math.max(0, toPaise(existing.balance ?? existing.total) - reduce);
+    const paid = balance === 0;
+    await InvoiceCollection.updateOne(filter, {
+      $set: {
+        balance: fromPaise(balance),
+        balance_formatted: commonHelper.formatRupee(fromPaise(balance)),
+        status: paid ? "paid" : "partially paid",
+        status_formatted: paid ? "Paid" : "Partially Paid",
+      },
+      $inc: { payment_made: Number(inv.amount_applied || 0) },
+      $push: { payments: { payment_id: payment.payment_id, payment_number: payment.payment_number || "" } },
+    });
+  }
+};
 
 class CustomerPaymentController {
   // 📝 Get Customer Payment and filter by customer ID
@@ -1377,107 +1407,68 @@ class CustomerPaymentController {
       });
     }
   }
+  // Online (Razorpay) payments: called by the checkout after the customer
+  // pays. Everything is taken from the payment saved when the order was
+  // created - never from the request - and the captured amount must match
+  // before the payment is applied to invoices and posted.
   async verifyPayment(req, res) {
     try {
-      const {
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature,
-        paymentData,
-      } = req.body;
+      const { razorpay_order_id, razorpay_payment_id, razorpay_signature, paymentData } = req.body;
       const { organization_id } = req.query;
-
       if (!organization_id) {
-        return res.status(400).json({
-          status: false,
-          message: "Organization ID is required",
-        });
+        return res.status(400).json({ status: false, message: "Organization ID is required" });
       }
-
-      console.log("Verification payload received:", {
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature,
-        hasPaymentData: !!paymentData,
-      });
-
-      // Check if Razorpay secret is available
+      if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        return res.status(400).json({ status: false, message: "Missing payment confirmation details" });
+      }
       if (!process.env.RAZORPAY_KEY_SECRET) {
-        console.error(
-          "RAZORPAY_KEY_SECRET is not defined in environment variables"
-        );
-        return res.status(500).json({
-          status: false,
-          message: "Server configuration error: Razorpay secret not found",
-        });
+        return res.status(500).json({ status: false, message: "Online payments are not configured" });
       }
-
-      // Verify Razorpay signature
-      const crypto = require("crypto");
-      const body = razorpay_order_id + "|" + razorpay_payment_id;
-
-      console.log("Verifying signature with:", {
-        body,
-        secret_exists: !!process.env.RAZORPAY_KEY_SECRET,
-        received_signature: razorpay_signature,
-      });
 
       const expectedSignature = crypto
         .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-        .update(body.toString())
+        .update(`${razorpay_order_id}|${razorpay_payment_id}`)
         .digest("hex");
-
-      console.log("Expected signature:", expectedSignature);
-      console.log("Received signature:", razorpay_signature);
-
-      if (expectedSignature !== razorpay_signature) {
-        console.error("Signature verification failed");
-        return res.status(400).json({
-          status: false,
-          message: "Invalid payment signature",
-        });
+      const sigOk =
+        expectedSignature.length === String(razorpay_signature).length &&
+        crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(String(razorpay_signature)));
+      if (!sigOk) {
+        return res.status(400).json({ status: false, message: "Invalid payment signature" });
       }
 
-      console.log("Signature verified successfully");
+      const payment = await CustomerPaymentCollection.findOne({
+        organization_id: String(organization_id),
+        razorpay_order_id,
+        ...(paymentData?.payment_id ? { payment_id: paymentData.payment_id } : {}),
+      });
+      if (!payment) {
+        return res.status(404).json({ status: false, message: "Payment not found" });
+      }
+      if (payment.payment_status === "completed") {
+        return res.status(200).json({ status: true, message: "Payment already recorded", data: payment });
+      }
 
-      // Fetch payment details from Razorpay
-      const razorpayPayment = await razorpayInstance.payments.fetch(
-        razorpay_payment_id
-      );
-      console.log("Razorpay payment details:", razorpayPayment);
-
+      const razorpayPayment = await razorpayInstance.payments.fetch(razorpay_payment_id);
       if (razorpayPayment.status !== "captured") {
-        return res.status(400).json({
-          status: false,
-          message: "Payment not captured",
-        });
+        return res.status(400).json({ status: false, message: "Payment not captured" });
+      }
+      if (
+        razorpayPayment.order_id !== razorpay_order_id ||
+        Number(razorpayPayment.amount) !== Math.round(Number(payment.amount) * 100)
+      ) {
+        return res.status(400).json({ status: false, message: "Payment amount does not match" });
       }
 
-      // Process and save payment data
-      let bData = paymentData;
-
-      // Assign core fields
-      bData["organization_id"] = organization_id;
-      bData["created_by"] = res.locals.user_id;
-      bData["payment_status"] = "completed";
-      bData["payment_status_formatted"] = "Completed";
-      bData["unused_amount"] = bData.amount;
-      bData["unused_amount_formatted"] = bData.amount_formatted;
-      bData["exchange_rate"] = 1.0;
-      bData["exchange_rate_formatted"] = "₹1.00";
-      bData["currency_symbol"] = "₹";
-      bData["currency_code"] = "INR";
-      bData["created_time"] = new Date();
-      bData["updated_time"] = new Date();
-
-      // Add payment_made array
-      bData.payment_made = [
+      await applyPaymentToInvoices(organization_id, payment);
+      payment.payment_status = "completed";
+      payment.payment_status_formatted = "Completed";
+      payment.payment_made = [
         {
           payment_made_id: razorpayPayment.id,
           payment_made_date: new Date(),
           payment_made_date_formatted: new Date().toLocaleDateString("en-IN"),
-          payment_made_amount: bData.amount,
-          payment_made_amount_formatted: `₹${bData.amount.toFixed(2)}`,
+          payment_made_amount: payment.amount,
+          payment_made_amount_formatted: commonHelper.formatRupee(payment.amount),
           payment_made_status: razorpayPayment.status,
           payment_made_status_formatted: razorpayPayment.status,
           payment_order_id: razorpay_order_id,
@@ -1485,360 +1476,191 @@ class CustomerPaymentController {
           payment_bank_id: razorpayPayment.bank || "",
         },
       ];
-
-      // Tax and Invoice Processing
-      if (Array.isArray(bData.invoices) && bData.invoices.length > 0) {
-        const totalTaxWithheld = bData.invoices.reduce((sum, invoice) => {
-          return (
-            sum +
-            (invoice.tax_amount_withheld
-              ? parseFloat(invoice.tax_amount_withheld)
-              : 0)
-          );
-        }, 0);
-
-        bData["tax_amount_withheld"] = totalTaxWithheld;
-        bData["tax_amount_withheld_formatted"] = `₹${totalTaxWithheld.toFixed(
-          2
-        )}`;
-
-        for (const invoice of bData.invoices) {
-          try {
-            const existingInvoice = await InvoiceCollection.findOne({
-              organization_id,
-              invoice_id: invoice.invoice_id,
-            });
-
-            invoice["tax_amount_withheld_formatted"] =
-              invoice.tax_amount_withheld
-                ? "₹" + invoice.tax_amount_withheld
-                : "";
-            invoice["amount_applied_formatted"] = invoice.amount_applied
-              ? "₹" + invoice.amount_applied
-              : "";
-            invoice["date"] = bData.date;
-            invoice["date_formatted"] = bData.date_formatted;
-            invoice["total"] = existingInvoice.total;
-            invoice["total_formatted"] = existingInvoice.total_formatted;
-            invoice["invoice_number"] = existingInvoice.invoice_number;
-            invoice["balance"] = existingInvoice.balance;
-            invoice["balance_formatted"] = existingInvoice.balance_formatted;
-
-            if (existingInvoice) {
-              const paymentAmount =
-                parseFloat(invoice.amount_applied || 0) +
-                parseFloat(invoice.tax_amount_withheld || 0);
-              const currentBalance = parseFloat(existingInvoice.balance || 0);
-              const newBalance = currentBalance - paymentAmount;
-
-              const status = newBalance === 0 ? "paid" : "partially paid";
-              const statusFormatted =
-                newBalance === 0 ? "Paid" : "Partially Paid";
-
-              const paymentDetails = {
-                payment_id: bData.payment_id,
-                payment_number: bData.payment_number || "",
-              };
-
-              await InvoiceCollection.findOneAndUpdate(
-                { invoice_id: invoice.invoice_id, organization_id },
-                {
-                  $set: {
-                    balance: newBalance,
-                    balance_formatted: `₹${newBalance.toFixed(2)}`,
-                    status,
-                    status_formatted: statusFormatted,
-                  },
-                  $push: {
-                    payments: paymentDetails,
-                  },
-                },
-                { new: true }
-              );
-            }
-          } catch (error) {
-            console.error(
-              `Error updating invoice ${invoice.invoice_id}:`,
-              error.message
-            );
-          }
-        }
-      } else {
-        bData["tax_amount_withheld"] = 0;
-        bData["tax_amount_withheld_formatted"] = "₹0.00";
-      }
-
-      bData["tds_type"] = bData.tds_tax_account;
-
-      // Fetch customer info
-      if (bData.customer_id) {
-        try {
-          const [contactResponse] = await axios.all([
-            apiHandler.getContactInformation(
-              bData.customer_id,
-              organization_id,
-              req.headers.authorization
-            ),
-          ]);
-          const responseData = contactResponse?.data?.data;
-          if (responseData) {
-            bData["gst_no"] = responseData.gst_no;
-            bData["gst_treatment"] = responseData.gst_treatment;
-            bData["place_of_supply"] = responseData.place_of_contact;
-          }
-        } catch (error) {
-          console.error("Error fetching customer info:", error.message);
-        }
-      }
-      // Save to DB
-      console.log("Saving payment to database...");
-      const customerPayment = await CustomerPaymentCollection.findOneAndUpdate(
-        { payment_id: paymentData.payment_id },
-        {
-          $set: {
-            ...bData, // <-- put actual fields to update here
-          },
-        },
-        {
-          upsert: false, // prevent insert if not found
-          new: true, // return the updated document
-        }
-      );
-
-      console.log("Payment saved successfully:", customerPayment.payment_id);
+      payment.updated_time = new Date();
+      await payment.save();
+      await syncJournalPosting(payment.journal_id, organization_id, "completed");
 
       return res.status(201).json({
         status: true,
         message: "Payment verified and recorded successfully",
-        data: customerPayment,
+        data: payment,
       });
     } catch (error) {
       console.error("Error verifying payment:", error);
-      return res.status(500).json({
-        status: false,
-        message: "Payment verification failed",
-        error: error.message,
-      });
+      return res.status(500).json({ status: false, message: "Payment verification failed" });
     }
   }
+
+  // Records a payment received. Offline modes (cash, bank transfer, cheque,
+  // UPI, ...) are recorded straight away: invoices are updated and the
+  // journal is posted. "Razorpay" creates an online order instead; it is
+  // applied and posted only once verifyPayment confirms the capture.
   async createCustomerPayment(req, res) {
     try {
-      let bData = req.body;
+      const bData = { ...req.body };
       const { organization_id } = req.query;
-
-      // Validate organization_id
       if (!organization_id) {
-        return res.status(400).json({
-          status: false,
-          message: "Organization ID is required",
-        });
+        return res.status(400).json({ status: false, message: "Organization ID is required" });
       }
 
-      // Validate amount
-      if (!bData.amount) {
-        return res.status(400).json({
-          status: false,
-          message: "Amount is required",
-        });
+      const amount = Number(bData.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ status: false, message: "Enter an amount greater than zero" });
       }
+      bData.amount = amount;
 
-      // Generate unique payment ID
-      let paymentId = await commonHelper.generateUniqueId(
-        CustomerPaymentCollection,
-        "payment_id",
-        6,
-        "PR"
+      const isInvoicePayment = bData.formType === "Invoice Payment";
+      const invoices = (Array.isArray(bData.invoices) ? bData.invoices : []).filter(
+        (inv) => Number(inv.amount_applied || 0) > 0 || Number(inv.tax_amount_withheld || 0) > 0
       );
-
-      // Create Razorpay order
-      const razorpayOrder = await razorpayInstance.orders.create({
-        amount: Math.round(bData.amount * 100), // convert to paise
-        currency: "INR",
-        receipt: paymentId,
-      });
-      // Prepare payment data
-      bData["payment_id"] = paymentId;
-      bData["organization_id"] = organization_id;
-      bData["date"] = bData.date;
-      bData["date_formatted"] = bData.date_formatted;
-
-      // Set default fields
-      bData["created_by"] = res.locals.user_id;
-      bData["payment_status"] = "pending"; // Set as pending until payment confirmation
-      bData["payment_status_formatted"] = "Pending";
-      bData["unused_amount"] = bData.amount;
-      bData["unused_amount_formatted"] = bData.amount_formatted;
-      bData["exchange_rate"] = 1.0;
-      bData["exchange_rate_formatted"] = "₹1.00";
-      bData["currency_symbol"] = "₹";
-      bData["currency_code"] = "INR";
-      bData["created_time"] = new Date();
-      bData["updated_time"] = new Date();
-      bData["razorpay_order_id"] = razorpayOrder.id;
-      let fetchCOA = await COA_collection.aggregate([
-        {
-          $match: {
-            organization_id: organization_id,
-          },
-        },
-        {
-          $unwind: {
-            path: "$chart_of_accounts",
-          },
-        },
-        {
-          $match: {
-            // "chart_of_accounts.is_active": true,
-            "chart_of_accounts.account_name": `${bData.deposite_to}`,
-          },
-        },
-      ]);
-      let COA_Detail = fetchCOA[0].chart_of_accounts;
-      // console.log("bData", bData);
-
-      let journalUniqueId = await commonHelper.generateUniqueId(
-        JournalCollection,
-        "journal_id",
-        5,
-        "JL"
-      );
-      let coa_id = "AC_024";
-      let coa_name = "Unearned Revenue";
-      if (bData.formType == "Invoice Payment") {
-        coa_id = "AC_019";
-        coa_name = "Accounts Receivable";
+      const applied = invoices.reduce((sum, inv) => sum + Number(inv.amount_applied || 0), 0);
+      const withheld = invoices.reduce((sum, inv) => sum + Number(inv.tax_amount_withheld || 0), 0);
+      if (toPaise(applied) > toPaise(amount)) {
+        return res.status(400).json({ status: false, message: "Amount applied to invoices is more than the payment" });
       }
-      const journalLineItems = [
-        {
-          coa_account_id: COA_Detail.account_id,
-          coa_account_name: COA_Detail.account_name,
-          creditOrDebit: "Debit",
-          amount: bData.amount,
-          amount_formatted: commonHelper.formatRupee(bData.amount),
-        },
-        {
-          coa_account_id: coa_id,
-          coa_account_name: coa_name,
-          creditOrDebit: "Credit",
-          amount: bData.amount,
-          amount_formatted: commonHelper.formatRupee(bData.amount),
-        },
-      ];
 
-      const journalData = {
-        organization_id,
-        admin_id: res.locals.user_id,
-        journal_id: journalUniqueId,
-        journal_date: bData.date,
-        journal_date_formatted: bData.date_formatted,
-        total_amount: bData.amount,
-        total_amount_formatted: commonHelper.formatRupee(bData.amount),
-        type:
-          bData.formType == "Invoice Payment"
-            ? "Invoice Payment"
-            : "Customer Advance",
-        customer_name: bData.customer_name,
-        line_items: journalLineItems,
-      };
-      await JournalCollection.create(journalData);
-      // Handle invoices if present
-      if (Array.isArray(bData.invoices) && bData.invoices.length > 0) {
-        const totalTaxWithheld = bData.invoices.reduce((sum, invoice) => {
-          return (
-            sum +
-            (invoice.tax_amount_withheld
-              ? parseFloat(invoice.tax_amount_withheld)
-              : 0)
-          );
-        }, 0);
-
-        // Set tax_amount_withheld and its formatted value
-        bData["tax_amount_withheld"] = totalTaxWithheld;
-        bData["tax_amount_withheld_formatted"] = `₹${totalTaxWithheld.toFixed(
-          2
-        )}`;
-
-        // Process invoices data for later use (don't update invoices yet, wait for payment confirmation)
-        for (const invoice of bData.invoices) {
-          try {
-            // Fetch existing invoice data
-            const existingInvoice = await InvoiceCollection.findOne({
-              organization_id: organization_id,
-              invoice_id: invoice.invoice_id,
-            });
-
-            if (existingInvoice) {
-              invoice["tax_amount_withheld_formatted"] =
-                invoice.tax_amount_withheld
-                  ? "₹" + invoice.tax_amount_withheld
-                  : "";
-              invoice["amount_applied_formatted"] = invoice.amount_applied
-                ? "₹" + invoice.amount_applied
-                : "";
-              invoice["date"] = bData.date;
-              invoice["date_formatted"] = bData.date_formatted;
-              invoice["total"] = existingInvoice.total;
-              invoice["total_formatted"] = existingInvoice.total_formatted;
-              invoice["invoice_number"] = existingInvoice.invoice_number;
-              invoice["balance"] = existingInvoice.balance;
-              invoice["balance_formatted"] = existingInvoice.balance_formatted;
-            }
-          } catch (error) {
-            console.error(
-              `Error fetching invoice ${invoice.invoice_id}:`,
-              error.message
-            );
-          }
+      // Each invoice must belong to this organisation and have enough balance.
+      for (const inv of invoices) {
+        const existing = await InvoiceCollection.findOne({
+          organization_id: { $in: [String(organization_id), Number(organization_id)] },
+          invoice_id: inv.invoice_id,
+          deleted_at: null,
+        }).lean();
+        if (!existing) {
+          return res.status(400).json({ status: false, message: `Invoice ${inv.invoice_number || inv.invoice_id} not found` });
         }
-      } else {
-        // If invoices array is empty, set defaults
-        bData["tax_amount_withheld"] = 0;
-        bData["tax_amount_withheld_formatted"] = "₹0.00";
+        if (["draft", "void"].includes(String(existing.status).toLowerCase())) {
+          return res.status(400).json({ status: false, message: `Invoice ${existing.invoice_number} is ${existing.status}` });
+        }
+        const due = toPaise(existing.balance ?? existing.total);
+        if (toPaise(Number(inv.amount_applied || 0) + Number(inv.tax_amount_withheld || 0)) > due) {
+          return res.status(400).json({ status: false, message: `Invoice ${existing.invoice_number} has only ${commonHelper.formatRupee(fromPaise(due))} due` });
+        }
+        Object.assign(inv, {
+          invoice_number: existing.invoice_number,
+          total: existing.total,
+          total_formatted: existing.total_formatted,
+          balance: existing.balance,
+          balance_formatted: existing.balance_formatted,
+          amount_applied_formatted: commonHelper.formatRupee(Number(inv.amount_applied || 0)),
+          tax_amount_withheld_formatted: inv.tax_amount_withheld ? commonHelper.formatRupee(Number(inv.tax_amount_withheld)) : "",
+          date: bData.date,
+          date_formatted: bData.date_formatted,
+        });
+      }
+      bData.invoices = invoices;
+      bData.tax_amount_withheld = withheld;
+      bData.tax_amount_withheld_formatted = commonHelper.formatRupee(withheld);
+
+      // Deposit account (defaults to Undeposited Funds).
+      const depositName = bData.deposite_to || "Undeposited Funds";
+      const coa = await COA_collection.findOne({ organization_id: String(organization_id) }).lean();
+      const depositAccount = (coa?.chart_of_accounts || []).find(
+        (a) => a.account_name === depositName || a.account_id === depositName
+      );
+      if (!depositAccount) {
+        return res.status(400).json({ status: false, message: `Deposit account "${depositName}" not found` });
+      }
+      bData.deposite_to = depositAccount.account_name;
+
+      const isOnline = /^(razorpay|online)/i.test(String(bData.payment_mode || ""));
+      const paymentId = await commonHelper.generateUniqueId(CustomerPaymentCollection, "payment_id", 6, "PR");
+      let razorpayOrder = null;
+      if (isOnline) {
+        razorpayOrder = await razorpayInstance.orders.create({
+          amount: Math.round(amount * 100),
+          currency: "INR",
+          receipt: paymentId,
+        });
+        bData.razorpay_order_id = razorpayOrder.id;
       }
 
-      bData["tds_type"] = bData.tds_tax_account;
+      // Journal: money in, TDS the customer withheld, what settles invoices,
+      // and anything left over is an advance from the customer.
+      const unused = isInvoicePayment ? amount - applied : amount;
+      const line = (coa_account_id, coa_account_name, creditOrDebit, value) => ({
+        coa_account_id,
+        coa_account_name,
+        creditOrDebit,
+        amount: value,
+        amount_formatted: commonHelper.formatRupee(value),
+      });
+      const lines = [line(depositAccount.account_id, depositAccount.account_name, "Debit", amount)];
+      if (withheld > 0) lines.push(line("AC_006", "TDS Receivable", "Debit", withheld));
+      if (isInvoicePayment && applied + withheld > 0) {
+        lines.push(line("AC_019", "Accounts Receivable", "Credit", applied + withheld));
+      }
+      if (unused > 0) lines.push(line("AC_024", "Unearned Revenue", "Credit", unused));
 
-      // Fetch customer information if customer_id exists
+      const journal_id = await commonHelper.generateUniqueId(JournalCollection, "journal_id", 5, "JL");
+      await JournalCollection.create({
+        organization_id: String(organization_id),
+        admin_id: res.locals.user_id,
+        journal_id,
+        journal_date: bData.date || new Date(),
+        journal_date_formatted: bData.date_formatted,
+        total_amount: amount + withheld,
+        total_amount_formatted: commonHelper.formatRupee(amount + withheld),
+        type: isInvoicePayment ? "Invoice Payment" : "Customer Advance",
+        customer_name: bData.customer_name,
+        line_items: lines,
+        // An online payment isn't in the books until it's captured.
+        posting_status: isOnline ? "draft" : "posted",
+      });
+
+      // Customer GST details for the receipt.
       if (bData.customer_id) {
         try {
-          const [contactResponse] = await axios.all([
-            apiHandler.getContactInformation(
-              bData.customer_id,
-              organization_id,
-              req.headers.authorization
-            ),
-          ]);
-          const responseData = contactResponse?.data?.data;
-          if (responseData) {
-            bData["gst_no"] = responseData.gst_no;
-            bData["gst_treatment"] = responseData.gst_treatment;
-            bData["place_of_supply"] = responseData.place_of_contact;
+          const contactResponse = await apiHandler.getContactInformation(
+            bData.customer_id,
+            organization_id,
+            req.headers.authorization
+          );
+          const contact = contactResponse?.data?.data;
+          if (contact) {
+            bData.gst_no = contact.gst_no;
+            bData.gst_treatment = contact.gst_treatment;
+            bData.place_of_supply = contact.place_of_contact;
           }
         } catch (error) {
           console.error("Error fetching customer information:", error.message);
         }
       }
 
-      // Create customer payment record with pending status
-      bData["journal_id"] = journalUniqueId;
+      Object.assign(bData, {
+        payment_id: paymentId,
+        organization_id: String(organization_id),
+        journal_id,
+        created_by: res.locals.user_id,
+        payment_status: isOnline ? "pending" : "completed",
+        payment_status_formatted: isOnline ? "Pending" : "Completed",
+        unused_amount: unused,
+        unused_amount_formatted: commonHelper.formatRupee(unused),
+        amount_formatted: commonHelper.formatRupee(amount),
+        exchange_rate: 1.0,
+        exchange_rate_formatted: "₹1.00",
+        currency_symbol: "₹",
+        currency_code: "INR",
+        tds_type: bData.tds_tax_account,
+        created_time: new Date(),
+        updated_time: new Date(),
+      });
+      delete bData._id;
       const customerPayment = await CustomerPaymentCollection.create(bData);
+      if (!isOnline) await applyPaymentToInvoices(organization_id, customerPayment);
 
-      // Return order details to frontend
       return res.status(200).json({
         status: true,
-        message: "Order created successfully",
+        message: isOnline ? "Order created successfully" : "Payment recorded successfully",
+        online: isOnline,
         order: razorpayOrder,
         payment_id: paymentId,
-        key: process.env.RAZORPAY_KEY_ID,
+        key: isOnline ? process.env.RAZORPAY_KEY_ID : undefined,
         paymentData: customerPayment,
       });
     } catch (error) {
       console.error("Error creating customerPayment:", error);
-      return res.status(500).json({
-        status: false,
-        message: "Failed to create customerPayment",
-        error: error.message,
-      });
+      return res.status(500).json({ status: false, message: "Failed to record the payment" });
     }
   }
 }

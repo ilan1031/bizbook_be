@@ -35,6 +35,12 @@ class ExpensesController {
         "EX"
       );
       bData["unique_EX_id"] = expenseUniqueId;
+      if (bData.type == "expense" && (!Array.isArray(bData.lineItems) || !bData.lineItems.length)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: "Add at least one expense line.",
+        });
+      }
 
       const journalAmt =
         req.body.type == "expense"

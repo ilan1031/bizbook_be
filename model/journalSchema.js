@@ -23,6 +23,11 @@ const JournalSchema = new mongoose.Schema(
 
     type: { type: String },
 
+    // Whether this entry counts in the books. Journals of draft or void
+    // documents (invoices, bills) are kept but left out of every report.
+    // Older journals have no value and count as posted.
+    posting_status: { type: String, enum: ["posted", "draft", "void"], default: "posted" },
+
     // Used by manual journal entries (type "Manual Journal").
     reference_number: { type: String, default: "" },
     notes: { type: String, default: "" },
@@ -93,5 +98,18 @@ JournalSchema.pre(["findOneAndUpdate", "updateOne"], async function () {
   }
   await resolveJournalLines(organization_id, admin_id, lines);
 });
+
+// Documents without a journal pass `{ journal_id: undefined }`; that filter
+// would otherwise match an unrelated journal of the organisation, which then
+// gets overwritten or deleted. Make such writes match nothing instead.
+JournalSchema.pre(
+  ["findOneAndUpdate", "findOneAndDelete", "findOneAndReplace", "updateOne", "updateMany", "deleteOne", "deleteMany", "replaceOne"],
+  function () {
+    const filter = this.getFilter();
+    if (Object.prototype.hasOwnProperty.call(filter, "journal_id") && filter.journal_id == null) {
+      this.setQuery({ _id: { $exists: false } });
+    }
+  }
+);
 
 module.exports = mongoose.model("Journal", JournalSchema);

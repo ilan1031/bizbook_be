@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const JournalCollection = mongoose.model("Journal");
 const ST_CODES = require("../helpers/statusCodeHelpers");
+const { POSTED_JOURNALS } = require("../helpers/accountingHelper");
 const dayjs = require("dayjs");
 
 class journalController {
@@ -48,15 +49,16 @@ class journalController {
       const query = {
         organization_id: organization_id,
         admin_id: admin_id,
-        createdAt: {
+        journal_date: {
           $gte: fromDate,
           $lte: toDate,
         },
+        ...POSTED_JOURNALS,
       };
 
       const [journal, totalCount] = await Promise.all([
         JournalCollection.find(query)
-          .sort({ createdAt: -1 })
+          .sort({ journal_date: -1, createdAt: -1 })
           .skip(skip)
           .limit(limit),
         JournalCollection.countDocuments(query),

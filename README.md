@@ -25,6 +25,25 @@ The API listens on `PORT` (default 4000). `GET /api-health` reports server and d
 
   Messages: sign-up alerts to the superadmin, approval notices to users, and new-device codes.
 
+## Tests
+
+```bash
+TEST_DB_URL="mongodb://127.0.0.1:27017/bizbooks_test?replicaSet=rs0" npm test
+```
+
+The tests drop and recreate their own databases (`bizbooks_test`, `bizbooks_test_ledger`), so never point `TEST_DB_URL` at real data. Bills use transactions, so MongoDB must run as a replica set. `tests/integration/ledger.test.js` runs a full bookkeeping cycle and checks that every journal balances and that the P&L, balance sheet and dashboard agree.
+
+## Books: what counts
+
+Every invoice, bill, payment, expense and manual journal posts a journal. A journal's `posting_status` follows its document: journals of **draft** or **void** invoices and bills, and of online (Razorpay) payments not yet captured, are kept but left out of every report until the document is posted.
+
+For data created before this rule, run once:
+
+```bash
+node scripts/backfill-posting-status.js           # dry run: lists what would change
+node scripts/backfill-posting-status.js --apply   # writes it
+```
+
 ## Deploy on Render
 
 1. **Create the service.** New → Blueprint, pick this repo; `render.yaml` sets up the web service. Or create a Web Service by hand: build `npm install`, start `npm start`.

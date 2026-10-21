@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const COA_collection = mongoose.model("Chart_of_account");
 const ST_CODES = require("../helpers/statusCodeHelpers");
+const { POSTED_JOURNALS } = require("../helpers/accountingHelper");
 const MESSAGE = require("../helpers/messageHelpers");
 const JournalCollection = mongoose.model("Journal");
 class COA_Controller {
@@ -525,6 +526,7 @@ class COA_Controller {
           {
             $match: {
               organization_id: `${org_id}`,
+              ...POSTED_JOURNALS,
               // admin_id: new mongoose.Types.ObjectId(admin_id),
             },
           },

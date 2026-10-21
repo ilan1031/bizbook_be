@@ -12,7 +12,7 @@ const SalesOrderCollection = require("../model/salesOrder");
 const InvoiceCollection = require("../model/invoice");
 const UserCollection = mongoose.model("user");
 const OrganizationCollection = require("../model/organizationSchema");
-const { createInvoiceData } = require("../helpers/invoiceHelper");
+const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
 function createComments(
   commented_by,
   commented_by_id,
@@ -883,6 +883,7 @@ class EstimateController {
       // Call the createInvoice API to create the invoice
       const invoicePayload = await createInvoiceData(req, invoiceData);
       const createdInvoice = await new InvoiceCollection(invoicePayload).save();
+      await postInvoiceJournal(createdInvoice);
 
       const invoiceMongoId = createdInvoice.invoice_id;
 

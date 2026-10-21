@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const UsersCollection = mongoose.model("user");
 const ST_CODES = require("../helpers/statusCodeHelpers");
-const { PAGES, sanitizePermissions } = require("../helpers/rbac");
+const { CATALOG, sanitizePermissions } = require("../helpers/rbac");
 const { sendSms, provider: smsProvider, isConfigured: smsConfigured } = require("../helpers/smsHelper");
 
 const STATUSES = ["pending", "active", "inactive"];
@@ -30,7 +30,7 @@ class AdminController {
         status: true,
         data: users,
         counts: Object.fromEntries(counts.map((c) => [c._id || "pending", c.n])),
-        catalog: PAGES,
+        catalog: CATALOG,
         sms: { provider: smsProvider(), configured: smsConfigured() },
       });
     } catch (error) {

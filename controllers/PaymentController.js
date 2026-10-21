@@ -61,17 +61,18 @@ class PaymentController {
         "JL"
       );
 
+      // Fields from the request first; the server's own fields win.
       let modelData = {
-        unique_PM_id: paymentUniqueId,
-        journal_id: journalUniqueId,
-        admin_id: admin_id, // Using the admin_id from server session
-        organization_id: organization_id,
         // Set initial status as DRAFT
         status: 1,
         status_type: "DRAFT",
         status_formatted: "Draft",
+        ...bData,
+        unique_PM_id: paymentUniqueId,
+        journal_id: journalUniqueId,
+        admin_id: admin_id, // Using the admin_id from server session
+        organization_id: organization_id,
         status_updated_at: new Date(),
-        ...bData, // Spread all other fields from req.body
       };
       if (modelData.is_advance_payment === undefined) {
         modelData.is_advance_payment = true; // Default for vendor advances
@@ -82,13 +83,15 @@ class PaymentController {
         modelData.date = new Date(modelData.date);
       }
       if (modelData.payment_type == "VendorAdvance") {
+        // An advance adds to the vendor's unused credit.
         let vendorData = await VendorCollection.findOneAndUpdate(
           {
             _id: bData.contact_id,
+            organization_id: String(organization_id),
           },
           {
-            $set: {
-              unused_credits_receivable_amount: bData.amount,
+            $inc: {
+              unused_credits_receivable_amount: Number(bData.amount || 0),
             },
           }
         );

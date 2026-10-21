@@ -11,7 +11,7 @@ const constants = require("../config/constant");
 const MESSAGES = require("../config/messages");
 const { createSalesData } = require("../helpers/salesOrderHelper");
 const InvoiceCollection = require("../model/invoice");
-const { createInvoiceData } = require("../helpers/invoiceHelper");
+const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
 
 class SalesOrderController {
   async createSalesOrder(req,res){
@@ -597,6 +597,7 @@ class SalesOrderController {
       // const createdInvoice = createInvoiceResponse.data.data; // Ensure correct path to the invoice object
       const invoicePayload = await createInvoiceData(req, invoiceData);
       const createdInvoice = await new InvoiceCollection(invoicePayload).save();
+      await postInvoiceJournal(createdInvoice);
       console.log(createdInvoice, "createdInvoice-response");
       if (!createdInvoice || !createdInvoice._id) {
         console.error("Invalid invoice response:", createInvoiceResponse.data);

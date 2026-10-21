@@ -66,6 +66,7 @@ class SalespersonController {
 
       const projection = {
         _id: 1,
+        salesperson_id: 1,
         salesperson_name: 1,
         salesperson_email: 1,
         status: 1

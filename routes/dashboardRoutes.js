@@ -5,6 +5,8 @@ const authMiddleware = require("../middleware/userMiddleware");
 const router = express.Router();
 
 
+// Receivable/payable totals for the dashboard cards
+router.get("/summary", authMiddleware, dashboardController.getSummary);
 // Get receivables data for dashboard
 router.get("/get-receivables", authMiddleware, dashboardController.getReceivables);
 // Get payables data for dashboard

@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   PAGES,
+  CATALOG,
   actionFor,
   checkApiAccess,
   sanitizePermissions,
@@ -98,6 +99,18 @@ test("every catalog page has a key, label, group, routes and valid actions", () 
     assert.ok(Array.isArray(p.routes) && p.routes.length);
     assert.ok(p.actions.every((a) => ["view", "create", "edit", "delete"].includes(a)));
   }
+});
+
+test("unbuilt modules are kept for API rules but not offered", () => {
+  const offered = new Set(CATALOG.map((p) => p.key));
+  for (const key of ["banking", "timesheets", "projects", "documents", "payroll", "configure", "creditNotes", "vendorCredits"]) {
+    assert.ok(PAGES.some((p) => p.key === key), key + " still known");
+    assert.ok(!offered.has(key), key + " not offered");
+  }
+  for (const key of ["home", "invoices", "bills", "expenses", "balanceSheet"]) assert.ok(offered.has(key), key);
+  // Recording mileage adds employees, so expenses permission allows it.
+  const clerk = { role: "user", permissions: { expenses: ["view", "create"] } };
+  assert.equal(checkApiAccess(clerk, "POST", "/api/v1/employee"), null);
 });
 
 test("IP normalisation", () => {

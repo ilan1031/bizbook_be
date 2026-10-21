@@ -9,8 +9,14 @@ const logUserActivity = async (
   action,
   ref_id,
   ref_collection,
-  description = ""
+  description = "",
+  session = undefined
 ) => {
+  // Some callers pass a transaction session in place of the description.
+  if (description && typeof description === "object" && typeof description.startTransaction === "function") {
+    session = description;
+    description = "";
+  }
   try {
     // console.log(
     //   admin_id,
@@ -28,16 +34,10 @@ const logUserActivity = async (
       throw new Error("Missing required activity log fields");
     }
 
-    await UserActivity.create({
-      admin_id,
-      organization_id,
-      user_id,
-      message,
-      action,
-      ref_id,
-      ref_collection,
-      description,
-    });
+    await UserActivity.create(
+      [{ admin_id, organization_id, user_id, message, action, ref_id, ref_collection, description }],
+      session ? { session } : {}
+    );
 
     console.log(`User activity logged: ${action} on ${ref_collection}`);
   } catch (error) {

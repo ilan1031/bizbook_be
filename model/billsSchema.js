@@ -110,6 +110,13 @@ const BillSchema = new mongoose.Schema(
     total: Number,
     total_formatted: { type: String },
     subtotal: Number,
+    // What the bill's journal is built from (see buildBillJournal), kept so
+    // an edit can re-post it.
+    sub_total: Number,
+    discount_amount: Number,
+    tax_type: String,
+    tax_percentage: Number,
+    tax_amount: Number,
     taxAmount: Number,
     adjustment: Number,
     payment_made: { type: Number, default: 0 },

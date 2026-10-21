@@ -12,8 +12,9 @@ const askGemini = require("../services/geminiService");
 const apiHandler = require("../handler/api-handler");
 const CustomerCollection = require("../model/contactModel");
 const OrganizationCollection = require("../model/organizationSchema");
-const { createInvoiceData } = require("../helpers/invoiceHelper");
+const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
 const userActivityHelper = require("../helpers/userActivityHelper");
+const { postingStatusFor, syncJournalPosting } = require("../helpers/accountingHelper");
 
 const UserCollection = mongoose.model("user");
 require("dotenv").config();
@@ -342,6 +343,8 @@ class InvoiceController {
         type: "Invoice",
         customer_name: invoiceData.customer_name,
         line_items: Journal_line_items,
+        // A draft invoice isn't in the books until it's sent.
+        posting_status: postingStatusFor(invoiceData.status),
       };
 
       // Add journal_id to invoice data
@@ -1105,20 +1108,25 @@ class InvoiceController {
         customer_name: updateData.customer_name || invoice.customer_name,
         line_items: Journal_line_items,
         type: "Invoice",
+        posting_status: postingStatusFor(updateData.status || invoice.status),
         updated_at: new Date(),
       };
 
       console.log("Updated Journal Data:", updatedJournal);
 
-      // ✅ Update the existing journal entry
-      const updateJournal = await JournalCollection.findOneAndUpdate(
-        {
-          journal_id: invoice.journal_id,
-          organization_id: organization_id,
-        },
-        { $set: updatedJournal },
-        { new: true, runValidators: true }
-      );
+      // ✅ Update the existing journal entry. Without a journal_id the filter
+      // would match some other journal of the organisation, so never query
+      // with it missing.
+      const updateJournal = invoice.journal_id
+        ? await JournalCollection.findOneAndUpdate(
+            {
+              journal_id: invoice.journal_id,
+              organization_id: organization_id,
+            },
+            { $set: updatedJournal },
+            { new: true, runValidators: true }
+          )
+        : null;
 
       if (!updateJournal) {
         console.warn(
@@ -1147,6 +1155,8 @@ class InvoiceController {
           message: "Failed to update invoice",
         });
       }
+      // Invoices converted before journals were posted for them get one now.
+      if (!invoice.journal_id) await postInvoiceJournal(updatedInvoice);
 
       // Log user activity
       await userActivityHelper(
@@ -1747,9 +1757,10 @@ class InvoiceController {
       if (!updatedInvoice) {
         return res.status(ST_CODES.NOT_FOUND).send({
           status: false,
-          message: "Sales Order not found or unauthorized access",
+          message: "Invoice not found or unauthorized access",
         });
       }
+      await syncJournalPosting(updatedInvoice.journal_id, organization_id, status);
 
       res.status(ST_CODES.OK).send({
         status: true,

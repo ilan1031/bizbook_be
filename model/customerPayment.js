@@ -158,6 +158,10 @@ const customerPaymentSchema = new mongoose.Schema(
     deposite_to: { type: String },
     payment_number: { type: String },
     payment_link_id: { type: String, default: null },
+    // Set for online (Razorpay) payments; the payment is applied only after
+    // a captured payment for this order is verified.
+    razorpay_order_id: { type: String },
+    formType: { type: String },
     created_by: { type: String },
     created_time: { type: Date },
     updated_time: { type: Date },

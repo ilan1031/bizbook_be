@@ -9,7 +9,7 @@ const ST_CODES = require("../helpers/statusCodeHelpers");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const { getClientIp, PAGES } = require("../helpers/rbac");
+const { getClientIp, CATALOG } = require("../helpers/rbac");
 const { sendSms, isConfigured: smsConfigured } = require("../helpers/smsHelper");
 
 const OTP_TTL_MS = 5 * 60 * 1000;
@@ -344,7 +344,7 @@ class usersController {
           permissions: user.permissions || {},
           ip_limit: user.ip_limit ?? 2,
           ip_count: (user.allowed_ips || []).length,
-          catalog: PAGES,
+          catalog: CATALOG,
           always_allowed_routes: require("../helpers/rbac").ALWAYS_ALLOWED_ROUTES,
           shared_routes: require("../helpers/rbac").SHARED_ROUTES,
         },

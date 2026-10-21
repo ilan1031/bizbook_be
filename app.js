@@ -66,6 +66,7 @@ require("./model/recurringBillModel");
 require("./model/EmployeeModel");
 require("./model/chartOfAccountsModel");
 require("./model/journalSchema");
+require("./model/withholdingTaxSchema");
 require("./model/coa_transactionSchema");
 
 require("./cron/recurringInvoiceCron");
@@ -279,21 +280,25 @@ app.use("/api/v1", adminRoutes);
 
 // catch 404 and forward to error handler
 app.use(function (req, res, next) {
-  res.status(404).render("404", { title: " Sorry, page not found" });
-});
-
-// catch 404 and forward to error handler
-app.use(function (req, res, next) {
   next(createError(404));
 });
 
 app.use(function (err, req, res, next) {
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error(`${req.method} ${req.originalUrl}:`, err);
+  // API callers get JSON; never leak internals on server errors.
+  if (req.originalUrl.startsWith("/api")) {
+    return res.status(status).json({
+      status: false,
+      message: status === 404 ? "Not found" : status >= 500 ? "Something went wrong" : err.message,
+    });
+  }
   // set locals, only providing error in development
   res.locals.message = err.message;
   res.locals.error = req.app.get("env") === "development" ? err : {};
 
   // render the error page
-  res.status(err.status || 500);
+  res.status(status);
   res.render("error", { title: "Error Page" });
 });
 

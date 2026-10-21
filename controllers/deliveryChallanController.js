@@ -9,7 +9,7 @@ const { default: axios } = require("axios");
 const constants = require("../config/constant");
 const SalesOrderCollection = require("../model/salesOrder");
 const Organization = require("../model/organizationSchema");
-const { createInvoiceData } = require("../helpers/invoiceHelper");
+const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
 const InvoiceCollection = require("../model/invoice");
 
 class DeliveryChallanController {
@@ -829,6 +829,7 @@ class DeliveryChallanController {
       // const createdInvoice = createInvoiceResponse.data.data;
       const invoicePayload = await createInvoiceData(req, invoiceData);
       const createdInvoice = await new InvoiceCollection(invoicePayload).save();
+      await postInvoiceJournal(createdInvoice);
       if (!createdInvoice || !createdInvoice._id) {
         console.error("Invalid invoice response:", createInvoiceResponse.data);
         return res.status(500).send({

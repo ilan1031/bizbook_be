@@ -1,5 +1,61 @@
 const InvoiceCollection = require("../model/invoice"); // Adjust path
 const commonHelper = require("../helpers/commonHelpers"); // Your existing helper
+const mongoose = require("mongoose");
+const { postingStatusFor } = require("./accountingHelper");
+
+const money = (amount) =>
+  `₹${Number(amount || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+// Posts the journal for an invoice that was saved without one (invoices
+// converted from a quote, sales order or delivery challan) using the
+// invoice's own totals, and links it to the invoice. Same lines as
+// InvoiceController.createInvoice: Sales, TDS/TCS, discount, shipping,
+// adjustment, and the receivable.
+exports.postInvoiceJournal = async (invoice) => {
+  if (!invoice || invoice.journal_id) return null;
+  const JournalCollection = mongoose.model("Journal");
+  const InvoiceModel = mongoose.model("Invoice");
+  const num = (v) => Number(v || 0);
+  const sub_total = num(invoice.sub_total);
+  const discount = num(invoice.discount_amount);
+  const tax = num(invoice.tax_total);
+  const shipping = num(invoice.shipping_charge);
+  const adjustment = num(invoice.adjustment);
+  const total = num(invoice.total) || sub_total - discount + shipping + adjustment;
+
+  const line = (coa_account_id, coa_account_name, creditOrDebit, amount) => ({
+    coa_account_id,
+    coa_account_name,
+    creditOrDebit,
+    amount,
+    amount_formatted: money(amount),
+  });
+  const lines = [line("AC_046", "Sales", "Credit", sub_total)];
+  if (invoice.tax_type === "TCS" && tax > 0) lines.push(line("AC_025", "TCS Payable", "Credit", tax));
+  else if (invoice.tax_type === "TDS" && tax > 0) lines.push(line("AC_006", "TDS Receivable", "Debit", tax));
+  if (discount > 0) lines.push(line("AC_050", "Discount", "Debit", discount));
+  if (shipping > 0) lines.push(line("AC_045", "Shipping Charge", "Credit", shipping));
+  if (adjustment !== 0) lines.push(line("AC_044", "Other Charges", adjustment > 0 ? "Credit" : "Debit", Math.abs(adjustment)));
+  lines.push(line("AC_019", "Accounts Receivable", "Debit", total));
+
+  const journal_id = await commonHelper.generateUniqueId(JournalCollection, "journal_id", 5, "JL");
+  const journal = await JournalCollection.create({
+    organization_id: String(invoice.organization_id),
+    admin_id: invoice.admin_id,
+    journal_id,
+    journal_date: invoice.date || new Date(),
+    journal_date_formatted: commonHelper.formatDateString(invoice.date || new Date()),
+    total_amount: total,
+    total_amount_formatted: money(total),
+    type: "Invoice",
+    customer_name: invoice.customer_name || "",
+    line_items: lines,
+    posting_status: postingStatusFor(invoice.status),
+  });
+  await InvoiceModel.updateOne({ _id: invoice._id }, { $set: { journal_id } });
+  invoice.journal_id = journal_id;
+  return journal;
+};
 
 exports.createInvoiceData = async (req, rawData) => {
   const { organization_id } = req.query;
@@ -37,6 +93,7 @@ exports.createInvoiceData = async (req, rawData) => {
   }
 
   // User info and default status
+  bData.admin_id = bData.admin_id || userId;
   bData.created_by_id = userId;
   bData.last_modified_by_id = userId;
   bData.status = bData.status || "draft";

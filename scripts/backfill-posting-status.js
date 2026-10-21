@@ -1,0 +1,69 @@
+// One-off repair for data created before journals had a posting state.
+//
+//  1. Journals of draft or void invoices/bills are marked "draft"/"void" so
+//     they drop out of the P&L and balance sheet (they used to count).
+//  2. Journals of online payments that were never captured are marked
+//     "draft" (they used to count as money received).
+//  3. Invoices converted from a quote, sales order or delivery challan never
+//     got a journal; one is posted for each.
+//
+// Prints what it would change; pass --apply to write.
+//
+// Usage:  node scripts/backfill-posting-status.js [--apply] [<mongo-uri>]
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "../.env") });
+const mongoose = require("mongoose");
+
+const apply = process.argv.includes("--apply");
+const uri = process.argv.slice(2).find((a) => !a.startsWith("--")) || process.env.DB_Coll;
+
+(async () => {
+  if (!uri) {
+    console.error("No MongoDB URI: pass one as an argument or set DB_Coll in .env");
+    process.exit(1);
+  }
+  await mongoose.connect(uri);
+  require("../model/journalSchema");
+  require("../model/invoice");
+  const { postingStatusFor } = require("../helpers/accountingHelper");
+  const { postInvoiceJournal } = require("../helpers/invoiceHelper");
+  const db = mongoose.connection.db;
+  const Journal = mongoose.model("Journal");
+
+  const marks = []; // [journal_id, organization_id, status, why]
+  for await (const inv of db.collection("invoices").find({ journal_id: { $nin: [null, ""] } })) {
+    const status = postingStatusFor(inv.status);
+    if (status !== "posted") marks.push([inv.journal_id, inv.organization_id, status, `invoice ${inv.invoice_number} is ${inv.status}`]);
+  }
+  for await (const bill of db.collection("po_bills").find({ journal_id: { $nin: [null, ""] } })) {
+    const status = postingStatusFor(bill.status_type);
+    if (status !== "posted") marks.push([bill.journal_id, bill.organization_id, status, `bill ${bill.bill_number} is ${bill.status_type}`]);
+  }
+  for await (const p of db.collection("customerpayments").find({ payment_status: "pending", journal_id: { $nin: [null, ""] } })) {
+    marks.push([p.journal_id, p.organization_id, "draft", `payment ${p.payment_id} was never captured`]);
+  }
+
+  let changed = 0;
+  for (const [journal_id, organization_id, status, why] of marks) {
+    const j = await Journal.findOne({ journal_id, organization_id: String(organization_id) }).lean();
+    if (!j || j.posting_status === status) continue;
+    console.log(`${apply ? "marking" : "would mark"} ${journal_id} ${status}: ${why}`);
+    if (apply) await Journal.updateOne({ _id: j._id }, { $set: { posting_status: status } });
+    changed++;
+  }
+
+  const unposted = await mongoose
+    .model("Invoice")
+    .find({ $or: [{ journal_id: null }, { journal_id: "" }], deleted_at: null });
+  for (const inv of unposted) {
+    console.log(`${apply ? "posting" : "would post"} a journal for invoice ${inv.invoice_number} (${inv.total})`);
+    if (apply) await postInvoiceJournal(inv);
+  }
+
+  console.log(`\n${changed} journal(s) ${apply ? "re-marked" : "to re-mark"}, ${unposted.length} invoice(s) ${apply ? "posted" : "to post"}.`);
+  if (!apply && (changed || unposted.length)) console.log("Run again with --apply to write these changes.");
+  await mongoose.disconnect();
+})().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

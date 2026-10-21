@@ -13,7 +13,7 @@ const VIEW_ONLY = ["view"];
 const PAGES = [
   { key: "home", label: "Dashboard", group: "General", routes: ["/home"], actions: VIEW_ONLY },
   { key: "items", label: "Items", group: "General", routes: ["/items", "/item"] },
-  { key: "banking", label: "Banking", group: "General", routes: ["/banking"] },
+  { key: "banking", label: "Banking", group: "General", routes: ["/banking"], planned: true },
 
   { key: "customers", label: "Customers", group: "Sales", routes: ["/sales/customer"] },
   { key: "quotes", label: "Quotes", group: "Sales", routes: ["/sales/quotes"] },
@@ -22,7 +22,7 @@ const PAGES = [
   { key: "invoices", label: "Invoices", group: "Sales", routes: ["/sales/invoices"] },
   { key: "paymentsReceived", label: "Payments Received", group: "Sales", routes: ["/sales/paymentsReceived"] },
   { key: "recurringInvoices", label: "Recurring Invoices", group: "Sales", routes: ["/sales/recurringInvoice"] },
-  { key: "creditNotes", label: "Credit Notes", group: "Sales", routes: ["/sales/creditNotes"] },
+  { key: "creditNotes", label: "Credit Notes", group: "Sales", routes: ["/sales/creditNotes"], planned: true },
 
   { key: "vendors", label: "Vendors", group: "Purchase", routes: ["/purchase/vendor"] },
   { key: "expenses", label: "Expenses", group: "Purchase", routes: ["/purchase/expense"] },
@@ -31,10 +31,10 @@ const PAGES = [
   { key: "bills", label: "Bills", group: "Purchase", routes: ["/purchase/bills"] },
   { key: "paymentMade", label: "Payments Made", group: "Purchase", routes: ["/purchase/paymentmade"] },
   { key: "recurringBills", label: "Recurring Bills", group: "Purchase", routes: ["/purchase/recurringbills"] },
-  { key: "vendorCredits", label: "Vendor Credits", group: "Purchase", routes: ["/purchase/vendorcredits"] },
+  { key: "vendorCredits", label: "Vendor Credits", group: "Purchase", routes: ["/purchase/vendorcredits"], planned: true },
 
-  { key: "timesheets", label: "Timesheets", group: "Time Tracking", routes: ["/time/timesheets"] },
-  { key: "projects", label: "Projects", group: "Time Tracking", routes: ["/time/projects"] },
+  { key: "timesheets", label: "Timesheets", group: "Time Tracking", routes: ["/time/timesheets"], planned: true },
+  { key: "projects", label: "Projects", group: "Time Tracking", routes: ["/time/projects"], planned: true },
 
   { key: "chartOfAccounts", label: "Chart of Accounts", group: "Accountant", routes: ["/accountant/chartOfAccounts"] },
   { key: "journalEntries", label: "Journal Entries", group: "Accountant", routes: ["/accountant/journals"] },
@@ -43,12 +43,17 @@ const PAGES = [
   { key: "balanceSheet", label: "Balance Sheet", group: "Reports", routes: ["/reports/balancesheet"], actions: VIEW_ONLY },
   { key: "journalReport", label: "Journal Report", group: "Reports", routes: ["/reports/journalreport"], actions: VIEW_ONLY },
 
-  { key: "documents", label: "Documents", group: "Other", routes: ["/documents"] },
-  { key: "payroll", label: "Payroll", group: "Other", routes: ["/payroll"] },
-  { key: "configure", label: "Configure Features", group: "Other", routes: ["/configure"] },
+  { key: "documents", label: "Documents", group: "Other", routes: ["/documents"], planned: true },
+  { key: "payroll", label: "Payroll", group: "Other", routes: ["/payroll"], planned: true },
+  { key: "configure", label: "Configure Features", group: "Other", routes: ["/configure"], planned: true },
 ].map((p) => ({ actions: ACTIONS, ...p }));
 
 const PAGE_KEYS = new Set(PAGES.map((p) => p.key));
+
+// Pages that exist in the app today. "Planned" modules (no screens yet) stay
+// in PAGES so their API rules keep working, but they aren't offered in the
+// permission matrix or the sidebar.
+const CATALOG = PAGES.filter((p) => !p.planned);
 
 // Frontend routes every logged-in, active user may open regardless of page
 // permissions (own company setup), and helper routes that belong to whatever
@@ -96,7 +101,7 @@ const API_RULES = [
   { re: /^\/api\/v1\/recurring-expense(\/|$)/, pages: ["recurringExpenses"] },
   { re: /^\/api\/v1\/recurring-bill(\/|$)/, pages: ["recurringBills"] },
   { re: /^\/api\/v1\/(payments|payment-email)(\/|$)/, pages: ["paymentMade"] },
-  { re: /^\/api\/v1\/employee(\/|$)/, pages: ["payroll"], sharedRead: true },
+  { re: /^\/api\/v1\/employee(\/|$)/, pages: ["payroll", "expenses"], sharedRead: true }, // mileage form adds employees
 
   // Account lists feed dropdowns everywhere; changing accounts needs the page.
   { re: /^\/api\/v1\/COA\/(coa-list-view|coa-details|get-coa-transaction)$/, pages: ["chartOfAccounts"] },
@@ -108,7 +113,7 @@ const API_RULES = [
   { re: /^\/api\/v1\/reports\/profit-loss\//, pages: ["profitAndLoss"], action: "view" },
   { re: /^\/api\/v1\/reports\/balance-sheet$/, pages: ["balanceSheet"], action: "view" },
 
-  { re: /^\/api\/v1\/(taxes|columns|email|common|import\/get-column)(\/|$)/, shared: true },
+  { re: /^\/api\/v1\/(taxes|tax|columns|email|common|import\/get-column)(\/|$)/, shared: true },
 ];
 
 // Which action an API call performs. Many legacy routes use POST for reads,
@@ -172,6 +177,7 @@ const getClientIp = (req) => normalizeIp(req.ip || req.socket?.remoteAddress);
 module.exports = {
   ACTIONS,
   PAGES,
+  CATALOG,
   PAGE_KEYS,
   ALWAYS_ALLOWED_ROUTES,
   SHARED_ROUTES,

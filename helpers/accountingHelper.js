@@ -91,7 +91,33 @@ const resolveJournalLines = async (organization_id, admin_id, lines) => {
   }
 };
 
+// Journals that count in the books. Draft and void documents keep their
+// journal (so it can be re-posted) but are left out of every report.
+const POSTED_JOURNALS = { posting_status: { $nin: ["draft", "void"] } };
+
+// Posting state of a document's journal from the document's own status:
+// invoices use "draft"/"void"/..., bills use "DRAFT"/"VOID"/...
+const postingStatusFor = (documentStatus) => {
+  const s = String(documentStatus || "").toLowerCase();
+  if (s === "draft") return "draft";
+  if (s === "void") return "void";
+  return "posted";
+};
+
+// Keeps a document's journal in step with the document's status.
+const syncJournalPosting = async (journal_id, organization_id, documentStatus) => {
+  if (!journal_id) return;
+  const JournalCollection = mongoose.model("Journal");
+  await JournalCollection.updateOne(
+    { journal_id, organization_id: String(organization_id) },
+    { $set: { posting_status: postingStatusFor(documentStatus) } }
+  );
+};
+
 module.exports = {
+  POSTED_JOURNALS,
+  postingStatusFor,
+  syncJournalPosting,
   resolveJournalLines,
   BALANCE_SHEET_GROUPS,
   INCOME_TYPES,

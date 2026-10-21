@@ -293,9 +293,9 @@ class recurringBillsController {
           });
         } else if (tax_type === "TDS" && tax_amount > 0) {
           Journal_line_items.push({
-            coa_account_id: "AC_006",
-            coa_account_name: "TDS Receivable",
-            creditOrDebit: "Debit",
+            coa_account_id: "AC_022",
+            coa_account_name: "TDS Payable",
+            creditOrDebit: "Credit",
             amount: tax_amount,
             amount_formatted: formatCurrency(tax_amount),
           });
@@ -935,12 +935,12 @@ class recurringBillsController {
             });
           } else if (tax_type === "TDS" && tax_amount > 0) {
             Journal_line_items.push({
-              coa_account_id: "AC_006",
-              coa_account_name: "TDS Receivable",
-              creditOrDebit: "Debit",
+              coa_account_id: "AC_022",
+              coa_account_name: "TDS Payable",
+              creditOrDebit: "Credit",
               amount: tax_amount,
               amount_formatted: formatCurrency(tax_amount),
-              line_description: `TDS Receivable (${tax_percentage}%)`,
+              line_description: `TDS Payable (${tax_percentage}%)`,
             });
           }
 

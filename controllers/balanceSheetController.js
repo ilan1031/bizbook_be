@@ -14,6 +14,7 @@ const {
   toPaise,
   fromPaise,
   getAccountsMap,
+  POSTED_JOURNALS,
 } = require("../helpers/accountingHelper");
 
 // Account types this report knows where to place.
@@ -72,6 +73,7 @@ class BalanceSheetController {
             organization_id: String(organization_id),
             admin_id,
             journal_date: { $lte: asOf.toDate() },
+            ...POSTED_JOURNALS,
           },
           { journal_id: 1, journal_date: 1, type: 1, line_items: 1 }
         ).lean(),

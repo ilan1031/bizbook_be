@@ -3,10 +3,68 @@ const BillsCollection = mongoose.model("PO_bill");
 const PurchaseOrderCollection = mongoose.model("Purchase_Order");
 const VendorCollection = mongoose.model("Contact");
 const OrgCollection = mongoose.model("Organization");
+const InvoiceCollection = require("../model/invoice");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const MESSAGES = require("../helpers/messageHelpers");
+const { toPaise, fromPaise } = require("../helpers/accountingHelper");
+
+// Splits open documents into what's still within terms and what's overdue.
+// `outstanding(doc)` is the unpaid amount of one document.
+const ageDocuments = (docs, outstanding) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let total = 0;
+  let overdue = 0;
+  for (const doc of docs) {
+    const due = toPaise(outstanding(doc));
+    if (due <= 0) continue;
+    total += due;
+    const dueDate = doc.due_date ? new Date(doc.due_date) : null;
+    if (dueDate && !Number.isNaN(dueDate.getTime()) && dueDate < today) overdue += due;
+  }
+  return {
+    total: fromPaise(total),
+    current: fromPaise(total - overdue),
+    overdue: fromPaise(overdue),
+    count: docs.length,
+  };
+};
+
+const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
 
 class DashboardController {
+  // Receivables (open invoices) and payables (open bills) for the dashboard
+  // cards, computed over every document of the organisation.
+  async getSummary(req, res) {
+    try {
+      const orgId = String(req.query.org_id || req.query.organization_id || "");
+      if (!orgId) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ message: "org_id is required" });
+      }
+      const orgIds = [orgId, Number(orgId)].filter((v) => v !== "" && !Number.isNaN(v));
+      const [invoices, bills] = await Promise.all([
+        InvoiceCollection.find(
+          { organization_id: { $in: orgIds }, status: { $nin: ["draft", "Draft", "void", "Void"] } },
+          { total: 1, balance: 1, due_date: 1 }
+        ).lean(),
+        BillsCollection.find(
+          { organization_id: { $in: orgIds }, status_type: { $nin: ["DRAFT", "VOID"] } },
+          { total: 1, balance: 1, due_amt: 1, payment_made: 1, due_date: 1 }
+        ).lean(),
+      ]);
+      const receivables = ageDocuments(invoices, (inv) => num(inv.balance) ?? num(inv.total) ?? 0);
+      const payables = ageDocuments(
+        bills,
+        (bill) => num(bill.balance) ?? num(bill.due_amt) ?? (num(bill.total) || 0) - (num(bill.payment_made) || 0)
+      );
+      return res.status(ST_CODES.OK).send({ message: "Fetched successfully", data: { receivables, payables } });
+    } catch (error) {
+      console.error("dashboard getSummary error:", error);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).send({ message: "Something went wrong" });
+    }
+  }
+
+
   async getReceivables(req, res) {
     try {
       let { org_id } = req.query;

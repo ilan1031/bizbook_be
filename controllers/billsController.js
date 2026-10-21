@@ -8,6 +8,7 @@ const ST_CODES = require("../helpers/statusCodeHelpers");
 const MESSAGES = require("../helpers/messageHelpers");
 const commonHelper = require("../helpers/commonHelpers");
 const userActivityHelper = require("../helpers/userActivityHelper");
+const { postingStatusFor, syncJournalPosting } = require("../helpers/accountingHelper");
 const JournalCollection = mongoose.model("Journal");
 
 function createComments(
@@ -47,6 +48,52 @@ function createComments(
 
   return commentData;
 }
+
+const billMoney = (amount) =>
+  `₹${Number(amount || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+// Journal lines for a bill: each item debits its expense account, tax and
+// adjustments follow, and the amount owed is credited to Accounts Payable.
+// GST is input credit (debit); TDS withheld from the vendor is a liability
+// (credit TDS Payable) and reduces what the vendor is paid.
+const buildBillJournal = (bData) => {
+  const sub_total = Number(bData.sub_total || bData.total || 0);
+  const discount = Number(bData.discount_amount || 0);
+  const adjustment = Number(bData.adjustment || 0);
+  const tax_percentage = Number(bData.tax_percentage || 0);
+  const tax_type = bData.tax_type; // "TDS" or "GST"
+  const tax_amount = (tax_percentage / 100) * (sub_total - discount);
+  const total_payable =
+    sub_total - discount + (tax_type === "GST" ? tax_amount : -tax_amount) + adjustment;
+
+  const line = (coa_account_id, coa_account_name, creditOrDebit, amount) => ({
+    coa_account_id,
+    coa_account_name,
+    creditOrDebit,
+    amount,
+    amount_formatted: billMoney(amount),
+  });
+  const lines = [];
+  const items = Array.isArray(bData.items) ? bData.items.filter((i) => Number(i.amount || 0)) : [];
+  if (items.length) {
+    for (const item of items) {
+      lines.push(line(item.account_id || "AC_078", item.account_name || "Cost of Goods Sold", "Debit", Number(item.amount)));
+    }
+  } else {
+    lines.push(line("AC_078", "Cost of Goods Sold", "Debit", sub_total));
+  }
+  if (tax_type === "GST" && tax_amount > 0) lines.push(line("AC_010", "Input Tax Credits", "Debit", tax_amount));
+  else if (tax_type === "TDS" && tax_amount > 0) lines.push(line("AC_022", "TDS Payable", "Credit", tax_amount));
+  if (discount !== 0) lines.push(line("AC_075", "Purchase Discounts", "Credit", Math.abs(discount)));
+  if (adjustment !== 0) {
+    lines.push(line("AC_065", "Other Expenses", adjustment > 0 ? "Debit" : "Credit", Math.abs(adjustment)));
+  }
+  lines.push(line("AC_032", "Accounts Payable", "Credit", total_payable));
+  return { lines, total_payable };
+};
+
+// Fields a client may not change on a bill.
+const BILL_PROTECTED_FIELDS = ["_id", "admin_id", "organization_id", "bill_number", "journal_id", "comments", "createdAt", "updatedAt", "__v"];
 
 class billsController {
   async getVendors(req, res) {
@@ -153,20 +200,7 @@ class billsController {
         }
         bData["organization_id"] = orgData.organization_id;
 
-        // Calculate amounts for journal entries (similar to invoice logic)
-        const sub_total = Number(bData.sub_total || bData.total);
-        const discount = Number(bData.discount_amount || 0);
-        const adjustment = Number(bData.adjustment || 0);
-        const tax_percentage = Number(bData.tax_percentage || 0);
-        const tax_type = bData.tax_type; // "TDS" or "GST"
-        const tax_amount = (tax_percentage / 100) * (sub_total - discount);
-        const total_payable =
-          sub_total -
-          discount +
-          (tax_type === "GST" ? tax_amount : -tax_amount) +
-          adjustment;
-
-        console.log("The data saving for the bill is: ", bData);
+        const { lines: Journal_line_items, total_payable } = buildBillJournal(bData);
 
         // Generate unique Journal ID (standardized with lowercase 'journal_id')
         let journalUniqueId = await commonHelper.generateUniqueId(
@@ -175,81 +209,6 @@ class billsController {
           5,
           "JL"
         );
-
-        // Create Journal Line Items following invoice pattern
-        const Journal_line_items = [];
-
-        // Add expense entries from items
-        if (bData.items && bData.items.length > 0) {
-          bData.items.forEach((item) => {
-            Journal_line_items.push({
-              coa_account_id: item.account_id || "AC_078",
-              coa_account_name: item.account_name || "Cost of Goods Sold",
-              creditOrDebit: "Debit",
-              amount: Number(item.amount || 0),
-              amount_formatted: formatCurrency(Number(item.amount || 0)),
-            });
-          });
-        } else {
-          // Default expense entry if no items
-          Journal_line_items.push({
-            coa_account_id: "AC_078",
-            coa_account_name: "Cost of Goods Sold",
-            creditOrDebit: "Debit",
-            amount: sub_total,
-            amount_formatted: formatCurrency(sub_total),
-          });
-        }
-
-        // Add tax-specific entry
-        if (tax_type === "GST" && tax_amount > 0) {
-          Journal_line_items.push({
-            coa_account_id: "AC_010", // GST Input Tax Credit
-            coa_account_name: "Input Tax Credits",
-            creditOrDebit: "Debit",
-            amount: tax_amount,
-            amount_formatted: formatCurrency(tax_amount),
-          });
-        } else if (tax_type === "TDS" && tax_amount > 0) {
-          Journal_line_items.push({
-            coa_account_id: "AC_006",
-            coa_account_name: "TDS Receivable",
-            creditOrDebit: "Debit",
-            amount: tax_amount,
-            amount_formatted: formatCurrency(tax_amount),
-          });
-        }
-
-        // Add discount if any
-        if (discount !== 0) {
-          Journal_line_items.push({
-            coa_account_id: "AC_075",
-            coa_account_name: "Purchase Discounts",
-            creditOrDebit: "Credit",
-            amount: Math.abs(discount),
-            amount_formatted: formatCurrency(Math.abs(discount)),
-          });
-        }
-
-        // Add adjustment if any
-        if (adjustment !== 0) {
-          Journal_line_items.push({
-            coa_account_id: "AC_065",
-            coa_account_name: "Other Expenses",
-            creditOrDebit: adjustment > 0 ? "Debit" : "Credit",
-            amount: Math.abs(adjustment),
-            amount_formatted: formatCurrency(Math.abs(adjustment)),
-          });
-        }
-
-        // Final payable entry (Credit to Accounts Payable)
-        Journal_line_items.push({
-          coa_account_id: "AC_032",
-          coa_account_name: "Accounts Payable",
-          creditOrDebit: "Credit",
-          amount: total_payable,
-          amount_formatted: formatCurrency(total_payable),
-        });
 
         const journalData = {
           organization_id: orgId,
@@ -262,6 +221,8 @@ class billsController {
           type: "Bill",
           vendor_name: bData.vendorName,
           line_items: Journal_line_items,
+          // A draft bill isn't in the books until it's opened.
+          posting_status: postingStatusFor(bData.status_type),
         };
 
         // Add journal_id to bill data
@@ -314,8 +275,12 @@ class billsController {
         );
 
         // Update billed_status in PurchaseOrderCollection (within transaction)
+        const poIds = (Array.isArray(bData.purchase_orders) ? bData.purchase_orders : [])
+          .map((po) => po?.po_ref_id || po?._id || po)
+          .filter((id) => mongoose.isValidObjectId(id));
         let purchaseOrderUpdate = await PurchaseOrderCollection.updateMany(
           {
+            _id: { $in: poIds },
             organization_id: orgId,
             billed_status: { $ne: "Billed" },
           },
@@ -659,7 +624,8 @@ class billsController {
   async updateIndividualBill(req, res) {
     try {
       const { org_id, bill_id } = req.query;
-      const bData = req.body;
+      const bData = { ...req.body };
+      for (const field of BILL_PROTECTED_FIELDS) delete bData[field];
       if (req.file) {
         bData["documents"] = req.file.filename;
       }
@@ -683,6 +649,12 @@ class billsController {
         organization_id: org_id,
         bill_number: bill_id,
       });
+      if (!findBill) {
+        return res.status(ST_CODES.NOT_FOUND).json({ success: false, message: "Bill not found" });
+      }
+      const statusMap = { 0: "OPEN", 1: "DRAFT", 2: "VOID", 3: "PAID" };
+      if (bData.status !== undefined && statusMap[bData.status]) bData.status_type = statusMap[bData.status];
+      if (bData.dueDate) bData.due_date = bData.dueDate;
       await userActivityHelper(
         res.locals.user_id,
         org_id,
@@ -702,6 +674,25 @@ class billsController {
 
         { new: true, runValidators: true } // Returns updated document and applies schema validation
       );
+
+      // Re-post the bill's journal from the saved bill.
+      if (updatedBill && updatedBill.journal_id) {
+        const { lines, total_payable } = buildBillJournal(updatedBill.toObject());
+        await JournalCollection.findOneAndUpdate(
+          { journal_id: updatedBill.journal_id, organization_id: String(org_id) },
+          {
+            $set: {
+              line_items: lines,
+              total_amount: total_payable,
+              total_amount_formatted: billMoney(total_payable),
+              journal_date: updatedBill.billDate || findBill.billDate,
+              journal_date_formatted: commonHelper.formatDateString(updatedBill.billDate || findBill.billDate),
+              ...(bData.vendorName ? { vendor_name: bData.vendorName } : {}),
+              posting_status: postingStatusFor(updatedBill.status_type),
+            },
+          }
+        );
+      }
 
       // If bill is found and updated, return the updated document
       if (updatedBill) {
@@ -869,6 +860,7 @@ class billsController {
             $push: { comments: comment },
           }
         );
+        await syncJournalPosting(findBill.journal_id, org_id, "VOID");
         return res.status(ST_CODES.OK).json({
           success: true,
           message: "Bill status updated successfully",
@@ -932,6 +924,7 @@ class billsController {
             $push: { comments: comment },
           }
         );
+        await syncJournalPosting(findBill.journal_id, org_id, "DRAFT");
         return res.status(ST_CODES.OK).json({
           success: true,
           message: "Bill status updated successfully",
@@ -998,6 +991,7 @@ class billsController {
             $push: { comments: comment },
           }
         );
+        await syncJournalPosting(findBill.journal_id, org_id, "OPEN");
         return res.status(ST_CODES.OK).json({
           success: true,
           message: "Bill status updated successfully",
@@ -1005,8 +999,9 @@ class billsController {
       } else if (findBill.status === 1 && status === "paid") {
         await BillsCollection.updateOne(
           { _id: findBill._id },
-          { $set: { status: 3 }, $push: { comments: comment } }
+          { $set: { status: 3, status_type: "PAID" }, $push: { comments: comment } }
         );
+        await syncJournalPosting(findBill.journal_id, org_id, "PAID");
         return res.status(ST_CODES.OK).json({
           success: true,
           message: "Bill status updated successfully",

@@ -8,6 +8,7 @@ const {
   toPaise,
   fromPaise,
   getAccountsMap,
+  POSTED_JOURNALS,
 } = require("../helpers/accountingHelper");
 
 const COGS_TYPES = ["cost_of_goods_sold"];
@@ -54,6 +55,7 @@ class ProfitLossController {
             organization_id: String(organization_id),
             admin_id,
             journal_date: { $gte: fromDate, $lte: toDate },
+            ...POSTED_JOURNALS,
           },
           { journal_id: 1, type: 1, line_items: 1 }
         ).lean(),
