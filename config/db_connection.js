@@ -8,7 +8,7 @@ const mongoDbUrl = {
 Mongoose
 .connect(mongoDbUrl.DB_HOST)
 .then(() => {
-    console.log('successfully connected mongo db atlas')
+    console.log('successfully connected to MongoDB')
     return require("../helpers/superadminSeed").ensureSuperadmin()
 })
 .catch((err) => console.log("Database can't be connected: " + err));

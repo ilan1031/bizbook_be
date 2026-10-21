@@ -25,9 +25,13 @@ const hashOtp = (code) =>
 
 const findSuperadmin = () => UsersCollection.findOne({ role: "superadmin" }).lean();
 
+// The seeded superadmin gets a placeholder mobile ("0000000000") when
+// SUPERADMIN_MOBILE isn't set - never text that.
+const isRealMobile = (n) => /\d{10}/.test(String(n || "")) && !/^0+$/.test(String(n).replace(/\D/g, ""));
+
 const notifySuperadminOfSignup = async (newUser) => {
   const admin = await findSuperadmin();
-  const to = process.env.SUPERADMIN_MOBILE || admin?.mobile;
+  const to = [process.env.SUPERADMIN_MOBILE, admin?.mobile].find(isRealMobile);
   if (!to) return;
   await sendSms(
     to,
