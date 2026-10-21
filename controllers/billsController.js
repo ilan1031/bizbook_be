@@ -1149,12 +1149,28 @@ class billsController {
           message: "Bill not found",
         });
       }
-      bill.payment_made = amount_applied;
-
-      bill.due_amt = bill.total - amount_applied;
+      if (["DRAFT", "VOID"].includes(bill.status_type)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: `A ${bill.status_type.toLowerCase()} bill can't be paid`,
+        });
+      }
+      // Each payment adds to what's been paid; it never replaces it.
+      const amountPaise = Math.round(Number(amount_applied) * 100);
+      const duePaise = Math.round(Number(bill.due_amt ?? bill.total ?? 0) * 100);
+      if (!(amountPaise > 0) || amountPaise > duePaise) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: `Enter an amount up to the ${(duePaise / 100).toFixed(2)} still due`,
+        });
+      }
+      const remaining = (duePaise - amountPaise) / 100;
+      bill.payment_made = Number(bill.payment_made || 0) + amountPaise / 100;
+      bill.due_amt = remaining;
+      bill.balance = remaining;
 
       // Update status accordingly
-      if (bill.total === amount_applied) {
+      if (remaining === 0) {
         bill.status = 3; // PAID
         bill.status_type = "PAID";
       } else {

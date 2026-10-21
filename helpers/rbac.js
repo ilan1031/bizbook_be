@@ -22,7 +22,7 @@ const PAGES = [
   { key: "invoices", label: "Invoices", group: "Sales", routes: ["/sales/invoices"] },
   { key: "paymentsReceived", label: "Payments Received", group: "Sales", routes: ["/sales/paymentsReceived"] },
   { key: "recurringInvoices", label: "Recurring Invoices", group: "Sales", routes: ["/sales/recurringInvoice"] },
-  { key: "creditNotes", label: "Credit Notes", group: "Sales", routes: ["/sales/creditNotes"], planned: true },
+  { key: "creditNotes", label: "Credit Notes", group: "Sales", routes: ["/sales/creditNotes"] },
 
   { key: "vendors", label: "Vendors", group: "Purchase", routes: ["/purchase/vendor"] },
   { key: "expenses", label: "Expenses", group: "Purchase", routes: ["/purchase/expense"] },
@@ -31,7 +31,7 @@ const PAGES = [
   { key: "bills", label: "Bills", group: "Purchase", routes: ["/purchase/bills"] },
   { key: "paymentMade", label: "Payments Made", group: "Purchase", routes: ["/purchase/paymentmade"] },
   { key: "recurringBills", label: "Recurring Bills", group: "Purchase", routes: ["/purchase/recurringbills"] },
-  { key: "vendorCredits", label: "Vendor Credits", group: "Purchase", routes: ["/purchase/vendorcredits"], planned: true },
+  { key: "vendorCredits", label: "Vendor Credits", group: "Purchase", routes: ["/purchase/vendorcredits"] },
 
   { key: "timesheets", label: "Timesheets", group: "Time Tracking", routes: ["/time/timesheets"], planned: true },
   { key: "projects", label: "Projects", group: "Time Tracking", routes: ["/time/projects"], planned: true },
@@ -92,6 +92,7 @@ const API_RULES = [
   { re: /^\/api\/v1\/(deliverychallans|delivery-challans|deliveryunique-id|deliverychallan)(\/|$)/, pages: ["deliveryChallans"] },
   { re: /^\/api\/v1\/payment(\/|$)/, pages: ["paymentsReceived"] },
   { re: /^\/api\/v1\/RecurringInvoices(\/|$)/, pages: ["recurringInvoices"] },
+  { re: /^\/api\/v1\/credit-notes(\/|$)/, pages: ["creditNotes"] },
   { re: /^\/api\/v1\/salesperson(\/|$)/, pages: ["quotes", "salesOrders", "invoices", "deliveryChallans"], sharedRead: true },
 
   { re: /^\/api\/v1\/bills(\/|$)|^\/api\/v1\/import\/import-bills$/, pages: ["bills"] },
@@ -100,6 +101,7 @@ const API_RULES = [
   { re: /^\/api\/v1\/expense(\/|$)/, pages: ["expenses"] },
   { re: /^\/api\/v1\/recurring-expense(\/|$)/, pages: ["recurringExpenses"] },
   { re: /^\/api\/v1\/recurring-bill(\/|$)/, pages: ["recurringBills"] },
+  { re: /^\/api\/v1\/vendor-credits(\/|$)/, pages: ["vendorCredits"] },
   { re: /^\/api\/v1\/(payments|payment-email)(\/|$)/, pages: ["paymentMade"] },
   { re: /^\/api\/v1\/employee(\/|$)/, pages: ["payroll", "expenses"], sharedRead: true }, // mileage form adds employees
 
@@ -125,7 +127,7 @@ const actionFor = (method, path) => {
   if (method === "DELETE" || /(^|[/-])(delete|remove)([/-]|$)/.test(p)) return "delete";
   if (/(^|[/-])(export|logs|get)([/-]|$)/.test(p) || method === "GET") return "view";
   if (method === "PUT" || method === "PATCH" ||
-      /(update|edit|status|apply|void|draft|primary|address|comment|document|resend)/.test(p))
+      /(update|edit|status|apply|refund|void|draft|primary|address|comment|document|resend)/.test(p))
     return "edit";
   return "create";
 };

@@ -103,11 +103,11 @@ test("every catalog page has a key, label, group, routes and valid actions", () 
 
 test("unbuilt modules are kept for API rules but not offered", () => {
   const offered = new Set(CATALOG.map((p) => p.key));
-  for (const key of ["banking", "timesheets", "projects", "documents", "payroll", "configure", "creditNotes", "vendorCredits"]) {
+  for (const key of ["banking", "timesheets", "projects", "documents", "payroll", "configure"]) {
     assert.ok(PAGES.some((p) => p.key === key), key + " still known");
     assert.ok(!offered.has(key), key + " not offered");
   }
-  for (const key of ["home", "invoices", "bills", "expenses", "balanceSheet"]) assert.ok(offered.has(key), key);
+  for (const key of ["home", "invoices", "bills", "expenses", "balanceSheet", "creditNotes", "vendorCredits"]) assert.ok(offered.has(key), key);
   // Recording mileage adds employees, so expenses permission allows it.
   const clerk = { role: "user", permissions: { expenses: ["view", "create"] } };
   assert.equal(checkApiAccess(clerk, "POST", "/api/v1/employee"), null);

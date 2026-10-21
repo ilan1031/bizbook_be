@@ -307,6 +307,133 @@ test("manual journal: owner's capital", async () => {
   assert.ok([200, 201].includes(res.status), JSON.stringify(res.body));
 });
 
+const journalOf = async (credit) => journal(credit.journal_id);
+
+test("credit note: raises a balanced credit, applies to an invoice, refunds the rest", async () => {
+  const cn = await api("post", `/api/v1/credit-notes?org_id=${org}`, {
+    contact_id: customer.contact_id,
+    date: today,
+    reference_number: "RET-1",
+    line_items: [{ name: "Returned consulting hours", quantity: 1, rate: 1000 }],
+  });
+  assert.equal(cn.status, 201, JSON.stringify(cn.body));
+  ids.creditNote = cn.body.data.credit_number;
+  assert.equal(cn.body.data.balance, 1000);
+  const j = await journalOf(cn.body.data);
+  assert.equal(j.posting_status, "posted");
+  assert.deepEqual(
+    j.line_items.map((l) => [l.coa_account_id, l.creditOrDebit, l.amount]),
+    [["AC_046", "Debit", 1000], ["AC_019", "Credit", 1000]]
+  );
+
+  const open = await api("get", `/api/v1/credit-notes/${ids.creditNote}/open-documents?org_id=${org}`);
+  assert.equal(open.status, 200);
+  assert.ok(open.body.data.some((d) => d.document_id === ids.invoice && d.balance === 6000));
+
+  const apply = await api("post", `/api/v1/credit-notes/${ids.creditNote}/apply?org_id=${org}`, {
+    applications: [{ document_id: ids.invoice, amount: 600 }],
+  });
+  assert.equal(apply.status, 200, JSON.stringify(apply.body));
+  assert.equal(apply.body.data.balance, 400);
+  const inv = await invoice(ids.invoice);
+  assert.equal(inv.balance, 5400);
+  assert.equal(inv.credits_applied, 600);
+
+  const over = await api("post", `/api/v1/credit-notes/${ids.creditNote}/apply?org_id=${org}`, {
+    applications: [{ document_id: ids.invoice, amount: 500 }],
+  });
+  assert.equal(over.status, 400, "more than the credit left");
+
+  const notCash = await api("post", `/api/v1/credit-notes/${ids.creditNote}/refund?org_id=${org}`, {
+    amount: 400, date: today, account_id: "AC_046",
+  });
+  assert.equal(notCash.status, 400, "refunds come from cash or bank");
+
+  const refund = await api("post", `/api/v1/credit-notes/${ids.creditNote}/refund?org_id=${org}`, {
+    amount: 400, date: today, account_id: "AC_017", mode: "Cash",
+  });
+  assert.equal(refund.status, 200, JSON.stringify(refund.body));
+  assert.equal(refund.body.data.status, "closed");
+  const rj = await journal(refund.body.data.refunds[0].journal_id);
+  assert.deepEqual(
+    rj.line_items.map((l) => [l.coa_account_id, l.creditOrDebit, l.amount]),
+    [["AC_019", "Debit", 400], ["AC_017", "Credit", 400]]
+  );
+
+  const edit = await api("put", `/api/v1/credit-notes/${ids.creditNote}?org_id=${org}`, {
+    line_items: [{ name: "x", quantity: 1, rate: 5 }],
+  });
+  assert.equal(edit.status, 400, "a used credit can't be edited");
+  assert.equal((await api("delete", `/api/v1/credit-notes/${ids.creditNote}?org_id=${org}`)).status, 400);
+});
+
+test("credit note: draft and void stay out of the books; an unused one can be deleted", async () => {
+  const draft = await api("post", `/api/v1/credit-notes?org_id=${org}`, {
+    contact_id: customer.contact_id,
+    date: today,
+    status: "draft",
+    line_items: [{ name: "Draft credit", quantity: 2, rate: 250 }],
+  });
+  assert.equal(draft.status, 201, JSON.stringify(draft.body));
+  const number = draft.body.data.credit_number;
+  assert.equal((await journalOf(draft.body.data)).posting_status, "draft");
+
+  const applyDraft = await api("post", `/api/v1/credit-notes/${number}/apply?org_id=${org}`, {
+    applications: [{ document_id: ids.invoice, amount: 100 }],
+  });
+  assert.equal(applyDraft.status, 400, "a draft can't be applied");
+
+  const v = await api("put", `/api/v1/credit-notes/${number}/status?org_id=${org}`, { status: "void" });
+  assert.equal(v.status, 200, JSON.stringify(v.body));
+  assert.equal((await journalOf(draft.body.data)).posting_status, "void");
+
+  const del = await api("delete", `/api/v1/credit-notes/${number}?org_id=${org}`);
+  assert.equal(del.status, 200, JSON.stringify(del.body));
+  assert.equal(await journal(draft.body.data.journal_id), null, "its journal goes with it");
+
+  const noCustomer = await api("post", `/api/v1/credit-notes?org_id=${org}`, {
+    contact_id: String(vendor._id), date: today, line_items: [{ name: "x", quantity: 1, rate: 1 }],
+  });
+  assert.equal(noCustomer.status, 400, "a vendor isn't a customer");
+});
+
+test("vendor credit: raises a balanced credit and applies it to a bill", async () => {
+  const vc = await api("post", `/api/v1/vendor-credits?org_id=${org}`, {
+    contact_id: String(vendor._id),
+    date: today,
+    line_items: [{ name: "Damaged goods returned", quantity: 1, rate: 500 }],
+  });
+  assert.equal(vc.status, 201, JSON.stringify(vc.body));
+  const number = vc.body.data.credit_number;
+  const j = await journalOf(vc.body.data);
+  assert.deepEqual(
+    j.line_items.map((l) => [l.coa_account_id, l.creditOrDebit, l.amount]),
+    [["AC_078", "Credit", 500], ["AC_032", "Debit", 500]]
+  );
+
+  const apply = await api("post", `/api/v1/vendor-credits/${number}/apply?org_id=${org}`, {
+    applications: [{ document_id: ids.bill, amount: 500 }],
+  });
+  assert.equal(apply.status, 200, JSON.stringify(apply.body));
+  assert.equal(apply.body.data.status, "closed");
+  const bill = await mongoose.model("PO_bill").findOne({ bill_number: ids.bill }).lean();
+  assert.equal(bill.due_amt, 3100);
+  assert.equal(bill.vendor_credits_applied, 500);
+  assert.equal(bill.status_type, "PARTIALLY PAID");
+});
+
+test("bill payments add up instead of replacing each other", async () => {
+  for (const amount of [100, 100]) {
+    const res = await api("put", `/api/v1/bills/apply-payment?org_id=${org}&bill_id=${ids.bill}`, { amount_applied: amount });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+  }
+  const bill = await mongoose.model("PO_bill").findOne({ bill_number: ids.bill }).lean();
+  assert.equal(bill.payment_made, 200);
+  assert.equal(bill.due_amt, 2900);
+  const over = await api("put", `/api/v1/bills/apply-payment?org_id=${org}&bill_id=${ids.bill}`, { amount_applied: 5000 });
+  assert.equal(over.status, 400);
+});
+
 test("every journal balances", async () => {
   const all = await journals();
   assert.ok(all.length >= 8);
@@ -319,30 +446,30 @@ test("every journal balances", async () => {
 
 test("P&L counts only posted documents", async () => {
   const pl = await profitAndLoss();
-  assert.equal(pl.operatingIncome, 12000, "edited sent invoice only (draft and void excluded)");
-  assert.equal(pl.costOfGoodsSold, 4000, "open bill only");
+  assert.equal(pl.operatingIncome, 11000, "edited sent invoice (draft/void excluded) less the credit note");
+  assert.equal(pl.costOfGoodsSold, 3500, "open bill less the vendor credit");
   assert.equal(pl.operatingExpenses, 1500);
-  assert.equal(pl.netProfitLoss, 6500);
+  assert.equal(pl.netProfitLoss, 6000);
 });
 
 test("balance sheet balances and agrees with the P&L", async () => {
   const bs = await balanceSheet();
   assert.equal(bs.checks.is_balanced, true, JSON.stringify(bs.totals));
-  assert.equal(accountAmount(bs, "Accounts Receivable"), 6000);
-  assert.equal(accountAmount(bs, "Accounts Payable"), 1600);
+  assert.equal(accountAmount(bs, "Accounts Receivable"), 5400);
+  assert.equal(accountAmount(bs, "Accounts Payable"), 1100);
   assert.equal(accountAmount(bs, "TDS Payable"), 400);
-  assert.equal(accountAmount(bs, "Petty Cash"), 6000 + 50000 - 2000 - 1500);
-  assert.equal(bs.totals.assets, 58500);
-  assert.equal(bs.totals.liabilities_and_equity, 58500);
+  assert.equal(accountAmount(bs, "Petty Cash"), 6000 + 50000 - 2000 - 1500 - 400);
+  assert.equal(bs.totals.assets, 57500);
+  assert.equal(bs.totals.liabilities_and_equity, 57500);
 });
 
 test("dashboard cards show what's still unpaid", async () => {
   const res = await api("get", `/api/v1/kpi/summary?org_id=${org}`);
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const { receivables, payables } = res.body.data;
-  assert.equal(receivables.total, 6000, "draft and void invoices don't count");
+  assert.equal(receivables.total, 5400, "draft and void invoices don't count; credits applied do");
   assert.equal(receivables.overdue, 0);
-  assert.equal(payables.total, 3600, "draft bill doesn't count");
+  assert.equal(payables.total, 2900, "draft bill doesn't count; credit and payments applied do");
 });
 
 test("a write keyed by a missing journal_id touches nothing", async () => {

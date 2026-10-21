@@ -117,6 +117,7 @@ const BillSchema = new mongoose.Schema(
     tax_type: String,
     tax_percentage: Number,
     tax_amount: Number,
+    vendor_credits_applied: { type: Number, default: 0 },
     taxAmount: Number,
     adjustment: Number,
     payment_made: { type: Number, default: 0 },

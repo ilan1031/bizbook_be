@@ -67,6 +67,7 @@ require("./model/EmployeeModel");
 require("./model/chartOfAccountsModel");
 require("./model/journalSchema");
 require("./model/withholdingTaxSchema");
+require("./model/creditDocumentModels");
 require("./model/coa_transactionSchema");
 
 require("./cron/recurringInvoiceCron");
@@ -112,6 +113,7 @@ const recurringExpenseRoute = require("./routes/recurringExpenseRoutes");
 const recurringBillRoutes = require("./routes/recurringBillRoutes");
 const employeeRoutes = require("./routes/employeeRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
+const creditDocumentRoutes = require("./routes/creditDocumentRoutes");
 const COA_Routes = require("./routes/COA_routes");
 const journalRoutes = require("./routes/journalRoutes");
 const ProfitAndLossRoutes = require("./routes/ProfitAndLossRoutes");
@@ -276,6 +278,7 @@ app.use("/api/v1", journalRoutes);
 app.use("/api/v1", ProfitAndLossRoutes);
 app.use("/api/v1", manualJournalRoutes);
 app.use("/api/v1", balanceSheetRoutes);
+app.use("/api/v1", creditDocumentRoutes);
 app.use("/api/v1", adminRoutes);
 
 // catch 404 and forward to error handler

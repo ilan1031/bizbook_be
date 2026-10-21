@@ -37,6 +37,12 @@ The tests drop and recreate their own databases (`bizbooks_test`, `bizbooks_test
 
 Every invoice, bill, payment, expense and manual journal posts a journal. A journal's `posting_status` follows its document: journals of **draft** or **void** invoices and bills, and of online (Razorpay) payments not yet captured, are kept but left out of every report until the document is posted.
 
+**Credit notes and vendor credits** (`/api/v1/credit-notes`, `/api/v1/vendor-credits`) post a journal when raised:
+- A credit note debits the line accounts (Sales by default) and credits Accounts Receivable.
+- A vendor credit debits Accounts Payable and credits the line accounts (COGS by default).
+
+Applying a credit to an invoice or bill lowers both balances and posts no journal. A refund posts against a cash or bank account. A credit can be edited, voided or deleted only until it has been applied or refunded.
+
 For data created before this rule, run once:
 
 ```bash
