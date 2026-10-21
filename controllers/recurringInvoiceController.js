@@ -402,8 +402,8 @@ class RecurringInvoiceController {
       // Add shipping charge if any
       if (bData.shipping_charge > 0) {
         Journal_line_items.push({
-          coa_account_id: "AC_051",
-          coa_account_name: "Shipping Charges",
+          coa_account_id: "AC_045",
+          coa_account_name: "Shipping Charge",
           creditOrDebit: "Credit",
           amount: bData.shipping_charge,
           amount_formatted: formatCurrency(bData.shipping_charge),

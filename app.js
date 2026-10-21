@@ -6,8 +6,36 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const logger = require("morgan");
 const dotenv = require("dotenv");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const app = express();
-dotenv.config({ path: path.join(__dirname, "../.env") });
+// Note: app.js lives at the backend project root, so its own .env is just
+// "./.env" here — not "../.env" (that was pointing one directory too high,
+// at the repo root). It worked before only because config/config.js later
+// loaded the correct path itself; fixed here so JWT_SECRET (and everything
+// else) is reliably available as soon as app.js needs it.
+dotenv.config({ path: path.join(__dirname, ".env") });
+
+// Every auth token in this app is signed with JWT_SECRET — refuse to boot
+// without one so we never silently sign tokens with `undefined`, and refuse
+// to boot in production with an obviously-default/weak value.
+const weakJwtSecrets = ["dev-local-secret", "secret", "changeme", "jwtsecret"];
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 16) {
+  console.error(
+    "FATAL: JWT_SECRET is missing or too short (min 16 chars). Set a strong, random JWT_SECRET in .env before starting the server."
+  );
+  process.exit(1);
+}
+if (
+  process.env.NODE_ENV === "production" &&
+  weakJwtSecrets.includes(process.env.JWT_SECRET)
+) {
+  console.error(
+    "FATAL: JWT_SECRET is set to a known placeholder value — generate a real secret before running in production."
+  );
+  process.exit(1);
+}
+
 // SO
 const swaggerUI = require("swagger-ui-express");
 const swaggerSpec = require("./swagger");
@@ -86,6 +114,8 @@ const dashboardRoutes = require("./routes/dashboardRoutes");
 const COA_Routes = require("./routes/COA_routes");
 const journalRoutes = require("./routes/journalRoutes");
 const ProfitAndLossRoutes = require("./routes/ProfitAndLossRoutes");
+const manualJournalRoutes = require("./routes/manualJournalRoutes");
+const balanceSheetRoutes = require("./routes/balanceSheetRoutes");
 
 // const emailRoutes = require('./routes/emailRoutes');
 // const itemRoutes = require("./routes/itemRoutes");
@@ -94,22 +124,77 @@ const ProfitAndLossRoutes = require("./routes/ProfitAndLossRoutes");
 // const contactRoutes = require("./routes/contactRoutes")
 
 // Serve Swagger documentation
-app.use("/api-docs", swaggerUI.serve, swaggerUI.setup(swaggerSpec));
+// Swagger exposes the entire API surface (routes, params, models) — keep it
+// out of anything but local development.
+if (process.env.NODE_ENV !== "production") {
+  app.use("/api-docs", swaggerUI.serve, swaggerUI.setup(swaggerSpec));
+}
 
 // view engine setup
 app.set("views", path.join(__dirname, "views"));
 app.set("view engine", "ejs");
-app.use(cors("*"));
+// A wildcard origin ("*") cannot legally be combined with
+// Access-Control-Allow-Credentials: true — browsers reject that combination,
+// but it's a landmine (the previous code did both at once). Reflect an
+// allow-listed origin instead so credentialed cross-origin requests stay
+// restricted to our own frontend(s).
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "http://localhost:3000",
+].filter(Boolean);
 
-app.use(function (req, res, next) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Credentials", true);
-  next();
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow non-browser tools (curl, server-to-server) with no Origin header.
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+app.use(bodyParser.json({ limit: "10mb" }));
+app.use(bodyParser.urlencoded({ limit: "10mb", extended: true }));
+
+// Basic security headers (CSP disabled — this app serves its own EJS/Swagger
+// views, and a default CSP would break them without more tuning).
+app.use(helmet({ contentSecurityPolicy: false }));
+
+// General API rate limit — slows down brute-forcing and body-size abuse
+// since nothing else in the app currently limits request volume.
+app.use(
+  "/api/v1",
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
+
+// Tighter limit on login/register specifically, to slow credential stuffing
+// and account-enumeration attempts.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many attempts, please try again later." },
 });
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ limit: "500mb", extended: true }));
+app.use(
+  [
+    "/api/v1/user/user-login",
+    "/api/v1/user/user-register",
+    "/api/v1/client/login",
+    "/api/v1/client/register",
+  ],
+  authLimiter
+);
 
 app.use(logger("dev"));
 app.use(express.json());
@@ -165,6 +250,8 @@ app.use("/api/v1/kpi", dashboardRoutes);
 app.use("/api/v1/COA", COA_Routes);
 app.use("/api/v1", journalRoutes);  
 app.use("/api/v1", ProfitAndLossRoutes);
+app.use("/api/v1", manualJournalRoutes);
+app.use("/api/v1", balanceSheetRoutes);
 
 // catch 404 and forward to error handler
 app.use(function (req, res, next) {

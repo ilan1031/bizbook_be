@@ -23,6 +23,10 @@ const JournalSchema = new mongoose.Schema(
 
     type: { type: String },
 
+    // Used by manual journal entries (type "Manual Journal").
+    reference_number: { type: String, default: "" },
+    notes: { type: String, default: "" },
+
     line_items: [
       {
         coa_account_id: { type: String },
@@ -63,5 +67,31 @@ const JournalSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// Every journal write goes through these hooks so line items always reference
+// real chart-of-accounts IDs (see resolveJournalLines). Required lazily to
+// keep model loading free of helper load-order concerns.
+JournalSchema.pre("save", async function () {
+  if (!this.isModified("line_items")) return;
+  const { resolveJournalLines } = require("../helpers/accountingHelper");
+  await resolveJournalLines(this.organization_id, this.admin_id, this.line_items);
+});
+
+JournalSchema.pre(["findOneAndUpdate", "updateOne"], async function () {
+  const update = this.getUpdate() || {};
+  const lines = update.line_items || (update.$set && update.$set.line_items);
+  if (!Array.isArray(lines)) return;
+  const { resolveJournalLines } = require("../helpers/accountingHelper");
+  let { organization_id, admin_id } = { ...this.getQuery(), ...update, ...(update.$set || {}) };
+  if (!organization_id || !admin_id) {
+    const existing = await this.model
+      .findOne(this.getQuery())
+      .select("organization_id admin_id")
+      .lean();
+    organization_id = organization_id || existing?.organization_id;
+    admin_id = admin_id || existing?.admin_id;
+  }
+  await resolveJournalLines(organization_id, admin_id, lines);
+});
 
 module.exports = mongoose.model("Journal", JournalSchema);

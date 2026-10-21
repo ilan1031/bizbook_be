@@ -28,6 +28,14 @@ class usersController {
         return res.status(400).json({ message: "All fields are required" });
       }
 
+      const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])(?=.{8,})/;
+      if (!passwordRegex.test(password)) {
+        return res.status(400).json({
+          message:
+            "Password must be at least 8 characters long and include at least one uppercase letter, one number, and one special character.",
+        });
+      }
+
       const existingUser = await UsersCollection.findOne({ email });
       if (existingUser)
         return res.status(400).json({ message: "User already exists" });
@@ -52,10 +60,11 @@ class usersController {
           expiresIn: "10d",
         }
       );
+      const { password: _omit, ...safeUser } = newUser.toObject();
       res.status(ST_CODES.OK).json({
         message: "User registered successfully",
         token,
-        data: newUser,
+        data: safeUser,
       });
     } catch (error) {
       console.log("reg error", error);
@@ -190,7 +199,6 @@ class usersController {
       }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      console.log(decoded, "decodeddecodeddecodeddecoded");
       if (!decoded || !decoded.userId) {
         return res
           .status(401)
@@ -230,9 +238,10 @@ class usersController {
           message: "Cannot find admin",
         });
       }
+      const { password: _omit, ...safeAdminData } = adminData.toObject();
       return res.status(ST_CODES.OK).send({
         status: true,
-        data: adminData,
+        data: safeAdminData,
         message: "Fetched successfully...",
       });
     } catch (error) {
@@ -274,10 +283,11 @@ class usersController {
       let contactData = await ContactCollection.findOne({
         contact_id: user.client_id,
       });
+      const { password: _omit, ...safeUser } = user.toObject();
       res.status(ST_CODES.OK).send({
         token,
         org_id: contactData.organization_id,
-        data: user,
+        data: safeUser,
         message: "User login successfully...",
       });
     } catch (error) {
@@ -347,12 +357,13 @@ class usersController {
         let contactData = await ContactCollection.findOne({
           contact_id: newUser.client_id,
         });
+        const { password: _omit, ...safeNewUser } = newUser.toObject();
         res.status(ST_CODES.OK).json({
           message: "User registered successfully",
           status: true,
           token,
           org_id: contactData.organization_id,
-          data: newUser,
+          data: safeNewUser,
         });
       } else {
         return res.status(404).json({ message: "This account does not exist" });

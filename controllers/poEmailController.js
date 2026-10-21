@@ -493,7 +493,6 @@ const poEmailController = {
     // Get contact person information
     let contactPerson;
     try {
-    console.log(authToken,"---token---")
       const contactPersonResponse = await apiHandler.getContactPersonInformationById(contact_person_id, organization_id, authToken);
       contactPerson = contactPersonResponse.data.data;
       
@@ -705,9 +704,6 @@ async verifyPortalInvite(req, res) {
         error: jwtError.message
       });
     }
-    
-    // Log decoded information for debugging
-    console.log("Decoded token information:", decoded);
     
     // Get organization_id from various sources if not in token
     if (!decoded.organization_id) {

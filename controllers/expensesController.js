@@ -492,8 +492,8 @@ class ExpensesController {
           bData.lineItems.forEach((item) => {
             if (item.amount && item.amount > 0) {
               Journal_line_items.push({
-                coa_account_id: item.account_id || "AC_078", // Default expense account
-                coa_account_name: item.account_name || "General Expenses",
+                coa_account_id: item.account_id || "AC_067", // Default expense account
+                coa_account_name: item.account_name || "Uncategorized",
                 creditOrDebit: "Debit",
                 amount: Number(item.amount) || 0,
                 amount_formatted: formatCurrency(Number(item.amount) || 0),
@@ -503,8 +503,8 @@ class ExpensesController {
         } else {
           // Default expense entry if no line items
           Journal_line_items.push({
-            coa_account_id: "AC_078",
-            coa_account_name: "General Expenses",
+            coa_account_id: "AC_067",
+            coa_account_name: "Uncategorized",
             creditOrDebit: "Debit",
             amount: journalAmt,
             amount_formatted: formatCurrency(journalAmt),

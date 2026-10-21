@@ -8,7 +8,7 @@ router.post("/org/create-organisation", authMiddleware, orgController.createOrg)
 // Get organization(s)
 router.post("/org/get-organisation", authMiddleware, orgController.getOrganisation);
 // Get individual organization by ID
-router.get("/organization/:organization_id", orgController.getOrganizationById);
+router.get("/organization/:organization_id", authMiddleware, orgController.getOrganizationById);
 // Update organization by ID
 router.put("/organization/:organization_id", authMiddleware, orgController.updateOrganization);
 // Update default status of organization

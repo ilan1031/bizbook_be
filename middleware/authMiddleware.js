@@ -11,7 +11,6 @@ const authMiddleware = async (req, res, next) => {
   }
 
   let userToken = token.split(" ")[1];
-  console.log(userToken);
   if (!userToken) {
     return res
       .status(401)

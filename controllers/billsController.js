@@ -204,8 +204,8 @@ class billsController {
         // Add tax-specific entry
         if (tax_type === "GST" && tax_amount > 0) {
           Journal_line_items.push({
-            coa_account_id: "AC_026", // GST Input Tax Credit
-            coa_account_name: "GST Input Tax Credit",
+            coa_account_id: "AC_010", // GST Input Tax Credit
+            coa_account_name: "Input Tax Credits",
             creditOrDebit: "Debit",
             amount: tax_amount,
             amount_formatted: formatCurrency(tax_amount),
@@ -223,8 +223,8 @@ class billsController {
         // Add discount if any
         if (discount !== 0) {
           Journal_line_items.push({
-            coa_account_id: "AC_051",
-            coa_account_name: "Purchase Discount",
+            coa_account_id: "AC_075",
+            coa_account_name: "Purchase Discounts",
             creditOrDebit: "Credit",
             amount: Math.abs(discount),
             amount_formatted: formatCurrency(Math.abs(discount)),
@@ -234,7 +234,7 @@ class billsController {
         // Add adjustment if any
         if (adjustment !== 0) {
           Journal_line_items.push({
-            coa_account_id: "AC_045",
+            coa_account_id: "AC_065",
             coa_account_name: "Other Expenses",
             creditOrDebit: adjustment > 0 ? "Debit" : "Credit",
             amount: Math.abs(adjustment),
@@ -244,7 +244,7 @@ class billsController {
 
         // Final payable entry (Credit to Accounts Payable)
         Journal_line_items.push({
-          coa_account_id: "AC_020",
+          coa_account_id: "AC_032",
           coa_account_name: "Accounts Payable",
           creditOrDebit: "Credit",
           amount: total_payable,

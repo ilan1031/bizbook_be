@@ -124,8 +124,8 @@ class RecurringExpenseController {
             // Add line items as debits
             {
               coa_account_id:
-                bData.account_name || bData.account_id || "AC_078",
-              coa_account_name: bData.expense_account || "General Expense",
+                bData.account_id || (bData.expense_account ? "" : "AC_067"),
+              coa_account_name: bData.expense_account || "Uncategorized",
               creditOrDebit: "Debit",
               amount: bData.amount || bData.tot_amount || 0,
               amount_formatted: formatCurrency(
@@ -869,10 +869,12 @@ class RecurringExpenseController {
           if (expenseType === "expense") {
             // Credit entry - Cash/Bank Account (Money going out)
             journalLineItems.push({
+              // The form sends the account name here; the Journal model
+              // resolves names to chart-of-accounts IDs on save.
               coa_account_id:
                 bData.paid_through_account_id ||
                 recurringExpenseData.paid_through_account_id ||
-                "AC_001",
+                "",
               coa_account_name:
                 bData.paid_through_account_name ||
                 recurringExpenseData.paid_through_account_name ||
@@ -885,13 +887,15 @@ class RecurringExpenseController {
             // Debit entry - Expense Account
             journalLineItems.push({
               coa_account_id:
-                bData.account_name ||
-                recurringExpenseData.account_name ||
-                "AC_078",
+                bData.account_id ||
+                recurringExpenseData.account_id ||
+                (bData.expense_account || recurringExpenseData.account_name
+                  ? ""
+                  : "AC_067"),
               coa_account_name:
                 bData.expense_account ||
-                recurringExpenseData.expense_account ||
-                "General Expense",
+                recurringExpenseData.account_name ||
+                "Uncategorized",
               creditOrDebit: "Debit",
               amount: baseAmount,
               amount_formatted: formatCurrency(baseAmount),

@@ -60,17 +60,24 @@ const localStorage = multer.diskStorage({
 });
 
 // --- File Type Validation ---
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = [
-    "image/jpeg",
-    "image/png",
-    "application/pdf",
-    "application/vnd.ms-excel", // .xls
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
-    "text/csv", // .csv
-  ];
+// The uploaded Content-Type header is client-supplied and trivially spoofed
+// (e.g. upload a script and claim it's "image/png"), so we also require the
+// file extension to match one of the types we actually accept. This isn't a
+// substitute for real content sniffing, but it closes the easy spoof.
+const allowedUploadTypes = {
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/png": [".png"],
+  "application/pdf": [".pdf"],
+  "application/vnd.ms-excel": [".xls"],
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+  "text/csv": [".csv"],
+};
 
-  if (allowedTypes.includes(file.mimetype)) {
+const fileFilter = (req, file, cb) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  const allowedExtensions = allowedUploadTypes[file.mimetype];
+
+  if (allowedExtensions && allowedExtensions.includes(ext)) {
     cb(null, true);
   } else {
     cb(
@@ -89,7 +96,9 @@ const uploadToMemory = multer({
   storage: memoryStorage,
   fileFilter: (req, file, cb) => {
     const imageTypes = ["image/jpeg", "image/jpg", "image/png"];
-    if (imageTypes.includes(file.mimetype)) {
+    const allowedExtensions = [".jpg", ".jpeg", ".png"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (imageTypes.includes(file.mimetype) && allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
       cb(

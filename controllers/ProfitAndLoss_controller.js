@@ -3,274 +3,205 @@ const mongoose = require("mongoose");
 const JournalCollection = mongoose.model("Journal");
 const dayjs = require("dayjs");
 const ST_CODES = require("../helpers/statusCodeHelpers");
+const {
+  INCOME_TYPES,
+  toPaise,
+  fromPaise,
+  getAccountsMap,
+} = require("../helpers/accountingHelper");
+
+const COGS_TYPES = ["cost_of_goods_sold"];
+const OPERATING_EXPENSE_TYPES = ["expense", "other_expense"];
 
 class ProfitLossController {
+  // Profit & loss for a date range, built from every journal in the range and
+  // classified by each line's account type in the chart of accounts — the
+  // same classification the balance sheet uses, so this period's net profit
+  // equals the balance sheet's earnings for the same dates.
+  //
+  // The response keeps its original shape for the P&L page:
+  //   invoices = operating income, bills = cost of goods sold,
+  //   expenses = operating expenses.
+  async getProfitLossReport(req, res) {
+    try {
+      const admin_id = res.locals.user_id;
+      const organization_id = req.query.organization_id;
+      const { from, to } = req.query;
 
-async getProfitLossReport(req, res) {
-  try {
-    const admin_id = res.locals.user_id;
-    const organization_id = req.query.organization_id;
-    const from = req.query.from; // e.g. "2025-01-01"
-    const to = req.query.to; // e.g. "2025-07-31"
-
-    if (!admin_id || !organization_id) {
-      return res
-        .status(ST_CODES.BAD_REQUEST)
-        .json({ message: "Missing organization_id or admin_id" });
-    }
-
-    // Set default date range if not provided
-    const fromDate = from 
-      ? dayjs(from).startOf("day").toDate() 
-      : dayjs().startOf("month").toDate();
-    const toDate = to 
-      ? dayjs(to).endOf("day").toDate() 
-      : dayjs().endOf("month").toDate();
-
-    // Fetch journals with type Bill, Invoice, or Expense
-    const journals = await JournalCollection.find({
-      organization_id,
-      admin_id,
-      journal_date: { $gte: fromDate, $lte: toDate },
-      type: { $in: ["Bill", "Invoice", "Expense"] }
-    });
-
-    // Initialize response structure
-    const response = {
-      bills: {
-        totalDebits: 0,
-        totalDiscounts: 0,
-        netAmount: 0,
-        count: 0,
-        coa_accounts: {} // Track COA account details
-      },
-      invoices: {
-        totalCredits: 0,
-        totalDiscounts: 0,
-        netAmount: 0,
-        count: 0,
-        coa_accounts: {} // Track COA account details
-      },
-      expenses: {
-        totalDebits: 0,
-        totalCredits: 0,
-        netAmount: 0,
-        count: 0,
-        coa_accounts: {} // Track COA account details
+      if (!admin_id || !organization_id) {
+        return res
+          .status(ST_CODES.BAD_REQUEST)
+          .json({ message: "Missing organization_id or admin_id" });
       }
-    };
+      if ((from && !dayjs(from).isValid()) || (to && !dayjs(to).isValid())) {
+        return res
+          .status(ST_CODES.BAD_REQUEST)
+          .json({ success: false, message: "from/to must be valid dates" });
+      }
 
-    // Process each journal entry
-    for (const journal of journals) {
-      if (journal.type === "Bill") {
-        response.bills.count++;
-        
-        // Process line items for Bills
-        for (const line of journal.line_items) {
-          const amount = line.amount || 0;
-          const accountId = line.coa_account_id;
-          const accountName = line.coa_account_name;
-          const creditOrDebit = line.creditOrDebit;
-          
-          // Initialize COA account if not exists
-          if (!response.bills.coa_accounts[accountId]) {
-            response.bills.coa_accounts[accountId] = {
-              account_name: accountName,
-              total_amount: 0,
-              debit_amount: 0,
-              credit_amount: 0,
-              transaction_count: 0
+      // Default to the current month.
+      const fromDate = from
+        ? dayjs(from).startOf("day").toDate()
+        : dayjs().startOf("month").toDate();
+      const toDate = to
+        ? dayjs(to).endOf("day").toDate()
+        : dayjs().endOf("month").toDate();
+
+      const [accounts, journals] = await Promise.all([
+        getAccountsMap(organization_id, admin_id),
+        JournalCollection.find(
+          {
+            organization_id: String(organization_id),
+            admin_id,
+            journal_date: { $gte: fromDate, $lte: toDate },
+          },
+          { journal_id: 1, type: 1, line_items: 1 }
+        ).lean(),
+      ]);
+
+      // Amounts are accumulated in paise and converted at the end.
+      const newSection = () => ({ debit: 0, credit: 0, count: 0, accounts: new Map() });
+      const sections = {
+        invoices: newSection(), // operating income
+        bills: newSection(), // cost of goods sold
+        expenses: newSection(), // operating expenses
+      };
+      const documentCounts = { Invoice: 0, Bill: 0, Expense: 0 };
+      const unclassified = new Map();
+
+      const sectionFor = (accountType) => {
+        if (INCOME_TYPES.includes(accountType)) return "invoices";
+        if (COGS_TYPES.includes(accountType)) return "bills";
+        if (OPERATING_EXPENSE_TYPES.includes(accountType)) return "expenses";
+        return null; // balance sheet account: not part of P&L
+      };
+
+      for (const journal of journals) {
+        if (journal.type in documentCounts) documentCounts[journal.type]++;
+
+        for (const line of journal.line_items || []) {
+          const paise = toPaise(line.amount || 0);
+          const isDebit = line.creditOrDebit === "Debit";
+          const account = accounts.get(line.coa_account_id);
+
+          if (!account) {
+            const key = line.coa_account_id || "(none)";
+            const u = unclassified.get(key) || {
+              account_id: key,
+              account_name: line.coa_account_name || "Unknown account",
+              debit_balance: 0,
             };
+            u.debit_balance += isDebit ? paise : -paise;
+            unclassified.set(key, u);
+            continue;
           }
-          
-          // Update COA account totals
-          response.bills.coa_accounts[accountId].total_amount += amount;
-          response.bills.coa_accounts[accountId].transaction_count++;
-          
-          if (creditOrDebit === "Debit") {
-            response.bills.coa_accounts[accountId].debit_amount += amount;
-            response.bills.totalDebits += amount;
-          } else {
-            response.bills.coa_accounts[accountId].credit_amount += amount;
-          }
-          
-          // Sum Purchase Discount amounts (usually Credit)
-          if (accountName === "Purchase Discount") {
-            response.bills.totalDiscounts += amount;
-          }
-        }
-      } 
-      else if (journal.type === "Invoice") {
-        response.invoices.count++;
-        
-        // Process line items for Invoices
-        for (const line of journal.line_items) {
-          const amount = line.amount || 0;
-          const accountId = line.coa_account_id;
-          const accountName = line.coa_account_name;
-          const creditOrDebit = line.creditOrDebit;
-          
-          // Initialize COA account if not exists
-          if (!response.invoices.coa_accounts[accountId]) {
-            response.invoices.coa_accounts[accountId] = {
-              account_name: accountName,
-              total_amount: 0,
-              debit_amount: 0,
-              credit_amount: 0,
-              transaction_count: 0
-            };
-          }
-          
-          // Update COA account totals
-          response.invoices.coa_accounts[accountId].total_amount += amount;
-          response.invoices.coa_accounts[accountId].transaction_count++;
-          
-          if (creditOrDebit === "Credit") {
-            response.invoices.coa_accounts[accountId].credit_amount += amount;
-            response.invoices.totalCredits += amount;
-          } else {
-            response.invoices.coa_accounts[accountId].debit_amount += amount;
-          }
-          
-          // Handle Sales/Invoice Discount properly
-          if ((accountName === "Sales Discount" || 
-               accountName === "Invoice Discount") && 
-              creditOrDebit === "Debit") {
-            response.invoices.totalDiscounts += amount;
-          }
+
+          const sectionKey = sectionFor(account.account_type);
+          if (!sectionKey) continue;
+          const section = sections[sectionKey];
+          if (isDebit) section.debit += paise;
+          else section.credit += paise;
+
+          const acc = section.accounts.get(account.account_id) || {
+            account_name: account.account_name,
+            account_type: account.account_type,
+            debit_amount: 0,
+            credit_amount: 0,
+            transaction_count: 0,
+          };
+          if (isDebit) acc.debit_amount += paise;
+          else acc.credit_amount += paise;
+          acc.transaction_count++;
+          section.accounts.set(account.account_id, acc);
         }
       }
-      else if (journal.type === "Expense") {
-        response.expenses.count++;
-        
-        // Process line items for Expenses
-        for (const line of journal.line_items) {
-          const amount = line.amount || 0;
-          const accountId = line.coa_account_id;
-          const accountName = line.coa_account_name;
-          const creditOrDebit = line.creditOrDebit;
-          
-          // Initialize COA account if not exists
-          if (!response.expenses.coa_accounts[accountId]) {
-            response.expenses.coa_accounts[accountId] = {
-              account_name: accountName,
-              total_amount: 0,
-              debit_amount: 0,
-              credit_amount: 0,
-              transaction_count: 0
-            };
-          }
-          
-          // Update COA account totals
-          response.expenses.coa_accounts[accountId].total_amount += amount;
-          response.expenses.coa_accounts[accountId].transaction_count++;
-          
-          if (creditOrDebit === "Debit") {
-            response.expenses.coa_accounts[accountId].debit_amount += amount;
-            response.expenses.totalDebits += amount;
-          } else {
-            response.expenses.coa_accounts[accountId].credit_amount += amount;
-            response.expenses.totalCredits += amount;
-          }
+
+      // Income is credit-normal; COGS and expenses are debit-normal.
+      const build = (section, creditNormal) => {
+        const coa_accounts = {};
+        for (const [id, a] of section.accounts) {
+          const net = creditNormal ? a.credit_amount - a.debit_amount : a.debit_amount - a.credit_amount;
+          coa_accounts[id] = {
+            account_name: a.account_name,
+            account_type: a.account_type,
+            total_amount: fromPaise(net),
+            debit_amount: fromPaise(a.debit_amount),
+            credit_amount: fromPaise(a.credit_amount),
+            transaction_count: a.transaction_count,
+          };
         }
-      }
-    }
+        const net = creditNormal ? section.credit - section.debit : section.debit - section.credit;
+        return { coa_accounts, netPaise: net };
+      };
 
-    // Calculate net amounts
-    response.bills.netAmount = response.bills.totalDebits - response.bills.totalDiscounts;
-    response.invoices.netAmount = response.invoices.totalCredits - response.invoices.totalDiscounts;
-    
-    // For expenses, net amount is typically the debit amounts (actual expense)
-    response.expenses.netAmount = response.expenses.totalDebits;
+      const income = build(sections.invoices, true);
+      const cogs = build(sections.bills, false);
+      const expenses = build(sections.expenses, false);
 
-    // Round all amounts to 2 decimal places
-    const roundAmount = (amount) => Math.round(amount * 100) / 100;
-    
-    // Round bills amounts
-    response.bills.totalDebits = roundAmount(response.bills.totalDebits);
-    response.bills.totalDiscounts = roundAmount(response.bills.totalDiscounts);
-    response.bills.netAmount = roundAmount(response.bills.netAmount);
-    
-    // Round invoice amounts
-    response.invoices.totalCredits = roundAmount(response.invoices.totalCredits);
-    response.invoices.totalDiscounts = roundAmount(response.invoices.totalDiscounts);
-    response.invoices.netAmount = roundAmount(response.invoices.netAmount);
-    
-    // Round expense amounts
-    response.expenses.totalDebits = roundAmount(response.expenses.totalDebits);
-    response.expenses.totalCredits = roundAmount(response.expenses.totalCredits);
-    response.expenses.netAmount = roundAmount(response.expenses.netAmount);
+      const grossProfit = income.netPaise - cogs.netPaise;
+      const netProfit = grossProfit - expenses.netPaise;
 
-    // Round COA account amounts for bills
-    Object.keys(response.bills.coa_accounts).forEach(accountId => {
-      const account = response.bills.coa_accounts[accountId];
-      account.total_amount = roundAmount(account.total_amount);
-      account.debit_amount = roundAmount(account.debit_amount);
-      account.credit_amount = roundAmount(account.credit_amount);
-    });
-
-    // Round COA account amounts for invoices
-    Object.keys(response.invoices.coa_accounts).forEach(accountId => {
-      const account = response.invoices.coa_accounts[accountId];
-      account.total_amount = roundAmount(account.total_amount);
-      account.debit_amount = roundAmount(account.debit_amount);
-      account.credit_amount = roundAmount(account.credit_amount);
-    });
-
-    // Round COA account amounts for expenses
-    Object.keys(response.expenses.coa_accounts).forEach(accountId => {
-      const account = response.expenses.coa_accounts[accountId];
-      account.total_amount = roundAmount(account.total_amount);
-      account.debit_amount = roundAmount(account.debit_amount);
-      account.credit_amount = roundAmount(account.credit_amount);
-    });
-
-    // Calculate Profit/Loss following traditional P&L structure
-    const operatingIncome = response.invoices.netAmount; // Revenue from invoices
-    const costOfGoodsSold = response.bills.netAmount;    // COGS from bills
-    const grossProfit = operatingIncome - costOfGoodsSold;
-    const operatingExpenses = response.expenses.netAmount; // Operating expenses
-    const operatingProfit = grossProfit - operatingExpenses;
-    
-    // Final Net Profit/Loss calculation
-    const netProfitLoss = operatingProfit;
-    const roundedNetProfitLoss = roundAmount(netProfitLoss);
-
-    res.status(ST_CODES.OK).json({
-      success: true,
-      data: {
-        ...response,
+      const data = {
+        invoices: {
+          // Sales and other income; debits on income accounts (e.g. discounts) reduce it.
+          totalCredits: fromPaise(sections.invoices.credit),
+          totalDiscounts: fromPaise(sections.invoices.debit),
+          netAmount: fromPaise(income.netPaise),
+          count: documentCounts.Invoice,
+          coa_accounts: income.coa_accounts,
+        },
+        bills: {
+          totalDebits: fromPaise(sections.bills.debit),
+          totalDiscounts: fromPaise(sections.bills.credit),
+          netAmount: fromPaise(cogs.netPaise),
+          count: documentCounts.Bill,
+          coa_accounts: cogs.coa_accounts,
+        },
+        expenses: {
+          totalDebits: fromPaise(sections.expenses.debit),
+          totalCredits: fromPaise(sections.expenses.credit),
+          netAmount: fromPaise(expenses.netPaise),
+          count: documentCounts.Expense,
+          coa_accounts: expenses.coa_accounts,
+        },
         summary: {
-          operatingIncome: roundAmount(operatingIncome),
-          costOfGoodsSold: roundAmount(costOfGoodsSold),
-          grossProfit: roundAmount(grossProfit),
-          operatingExpenses: roundAmount(operatingExpenses),
-          operatingProfit: roundAmount(operatingProfit),
-          netProfitLoss: roundedNetProfitLoss
+          operatingIncome: fromPaise(income.netPaise),
+          costOfGoodsSold: fromPaise(cogs.netPaise),
+          grossProfit: fromPaise(grossProfit),
+          operatingExpenses: fromPaise(expenses.netPaise),
+          operatingProfit: fromPaise(netProfit),
+          netProfitLoss: fromPaise(netProfit),
         },
         profit_loss: {
-          amount: roundedNetProfitLoss,
-          status: roundedNetProfitLoss >= 0 ? "Profit" : "Loss",
-          calculation: `Operating Income (${roundAmount(operatingIncome)}) - COGS (${roundAmount(costOfGoodsSold)}) - Expenses (${roundAmount(operatingExpenses)}) = ${roundedNetProfitLoss}`
-        }
-      },
-      dateRange: {
+          amount: fromPaise(netProfit),
+          status: netProfit >= 0 ? "Profit" : "Loss",
+          calculation: `Operating Income (${fromPaise(income.netPaise)}) - COGS (${fromPaise(
+            cogs.netPaise
+          )}) - Expenses (${fromPaise(expenses.netPaise)}) = ${fromPaise(netProfit)}`,
+        },
+        checks: {
+          journal_count: journals.length,
+          has_chart_of_accounts: accounts.size > 0,
+          unclassified_accounts: [...unclassified.values()].map((u) => ({
+            ...u,
+            debit_balance: fromPaise(u.debit_balance),
+          })),
+        },
+      };
+
+      const dateRange = {
         from: dayjs(fromDate).format("YYYY-MM-DD"),
-        to: dayjs(toDate).format("YYYY-MM-DD")
-      }
-    });
-
-  } catch (err) {
-    console.error("Profit & Loss Bill/Invoice/Expense Error:", err);
-    res
-      .status(ST_CODES.INTERNAL_SERVER_ERROR)
-      .json({ 
-        success: false,
-        message: "Error generating Bill/Invoice/Expense report" 
-      });
+        to: dayjs(toDate).format("YYYY-MM-DD"),
+      };
+      // dateRange is also inside `data`, which is where the P&L page reads it.
+      res.status(ST_CODES.OK).json({ success: true, data: { ...data, dateRange }, dateRange });
+    } catch (err) {
+      console.error("Profit & Loss error:", err);
+      res
+        .status(ST_CODES.INTERNAL_SERVER_ERROR)
+        .json({ success: false, message: "Error generating profit & loss report" });
+    }
   }
-}
-
 }
 
 module.exports = new ProfitLossController();
