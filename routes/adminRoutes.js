@@ -22,7 +22,7 @@ router.get("/admin/users", AdminController.listUsers);
 router.patch("/admin/users/:id", AdminController.updateUser);
 // Remove one of a user's remembered IP addresses
 router.delete("/admin/users/:id/ips/:ipId", AdminController.removeUserIp);
-// Send a test SMS with the configured provider
-router.post("/admin/sms/test", AdminController.testSms);
+// Send a test email with the configured mailbox
+router.post("/admin/email/test", AdminController.testEmail);
 
 module.exports = router;

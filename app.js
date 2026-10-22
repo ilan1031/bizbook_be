@@ -26,17 +26,19 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 16) {
   );
   process.exit(1);
 }
-// Sign-in codes go by SMS, else email; say clearly when neither can deliver.
-if (process.env.LOGIN_OTP_ENABLED === "true") {
-  const sms = require("./helpers/smsHelper");
+// Account email (sign-in codes, sign-up and approval notices): say clearly
+// when it can't be delivered.
+{
   const { isMailConfigured } = require("./helpers/mailer");
-  const channels = [sms.canDeliver() && `SMS (${sms.provider()})`, isMailConfigured() && "email"].filter(Boolean);
-  if (channels.length) {
-    console.log(`Sign-in codes: ${channels.join(", then ")}${process.env.LOGIN_OTP_MODE === "every_login" ? ", on every login" : ", for new devices"}.`);
+  const everyLogin = (process.env.LOGIN_OTP_MODE || "every_login") === "every_login";
+  if (isMailConfigured()) {
+    if (process.env.LOGIN_OTP_ENABLED === "true") {
+      console.log(`Sign-in codes by email (${process.env.EMAIL_USER}), ${everyLogin ? "on every login" : "for new devices"}.`);
+    }
   } else if (process.env.NODE_ENV === "production") {
-    console.warn("WARNING: LOGIN_OTP_ENABLED is on but neither SMS nor email is set up, so sign-in codes are off. Set SMS_PROVIDER (e.g. smsgate) or EMAIL_USER/EMAIL_PASS.");
+    console.warn("WARNING: EMAIL_USER / EMAIL_PASS aren't set: no sign-in codes, sign-up alerts or approval emails will be sent.");
   } else {
-    console.warn("NOTE: no SMS provider or email set up: sign-in codes are printed in this log.");
+    console.warn("NOTE: EMAIL_USER / EMAIL_PASS aren't set: emails (including sign-in codes) are printed in this log.");
   }
 }
 if (

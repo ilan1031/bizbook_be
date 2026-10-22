@@ -16,23 +16,11 @@ The API listens on `PORT` (default 4000). `GET /api-health` reports server and d
 
 - **Superadmin.** The account in `SUPERADMIN_EMAIL` is created (or promoted) on startup. It can always sign in and manages everyone else under **Users & Access** in the app.
 - **Sign-up needs approval.** New accounts start as *pending* and can't sign in until the superadmin activates them. Inactive accounts are refused too, including any sessions that are already open.
-- **Pages and actions.** A user sees nothing until the superadmin grants pages, each with view / create / edit / delete. The same permissions are enforced on every API call (`helpers/rbac.js`, `middleware/userMiddleware.js`).
-- **Device (IP) limit.** Each user may sign in from up to `ip_limit` IP addresses (default 2). The sign-up IP is the first one. A new IP within the limit is added on sign-in, after an SMS code when `LOGIN_OTP_ENABLED=true` and an SMS provider is set. Beyond the limit, sign-in is refused until the superadmin removes an old IP.
-- **Sign-in codes.** With `LOGIN_OTP_ENABLED=true`, a 6-digit code is required:
-  - only from a new device (`LOGIN_OTP_MODE=new_device`, the default), or
-  - on every sign-in, the superadmin's included (`LOGIN_OTP_MODE=every_login`).
-
-  The code goes by SMS when a provider is set and the user has a mobile number, otherwise by email (`EMAIL_USER` / `EMAIL_PASS`; a Gmail App Password works for free). If neither is set up, codes are off rather than locking anyone out. Locally, with `SMS_PROVIDER=console`, the code is printed in the server log.
-- **SMS.** `SMS_PROVIDER` selects how messages go out:
-  - `console` logs them (development).
-  - `smsgate` is free. Install "SMS Gateway for Android" (sms-gate.app) on a phone with a SIM; the phone sends each SMS as a normal text, so it costs only what your SIM plan charges. Set `SMSGATE_USERNAME` / `SMSGATE_PASSWORD` from the app. The phone must stay on and online.
-  - `fast2sms` is for India: a small free test credit, then pay per SMS, and business SMS needs DLT registration.
-  - `2factor` (2Factor.in, India) sends sign-in codes only, through 2Factor's OTP template, and you pay only for delivered codes. It is the simplest way to get new-device codes working. Set `TWOFACTOR_API_KEY`. Approval notices and sign-up alerts aren't sent with it.
-  - `twilio` is the other option.
-
-  Messages: sign-up alerts to the superadmin, approval notices to users, and new-device codes.
-
-  With `console`, nothing reaches a phone. In production new-device codes are switched off until a real provider is set, so users aren't locked out. To check the setup, run `node scripts/test-sms.js <mobile> [email]`: it sends a test code exactly as login does and says whether it went by SMS or email. **Send test SMS** under Users & Access checks the SMS provider alone.
+- **Pages and actions.** A user sees nothing until the superadmin switches pages on, each with view / create / edit / delete, plus **convert** on quotes, sales orders and delivery challans. Import, Tally vouchers, the AI assistant and the **Customer Portal** are pages too: with the portal off, that user's customers can't sign in to it. Portal sign-ins can only reach the portal's own endpoints. The same permissions are enforced on every API call (`helpers/rbac.js`, `middleware/userMiddleware.js`).
+- **Device (IP) limit.** Each user may sign in from up to `ip_limit` IP addresses (default 2). The sign-up IP is the first one. A new IP within the limit is added on sign-in (after the emailed code). Beyond the limit, sign-in is refused until the superadmin removes an old IP.
+- **Sign-in codes by email.** With `LOGIN_OTP_ENABLED=true`, every sign-in (the superadmin's included) needs a 6-digit code emailed to the user. Set `LOGIN_OTP_MODE=new_device` to ask only from a new IP. In production, codes need `EMAIL_USER` / `EMAIL_PASS`; without them codes are off rather than locking anyone out. Locally, without them, emails are printed in the server log.
+- **Account emails.** Every sign-up emails the superadmin (with a link to Users & Access), and activating a pending user emails them that they're approved. Same mailbox settings.
+- **Gmail setup.** In the Google account you'll send from: turn on 2-Step Verification, open https://myaccount.google.com/apppasswords, create an app password (any name, e.g. BizBooks), and put the 16 letters in `EMAIL_PASS` with the address in `EMAIL_USER`. Check it with `node scripts/test-email.js you@example.com` or **Send test email** under Users & Access.
 
 ## Tests
 

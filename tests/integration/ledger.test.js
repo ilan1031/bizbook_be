@@ -16,7 +16,6 @@ process.env.TRUST_PROXY = "1";
 process.env.SUPERADMIN_EMAIL = "superadmin@test.local";
 process.env.SUPERADMIN_PASSWORD = "Super@1234";
 process.env.SUPERADMIN_MOBILE = "9000000001";
-process.env.SMS_PROVIDER = "console";
 process.env.LOGIN_OTP_ENABLED = "false";
 delete process.env.RAZORPAY_KEY_ID;
 delete process.env.RAZORPAY_KEY_SECRET;

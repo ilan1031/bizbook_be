@@ -4,6 +4,10 @@ const usersCollection = mongoose.model("user");
 const ClientCollection = mongoose.model("clients");
 const OrgCollection = mongoose.model("Organization");
 const { checkApiAccess, getClientIp } = require("../helpers/rbac");
+const ContactCollection = mongoose.model("Contact");
+
+// What a customer-portal token may call: the portal's quote endpoints.
+const CLIENT_API = /^\/api\/v1\/clientestimates(\/|\?|$)/;
 
 const authMiddleware = async (req, res, next) => {
   const token = req.headers.authorization; // Extract token from header 'x-auth-token'
@@ -28,9 +32,27 @@ const authMiddleware = async (req, res, next) => {
       user = await usersCollection.findOne({ _id: decoded.userId });
     }
     if (user) {
-      // Access control for business users (customer-portal clients have
-      // their own flow). Checked on every request, so deactivating a user
-      // or removing one of their IPs takes effect immediately.
+      // Customer-portal clients may only use the portal's own endpoints, and
+      // only while the business user who owns them is active and has the
+      // Customer Portal switched on by the superadmin.
+      if (decoded.role === "client") {
+        if (!CLIENT_API.test(req.originalUrl)) {
+          return res.status(403).json({ code: "FORBIDDEN", message: "Not available in the customer portal.", success: false });
+        }
+        const contact = await ContactCollection.findOne({ contact_id: user.client_id }, { admin_id: 1 }).lean();
+        const owner = contact && (await usersCollection.findById(contact.admin_id, { role: 1, status: 1, permissions: 1 }).lean());
+        const allowed =
+          owner &&
+          (owner.role === "superadmin" ||
+            (owner.status === "active" && (owner.permissions?.customerPortal || []).includes("view")));
+        if (!allowed) {
+          return res.status(403).json({ code: "PORTAL_DISABLED", message: "The customer portal isn't available for this business.", success: false });
+        }
+      }
+
+      // Access control for business users. Checked on every request, so
+      // deactivating a user or removing one of their IPs takes effect
+      // immediately.
       if (decoded.role !== "client" && user.role !== "superadmin") {
         if (user.status !== "active") {
           return res.status(403).json({

@@ -2,7 +2,8 @@ const mongoose = require("mongoose");
 const UsersCollection = mongoose.model("user");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const { CATALOG, sanitizePermissions } = require("../helpers/rbac");
-const { sendSms, provider: smsProvider, isConfigured: smsConfigured } = require("../helpers/smsHelper");
+const { isMailConfigured, sendMail } = require("../helpers/mailer");
+const { sendApprovedEmail } = require("../helpers/accountEmails");
 
 const STATUSES = ["pending", "active", "inactive"];
 
@@ -31,7 +32,7 @@ class AdminController {
         data: users,
         counts: Object.fromEntries(counts.map((c) => [c._id || "pending", c.n])),
         catalog: CATALOG,
-        sms: { provider: smsProvider(), configured: smsConfigured() },
+        email: { configured: isMailConfigured(), from: isMailConfigured() ? process.env.EMAIL_USER : "" },
       });
     } catch (error) {
       console.log("admin listUsers error", error);
@@ -81,16 +82,15 @@ class AdminController {
       }
       await user.save();
 
-      let sms = null;
+      // Tell the user they're approved and can start.
+      let email = null;
       if (!wasActive && user.status === "active") {
-        sms = await sendSms(
-          user.mobile,
-          "BizBooks: your account has been approved. You can now sign in."
-        );
+        email = await sendApprovedEmail(user);
+        if (!email.ok) console.error("[approval email] not sent:", email.error);
       }
 
       const fresh = await UsersCollection.findById(id).select(PUBLIC_FIELDS).lean();
-      res.status(ST_CODES.OK).json({ status: true, data: fresh, sms, message: "User updated" });
+      res.status(ST_CODES.OK).json({ status: true, data: fresh, email, message: "User updated" });
     } catch (error) {
       console.log("admin updateUser error", error);
       res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ status: false, message: "Failed to update user" });
@@ -117,15 +117,25 @@ class AdminController {
     }
   }
 
-  async testSms(req, res) {
-    const to = String(req.body?.mobile || "").trim();
-    // Sent like a real sign-in code (Fast2SMS OTP route), so a pass here
-    // means new-device codes will arrive too.
-    const result = await sendSms(to, "BizBooks: your sign-in code is 123456 (test).", { otp: "123456" });
+  // Sends a test email, so the superadmin can check the mailbox settings.
+  async testEmail(req, res) {
+    const to = String(req.body?.email || "").trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "Enter a valid email address" });
+    }
+    const result = await sendMail({
+      to,
+      subject: "BizBooks test email",
+      text: "This is a test from BizBooks. If you can read it, sign-in codes and account emails will arrive too.",
+    });
     res.status(result.ok ? ST_CODES.OK : ST_CODES.BAD_REQUEST).json({
       status: result.ok,
       ...result,
-      message: result.ok ? `Test SMS sent via ${result.provider}` : result.error,
+      message: result.ok
+        ? result.channel === "console"
+          ? "Email isn't set up yet: the test was written to the server log"
+          : `Test email sent to ${to}`
+        : result.error,
     });
   }
 }

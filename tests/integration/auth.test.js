@@ -1,4 +1,4 @@
-// Integration tests for sign-up, login, approval, device (IP) limits, SMS
+// Integration tests for sign-up, login, approval, device (IP) limits, emailed
 // login codes and the superadmin API, run against the real Express app and a
 // throwaway database (TEST_DB_URL, dropped first).
 //
@@ -14,22 +14,24 @@ process.env.TRUST_PROXY = "1"; // lets X-Forwarded-For simulate client IPs
 process.env.SUPERADMIN_EMAIL = "superadmin@test.local";
 process.env.SUPERADMIN_PASSWORD = "Super@1234";
 process.env.SUPERADMIN_MOBILE = "9000000001";
-process.env.SMS_PROVIDER = "console";
 process.env.LOGIN_OTP_ENABLED = "true";
+process.env.LOGIN_OTP_MODE = "new_device"; // the every-login mode has its own test
+delete process.env.EMAIL_USER; // emails go to the log in tests
+delete process.env.EMAIL_PASS;
 
 const mongoose = require("mongoose");
 const request = require("supertest");
 
-// Capture console SMS so tests can read login codes.
-const smsLog = [];
+// Capture logged emails so tests can read login codes and notices.
+const mailLog = [];
 const realLog = console.log;
 console.log = (...args) => {
   const line = args.join(" ");
-  if (line.startsWith("[SMS:console]")) smsLog.push(line);
+  if (line.startsWith("[EMAIL:console]")) mailLog.push(line);
 };
 const lastCode = () => {
-  for (let i = smsLog.length - 1; i >= 0; i--) {
-    const m = smsLog[i].match(/sign-in code is (\d{6})/);
+  for (let i = mailLog.length - 1; i >= 0; i--) {
+    const m = mailLog[i].match(/sign-in code is (\d{6})/);
     if (m) return m[1];
   }
   return null;
@@ -129,7 +131,7 @@ test("sign-up validation", async () => {
 });
 
 test("sign-up creates a pending account without a token and alerts the superadmin", async () => {
-  smsLog.length = 0;
+  mailLog.length = 0;
   const r = await as("10.0.0.1").post("/api/v1/user/user-register", USER);
   assert.equal(r.status, 201, r.text);
   assert.equal(r.body.status, "pending");
@@ -140,10 +142,13 @@ test("sign-up creates a pending account without a token and alerts the superadmi
   userId = String(saved._id);
 
   // The superadmin alert is sent in the background after the response.
-  for (let i = 0; i < 20 && !smsLog.some((l) => /new sign-up/.test(l)); i++) {
+  for (let i = 0; i < 20 && !mailLog.some((l) => /waiting for approval/.test(l)); i++) {
     await new Promise((res) => setTimeout(res, 50));
   }
-  assert.ok(smsLog.some((l) => /to 9000000001: .*new sign-up user\.one@test\.local/.test(l)));
+  const alert = mailLog.find((l) => /waiting for approval/.test(l));
+  assert.ok(alert, "superadmin emailed");
+  assert.match(alert, /^\[EMAIL:console\] to superadmin@test\.local: New BizBooks sign-up waiting for approval: user\.one@test\.local/);
+  assert.match(alert, /\/admin\/users/, "links to Users & Access");
   assert.equal(saved.status, "pending");
   assert.equal(saved.mobile, "9876543210", "mobile stored as digits");
   assert.notEqual(saved.password, USER.password, "password hashed");
@@ -151,16 +156,13 @@ test("sign-up creates a pending account without a token and alerts the superadmi
   assert.deepEqual(saved.permissions, {});
 });
 
-test("sign-up alert isn't sent to the placeholder superadmin mobile", async () => {
-  const saved = process.env.SUPERADMIN_MOBILE;
-  delete process.env.SUPERADMIN_MOBILE; // superadmin was seeded with 9000000001; use placeholder
-  await mongoose.model("user").updateOne({ role: "superadmin" }, { $set: { mobile: "0000000000" } });
-  smsLog.length = 0;
-  await as("10.3.0.1").post("/api/v1/user/user-register", { ...USER, email: "nosms@test.local" });
-  await new Promise((res) => setTimeout(res, 300));
-  assert.ok(!smsLog.some((l) => /to 0000000000/.test(l)));
-  process.env.SUPERADMIN_MOBILE = saved;
-  await mongoose.model("user").updateOne({ role: "superadmin" }, { $set: { mobile: saved } });
+test("every sign-up emails the superadmin", async () => {
+  mailLog.length = 0;
+  await as("10.3.0.1").post("/api/v1/user/user-register", { ...USER, email: "second@test.local" });
+  for (let i = 0; i < 20 && !mailLog.some((l) => /second@test\.local/.test(l)); i++) {
+    await new Promise((res) => setTimeout(res, 50));
+  }
+  assert.ok(mailLog.some((l) => /to superadmin@test\.local: .*second@test\.local/.test(l)));
 });
 
 test("duplicate sign-up is refused (case-insensitive)", async () => {
@@ -190,8 +192,8 @@ test("pending account cannot sign in", async () => {
   assert.equal(r.body.code, "ACCOUNT_PENDING");
 });
 
-test("superadmin approves the user and sets permissions; user gets an SMS", async () => {
-  smsLog.length = 0;
+test("superadmin approves the user and sets permissions; user is emailed", async () => {
+  mailLog.length = 0;
   const r = await as("203.0.113.1").patch(
     `/api/v1/admin/users/${userId}`,
     { status: "active", ip_limit: 2, permissions: { invoices: ["view", "create"], madeUp: ["view"] } },
@@ -202,7 +204,14 @@ test("superadmin approves the user and sets permissions; user gets an SMS", asyn
   assert.deepEqual(r.body.data.permissions, { invoices: ["view", "create"] });
   assert.equal(r.body.data.password, undefined);
   assert.ok(r.body.data.approved_at);
-  assert.ok(smsLog.some((l) => /approved/.test(l)));
+  const notice = mailLog.find((l) => /approved/.test(l));
+  assert.match(notice, /^\[EMAIL:console\] to user\.one@test\.local: Your BizBooks account is approved/);
+  assert.match(notice, /organisation\/login/, "links to sign in");
+
+  // Saving again (already active) doesn't re-send it.
+  mailLog.length = 0;
+  await as("203.0.113.1").patch(`/api/v1/admin/users/${userId}`, { ip_limit: 2 }, saToken);
+  assert.ok(!mailLog.some((l) => /approved/.test(l)));
 });
 
 test("admin input validation", async () => {
@@ -237,13 +246,13 @@ test("/user/me returns role, status, permissions and the page catalog", async ()
 });
 
 let otpToken;
-test("a new IP within the limit needs the SMS code", async () => {
-  smsLog.length = 0;
+test("a new IP within the limit needs the emailed code", async () => {
+  mailLog.length = 0;
   const r = await login("10.0.0.2", USER);
   assert.equal(r.status, 200);
   assert.equal(r.body.otp_required, true);
   assert.equal(r.body.token, undefined);
-  assert.equal(r.body.channel, "console", "no SMS or email in tests: the code is in the log");
+  assert.equal(r.body.channel, "console", "no mailbox in tests: the email is in the log");
   const session = r.body.otp_session;
   const code = lastCode();
   assert.match(code, /^\d{6}$/);
@@ -374,7 +383,7 @@ test("health check reports the database", async () => {
 test("every-login mode asks for a code each time, the superadmin's included", async () => {
   process.env.LOGIN_OTP_MODE = "every_login";
   try {
-    smsLog.length = 0;
+    mailLog.length = 0;
     const sa = await login("203.0.113.1", SA);
     assert.equal(sa.body.otp_required, true, JSON.stringify(sa.body));
     assert.equal(sa.body.token, undefined);
@@ -386,21 +395,19 @@ test("every-login mode asks for a code each time, the superadmin's included", as
     const user = await login("10.0.0.1", USER);
     assert.equal(user.body.otp_required, true, JSON.stringify(user.body));
   } finally {
-    delete process.env.LOGIN_OTP_MODE;
+    process.env.LOGIN_OTP_MODE = "new_device";
   }
-  // Back to the default: known devices sign straight in.
+  // In new-device mode known devices sign straight in.
   assert.ok((await login("10.0.0.1", USER)).body.token);
 });
 
-test("codes go by email when SMS can't deliver", async (t) => {
+test("with a mailbox set up, the code is emailed and the address is masked", async (t) => {
   const mailer = require("../../helpers/mailer");
   const sent = [];
-  t.mock.method(mailer, "isMailConfigured", () => true);
   t.mock.method(mailer, "sendMail", async (mail) => {
     sent.push(mail);
-    return { ok: true };
+    return { ok: true, channel: "email" };
   });
-  process.env.SMS_PROVIDER = "smsgate"; // no keys: can't deliver
   process.env.LOGIN_OTP_MODE = "every_login";
   try {
     const r = await login("10.0.0.1", USER);
@@ -412,7 +419,19 @@ test("codes go by email when SMS can't deliver", async (t) => {
     const ok = await as("10.0.0.1").post("/api/v1/user/verify-login-otp", { otp_session: r.body.otp_session, otp: code });
     assert.equal(ok.status, 200, ok.text);
   } finally {
-    process.env.SMS_PROVIDER = "console";
-    delete process.env.LOGIN_OTP_MODE;
+    process.env.LOGIN_OTP_MODE = "new_device";
   }
+});
+
+test("customer-portal tokens can't reach business APIs", async () => {
+  const jwt = require("jsonwebtoken");
+  const Client = mongoose.model("clients");
+  const client = await Client.create({ email: "portal@test.local", password: "x", role: "client", client_id: "CU-NOPE", status: "active" });
+  const token = jwt.sign({ userId: client._id, role: "client" }, process.env.JWT_SECRET);
+  const business = await as("10.9.0.1").get("/api/v1/invoices?organization_id=100000", token);
+  assert.equal(business.status, 403);
+  assert.equal(business.body.code, "FORBIDDEN");
+  const portal = await as("10.9.0.1").get("/api/v1/clientestimates", token);
+  assert.equal(portal.status, 403);
+  assert.equal(portal.body.code, "PORTAL_DISABLED", "no business has the portal on for this customer");
 });

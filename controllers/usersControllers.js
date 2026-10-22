@@ -10,37 +10,32 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { getClientIp, CATALOG } = require("../helpers/rbac");
-const { sendSms } = require("../helpers/smsHelper");
-const { canSendCodes, sendLoginCode } = require("../helpers/loginCode");
+const { canSendCodes, sendLoginCode, sendSignupAlert } = require("../helpers/accountEmails");
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
 
-// One-time sign-in codes (SMS, else email; see helpers/loginCode.js).
-// On when LOGIN_OTP_ENABLED=true and a way of delivering them is set up, so
-// a missing provider can never lock people out.
-//   LOGIN_OTP_MODE=new_device  (default) only when signing in from a new IP
-//   LOGIN_OTP_MODE=every_login every sign-in, the superadmin's included
+// One-time sign-in codes, sent by email (helpers/accountEmails.js).
+// On when LOGIN_OTP_ENABLED=true and email can be delivered (in production
+// that needs EMAIL_USER/EMAIL_PASS), so a missing mailbox never locks anyone
+// out.
+//   LOGIN_OTP_MODE=every_login (default) every sign-in, the superadmin's included
+//   LOGIN_OTP_MODE=new_device  only when signing in from a new IP
 const loginOtpEnabled = () => process.env.LOGIN_OTP_ENABLED === "true" && canSendCodes();
-const codeOnEveryLogin = () => process.env.LOGIN_OTP_MODE === "every_login";
+const codeOnEveryLogin = () => (process.env.LOGIN_OTP_MODE || "every_login") === "every_login";
 
 const hashOtp = (code) =>
   crypto.createHmac("sha256", process.env.JWT_SECRET).update(String(code)).digest("hex");
 
 const findSuperadmin = () => UsersCollection.findOne({ role: "superadmin" }).lean();
 
-// The seeded superadmin gets a placeholder mobile ("0000000000") when
-// SUPERADMIN_MOBILE isn't set - never text that.
-const isRealMobile = (n) => /\d{10}/.test(String(n || "")) && !/^0+$/.test(String(n).replace(/\D/g, ""));
-
+// Emails the superadmin that someone is waiting for approval.
 const notifySuperadminOfSignup = async (newUser) => {
   const admin = await findSuperadmin();
-  const to = [process.env.SUPERADMIN_MOBILE, admin?.mobile].find(isRealMobile);
+  const to = admin?.email || process.env.SUPERADMIN_EMAIL;
   if (!to) return;
-  await sendSms(
-    to,
-    `BizBooks: new sign-up ${newUser.email} (${newUser.company_name || "no company"}) is waiting for your approval.`
-  );
+  const r = await sendSignupAlert(to, newUser);
+  if (!r.ok) console.error("[sign-up alert] not sent:", r.error);
 };
 
 // Issues the session token once every check has passed.
@@ -102,7 +97,6 @@ const startLoginOtp = async (req, res, user, ip) => {
     otp_session: otpSession,
     channel: sent.channel,
     sent_to: sent.sentTo,
-    mobile_hint: sent.channel === "sms" ? sent.sentTo : "",
     message: `Enter the 6-digit code we sent to ${sent.sentTo}.`,
   });
 };
@@ -471,17 +465,32 @@ class usersController {
           .json({ message: "Email and password are required" });
       }
 
-      const user = await ClientCollection.findOne({ email, role: role });
+      const user = await ClientCollection.findOne({ email: String(email), role: String(role) });
       if (!user)
         return res
           .status(ST_CODES.BAD_REQUEST)
           .json({ message: "Invalid credentials" });
 
-      const isMatch = await bcrypt.compare(password, user.password);
+      const isMatch = await bcrypt.compare(String(password), user.password);
       if (!isMatch)
         return res
           .status(ST_CODES.BAD_REQUEST)
           .json({ message: "Invalid credentials" });
+
+      // The portal is only open while the business that owns this customer
+      // is active and has Customer Portal switched on by the superadmin.
+      const owningContact = await ContactCollection.findOne({ contact_id: user.client_id }, { admin_id: 1 }).lean();
+      const owner = owningContact && (await UsersCollection.findById(owningContact.admin_id).lean());
+      const portalOn =
+        owner &&
+        (owner.role === "superadmin" ||
+          (owner.status === "active" && (owner.permissions?.customerPortal || []).includes("view")));
+      if (!portalOn) {
+        return res.status(ST_CODES.FORBIDDEN).json({
+          code: "PORTAL_DISABLED",
+          message: "The customer portal isn't available for this business.",
+        });
+      }
 
       const token = jwt.sign(
         { userId: user._id, role: "client" },

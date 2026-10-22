@@ -25,20 +25,10 @@ services:
         sync: false
       - key: SUPERADMIN_MOBILE
         sync: false
-      - key: SMS_PROVIDER
-        value: console
       - key: LOGIN_OTP_ENABLED
-        value: "false"
+        value: "true"
       - key: LOGIN_OTP_MODE
-        value: new_device
-      - key: SMSGATE_USERNAME
-        sync: false
-      - key: SMSGATE_PASSWORD
-        sync: false
-      - key: TWOFACTOR_API_KEY
-        sync: false
-      - key: FAST2SMS_API_KEY
-        sync: false
+        value: every_login
       - key: EMAIL_USER
         sync: false
       - key: EMAIL_PASS

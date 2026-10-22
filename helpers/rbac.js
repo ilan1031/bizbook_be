@@ -4,10 +4,14 @@
 // which sidebar entries/routes a user sees (sent to the frontend via
 // GET /api/v1/user/me), and which API calls a user may make (enforced in
 // middleware/userMiddleware.js). Permissions are stored on the user as
-//   { [pageKey]: ["view", "create", "edit", "delete"] }
+//   { [pageKey]: ["view", "create", "edit", "delete", "convert"] }
+// "convert" exists only on documents that turn into others (quote ->
+// invoice / sales order, sales order -> invoice, challan -> invoice).
 
 const ACTIONS = ["view", "create", "edit", "delete"];
 const VIEW_ONLY = ["view"];
+const WITH_CONVERT = [...ACTIONS, "convert"];
+const ALL_ACTIONS = WITH_CONVERT;
 
 // `routes` are frontend path prefixes (matched on whole path segments).
 const PAGES = [
@@ -16,13 +20,16 @@ const PAGES = [
   { key: "banking", label: "Banking", group: "General", routes: ["/banking"], planned: true },
 
   { key: "customers", label: "Customers", group: "Sales", routes: ["/sales/customer"] },
-  { key: "quotes", label: "Quotes", group: "Sales", routes: ["/sales/quotes"] },
-  { key: "salesOrders", label: "Sales Orders", group: "Sales", routes: ["/sales/salesOrder"] },
-  { key: "deliveryChallans", label: "Delivery Challans", group: "Sales", routes: ["/sales/deliveryChallan"] },
+  { key: "quotes", label: "Quotes", group: "Sales", routes: ["/sales/quotes"], actions: WITH_CONVERT },
+  { key: "salesOrders", label: "Sales Orders", group: "Sales", routes: ["/sales/salesOrder"], actions: WITH_CONVERT },
+  { key: "deliveryChallans", label: "Delivery Challans", group: "Sales", routes: ["/sales/deliveryChallan"], actions: WITH_CONVERT },
   { key: "invoices", label: "Invoices", group: "Sales", routes: ["/sales/invoices"] },
   { key: "paymentsReceived", label: "Payments Received", group: "Sales", routes: ["/sales/paymentsReceived"] },
   { key: "recurringInvoices", label: "Recurring Invoices", group: "Sales", routes: ["/sales/recurringInvoice"] },
   { key: "creditNotes", label: "Credit Notes", group: "Sales", routes: ["/sales/creditNotes"] },
+  // Lets the user invite customers to the customer portal; while it's off,
+  // that user's customers can't use the portal either.
+  { key: "customerPortal", label: "Customer Portal", group: "Sales", routes: [], apiOnly: true, actions: ["view", "create"] },
 
   { key: "vendors", label: "Vendors", group: "Purchase", routes: ["/purchase/vendor"] },
   { key: "expenses", label: "Expenses", group: "Purchase", routes: ["/purchase/expense"] },
@@ -43,6 +50,9 @@ const PAGES = [
   { key: "balanceSheet", label: "Balance Sheet", group: "Reports", routes: ["/reports/balancesheet"], actions: VIEW_ONLY },
   { key: "journalReport", label: "Journal Report", group: "Reports", routes: ["/reports/journalreport"], actions: VIEW_ONLY },
 
+  { key: "imports", label: "Import Data", group: "Other", routes: ["/import", "/import-files", "/importzoho"], actions: ["view", "create"] },
+  { key: "tally", label: "Tally Vouchers", group: "Other", routes: ["/tally"] },
+  { key: "assistant", label: "AI Assistant", group: "Other", routes: ["/bot"], actions: VIEW_ONLY },
   { key: "documents", label: "Documents", group: "Other", routes: ["/documents"], planned: true },
   { key: "payroll", label: "Payroll", group: "Other", routes: ["/payroll"], planned: true },
   { key: "configure", label: "Configure Features", group: "Other", routes: ["/configure"], planned: true },
@@ -59,7 +69,7 @@ const CATALOG = PAGES.filter((p) => !p.planned);
 // permissions (own company setup), and helper routes that belong to whatever
 // page a user is working in (allowed once they have any page at all).
 const ALWAYS_ALLOWED_ROUTES = ["/organisation", "/organization-list", "/no-access"];
-const SHARED_ROUTES = ["/common", "/import", "/import-files", "/importzoho", "/tally", "/bot"];
+const SHARED_ROUTES = ["/common"];
 
 // Backend API rules, checked in order; the first match wins.
 //   pages: [...]  - needs the action on ANY of these pages
@@ -86,7 +96,8 @@ const API_RULES = [
 
   { re: /^\/api\/v1\/(estimates|estimate-id|estimate|clientestimates)(\/|$)/, pages: ["quotes"] },
   { re: /^\/api\/v1\/import\/quote$/, pages: ["quotes"] },
-  { re: /^\/api\/v1\/(invoices|invoice-id|invoice|ask)(\/|$)/, pages: ["invoices"] },
+  { re: /^\/api\/v1\/ask$/, pages: ["assistant"], action: "view" },
+  { re: /^\/api\/v1\/(invoices|invoice-id|invoice)(\/|$)/, pages: ["invoices"] },
   { re: /^\/api\/v1\/(salesorders|sales-order)(\/|$)|^\/api\/v1\/sales\/unique-id$/, pages: ["salesOrders"] },
   { re: /^\/api\/v1\/sales\/export$/, pages: ["customers", "quotes", "salesOrders", "deliveryChallans", "invoices", "paymentsReceived", "recurringInvoices", "creditNotes"], action: "view" },
   { re: /^\/api\/v1\/(deliverychallans|delivery-challans|deliveryunique-id|deliverychallan)(\/|$)/, pages: ["deliveryChallans"] },
@@ -115,6 +126,7 @@ const API_RULES = [
   { re: /^\/api\/v1\/reports\/profit-loss\//, pages: ["profitAndLoss"], action: "view" },
   { re: /^\/api\/v1\/reports\/balance-sheet$/, pages: ["balanceSheet"], action: "view" },
 
+  { re: /^\/api\/v1\/email\/(invite-portal|verify-invite)$/, pages: ["customerPortal"], action: "create" },
   { re: /^\/api\/v1\/(taxes|tax|columns|email|common|import\/get-column)(\/|$)/, shared: true },
 ];
 
@@ -125,6 +137,7 @@ const actionFor = (method, path) => {
   // Removing an attachment edits the record rather than deleting it.
   if (/remove-document|additional-address/.test(p)) return "edit";
   if (method === "DELETE" || /(^|[/-])(delete|remove)([/-]|$)/.test(p)) return "delete";
+  if (/(^|[/-])convert([/-]|$)/.test(p)) return "convert";
   if (/(^|[/-])(export|logs|get)([/-]|$)/.test(p) || method === "GET") return "view";
   if (method === "PUT" || method === "PATCH" ||
       /(update|edit|status|apply|refund|void|draft|primary|address|comment|document|resend)/.test(p))
@@ -178,6 +191,7 @@ const getClientIp = (req) => normalizeIp(req.ip || req.socket?.remoteAddress);
 
 module.exports = {
   ACTIONS,
+  ALL_ACTIONS,
   PAGES,
   CATALOG,
   PAGE_KEYS,

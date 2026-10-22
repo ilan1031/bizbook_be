@@ -2,7 +2,8 @@
 // active. Runs once on startup after the database connects.
 //   SUPERADMIN_EMAIL    - required to enable seeding
 //   SUPERADMIN_PASSWORD - used only when the account is first created
-//   SUPERADMIN_MOBILE   - optional; receives new sign-up alerts by SMS
+//   SUPERADMIN_MOBILE   - optional; lets the superadmin sign in with a mobile number
+//   (sign-up alerts go to SUPERADMIN_EMAIL)
 // An existing account is promoted to superadmin but its password is left
 // alone, unless SUPERADMIN_RESET_PASSWORD=true.
 const mongoose = require("mongoose");

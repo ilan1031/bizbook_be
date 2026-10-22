@@ -96,8 +96,8 @@ test("every catalog page has a key, label, group, routes and valid actions", () 
     assert.ok(p.key && p.label && p.group, `incomplete page ${JSON.stringify(p)}`);
     assert.ok(!keys.has(p.key), `duplicate key ${p.key}`);
     keys.add(p.key);
-    assert.ok(Array.isArray(p.routes) && p.routes.length);
-    assert.ok(p.actions.every((a) => ["view", "create", "edit", "delete"].includes(a)));
+    assert.ok(Array.isArray(p.routes) && (p.routes.length || p.apiOnly));
+    assert.ok(p.actions.every((a) => ["view", "create", "edit", "delete", "convert"].includes(a)));
   }
 });
 
@@ -120,4 +120,29 @@ test("IP normalisation", () => {
   assert.equal(normalizeIp(undefined), "");
   assert.equal(getClientIp({ ip: "::ffff:1.2.3.4" }), "1.2.3.4");
   assert.equal(getClientIp({ socket: { remoteAddress: "::1" } }), "127.0.0.1");
+});
+
+test("converting a document is its own permission", () => {
+  const editor = { role: "user", permissions: { quotes: ["view", "create", "edit", "delete"] } };
+  assert.match(checkApiAccess(editor, "POST", "/api/v1/estimates/convert?quote_id=1"), /convert/);
+  assert.match(checkApiAccess(editor, "POST", "/api/v1/estimates/convert-to-salesorder"), /convert/);
+  const converter = { role: "user", permissions: { quotes: ["view", "convert"], salesOrders: ["view", "convert"], deliveryChallans: ["view", "convert"] } };
+  for (const url of [
+    "/api/v1/estimates/convert",
+    "/api/v1/estimates/convert-to-salesorder",
+    "/api/v1/salesorders/convert-to-invoice",
+    "/api/v1/deliverychallans/convert-to-invoice",
+  ]) {
+    assert.equal(checkApiAccess(converter, "POST", url), null, url);
+  }
+  assert.deepEqual(sanitizePermissions({ invoices: ["convert"] }), {}, "invoices have no convert");
+});
+
+test("import, tally, assistant and customer portal are controlled pages", () => {
+  const keys = new Set(CATALOG.map((p) => p.key));
+  for (const k of ["imports", "tally", "assistant", "customerPortal"]) assert.ok(keys.has(k), k);
+  const plain = { role: "user", permissions: { invoices: ["view", "create"] } };
+  assert.match(checkApiAccess(plain, "POST", "/api/v1/ask"), /permission/);
+  assert.match(checkApiAccess(plain, "POST", "/api/v1/email/invite-portal"), /permission/);
+  assert.equal(checkApiAccess({ role: "user", permissions: { assistant: ["view"] } }, "POST", "/api/v1/ask"), null);
 });
