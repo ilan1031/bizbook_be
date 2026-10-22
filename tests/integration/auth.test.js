@@ -16,8 +16,9 @@ process.env.SUPERADMIN_PASSWORD = "Super@1234";
 process.env.SUPERADMIN_MOBILE = "9000000001";
 process.env.LOGIN_OTP_ENABLED = "true";
 process.env.LOGIN_OTP_MODE = "new_device"; // the every-login mode has its own test
-delete process.env.EMAIL_USER; // emails go to the log in tests
-delete process.env.EMAIL_PASS;
+// Empty (not deleted) so .env can't fill in a real mailbox: emails go to the log.
+process.env.EMAIL_USER = "";
+process.env.EMAIL_PASS = "";
 
 const mongoose = require("mongoose");
 const request = require("supertest");

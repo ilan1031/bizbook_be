@@ -17,8 +17,10 @@ process.env.SUPERADMIN_EMAIL = "superadmin@test.local";
 process.env.SUPERADMIN_PASSWORD = "Super@1234";
 process.env.SUPERADMIN_MOBILE = "9000000001";
 process.env.LOGIN_OTP_ENABLED = "false";
-delete process.env.RAZORPAY_KEY_ID;
-delete process.env.RAZORPAY_KEY_SECRET;
+process.env.EMAIL_USER = ""; // never send real email from tests
+process.env.EMAIL_PASS = "";
+process.env.RAZORPAY_KEY_ID = ""; // empty, so .env can't fill in real keys
+process.env.RAZORPAY_KEY_SECRET = "";
 
 const mongoose = require("mongoose");
 const request = require("supertest");
