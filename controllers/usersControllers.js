@@ -10,19 +10,19 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { getClientIp, CATALOG } = require("../helpers/rbac");
-const { sendSms, isConfigured: smsConfigured, canDeliver: smsCanDeliver } = require("../helpers/smsHelper");
+const { sendSms } = require("../helpers/smsHelper");
+const { canSendCodes, sendLoginCode } = require("../helpers/loginCode");
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
 
-// SMS one-time code before a new IP is added to a user's allowed list.
-// On when LOGIN_OTP_ENABLED=true and an SMS provider is configured.
-// New-device codes need an SMS that reaches the phone. In production the
-// "console" provider (log only) would lock users out, so it doesn't count
-// there; locally it's handy for testing (the code is in the server log).
-const loginOtpEnabled = () =>
-  process.env.LOGIN_OTP_ENABLED === "true" &&
-  (process.env.NODE_ENV === "production" ? smsCanDeliver() : smsConfigured());
+// One-time sign-in codes (SMS, else email; see helpers/loginCode.js).
+// On when LOGIN_OTP_ENABLED=true and a way of delivering them is set up, so
+// a missing provider can never lock people out.
+//   LOGIN_OTP_MODE=new_device  (default) only when signing in from a new IP
+//   LOGIN_OTP_MODE=every_login every sign-in, the superadmin's included
+const loginOtpEnabled = () => process.env.LOGIN_OTP_ENABLED === "true" && canSendCodes();
+const codeOnEveryLogin = () => process.env.LOGIN_OTP_MODE === "every_login";
 
 const hashOtp = (code) =>
   crypto.createHmac("sha256", process.env.JWT_SECRET).update(String(code)).digest("hex");
@@ -84,15 +84,11 @@ const startLoginOtp = async (req, res, user, ip) => {
   };
   await user.save();
 
-  const sent = await sendSms(
-    user.mobile,
-    `BizBooks: your sign-in code is ${code}. It expires in 5 minutes. Don't share it with anyone.`,
-    { otp: code }
-  );
+  const sent = await sendLoginCode(user, code);
   if (!sent.ok) {
     return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
       code: "OTP_SEND_FAILED",
-      message: "We couldn't send the sign-in code by SMS. Try again or contact your administrator.",
+      message: "We couldn't send your sign-in code. Try again or contact your administrator.",
     });
   }
 
@@ -101,12 +97,13 @@ const startLoginOtp = async (req, res, user, ip) => {
     process.env.JWT_SECRET,
     { expiresIn: "5m" }
   );
-  const mobile = String(user.mobile || "");
   return res.status(ST_CODES.OK).json({
     otp_required: true,
     otp_session: otpSession,
-    mobile_hint: mobile ? `******${mobile.slice(-4)}` : "",
-    message: "This is a new device or network. Enter the code we sent to your mobile.",
+    channel: sent.channel,
+    sent_to: sent.sentTo,
+    mobile_hint: sent.channel === "sms" ? sent.sentTo : "",
+    message: `Enter the 6-digit code we sent to ${sent.sentTo}.`,
   });
 };
 
@@ -238,20 +235,22 @@ class usersController {
           });
         }
 
-        const ip = getClientIp(req);
-        const known = (user.allowed_ips || []).find((entry) => entry.ip === ip);
-        if (!known) {
-          if ((user.allowed_ips || []).length >= (user.ip_limit ?? 2)) {
-            return res.status(ST_CODES.FORBIDDEN).json({
-              code: "IP_LIMIT_REACHED",
-              message: `You can only sign in from ${user.ip_limit ?? 2} devices/networks. Ask your administrator to remove an old one.`,
-            });
-          }
-          if (loginOtpEnabled()) {
-            return startLoginOtp(req, res, user, ip);
-          }
-          user.allowed_ips.push({ ip, user_agent: String(req.headers["user-agent"] || "").slice(0, 200) });
-        }
+      }
+
+      const ip = getClientIp(req);
+      const isSuperadmin = user.role === "superadmin";
+      const known = isSuperadmin || (user.allowed_ips || []).some((entry) => entry.ip === ip);
+      if (!known && (user.allowed_ips || []).length >= (user.ip_limit ?? 2)) {
+        return res.status(ST_CODES.FORBIDDEN).json({
+          code: "IP_LIMIT_REACHED",
+          message: `You can only sign in from ${user.ip_limit ?? 2} devices/networks. Ask your administrator to remove an old one.`,
+        });
+      }
+      if (loginOtpEnabled() && (codeOnEveryLogin() || !known)) {
+        return startLoginOtp(req, res, user, ip);
+      }
+      if (!known) {
+        user.allowed_ips.push({ ip, user_agent: String(req.headers["user-agent"] || "").slice(0, 200) });
       }
 
       return completeLogin(req, res, user);
@@ -262,7 +261,7 @@ class usersController {
         .json({ message: "Server error", error });
     }
   }
-  // Second login step for a new IP: checks the SMS code, then remembers the IP.
+  // Second login step: checks the code, then remembers the IP.
   async verifyLoginOtp(req, res) {
     try {
       const { otp_session, otp } = req.body || {};
@@ -285,7 +284,8 @@ class usersController {
 
       const user = await UsersCollection.findById(session.userId);
       const pending = user?.login_otp;
-      if (!user || user.status !== "active" || !pending?.code_hash || pending.ip !== ip) {
+      const isSuperadmin = user?.role === "superadmin";
+      if (!user || (!isSuperadmin && user.status !== "active") || !pending?.code_hash || pending.ip !== ip) {
         return res.status(ST_CODES.BAD_REQUEST).json({
           code: "OTP_INVALID",
           message: "Please sign in again.",
@@ -313,7 +313,7 @@ class usersController {
       }
 
       // Re-check the limit: another device may have been added meanwhile.
-      if (!(user.allowed_ips || []).some((e) => e.ip === ip)) {
+      if (!isSuperadmin && !(user.allowed_ips || []).some((e) => e.ip === ip)) {
         if ((user.allowed_ips || []).length >= (user.ip_limit ?? 2)) {
           return res.status(ST_CODES.FORBIDDEN).json({
             code: "IP_LIMIT_REACHED",

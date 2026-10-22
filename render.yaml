@@ -29,6 +29,12 @@ services:
         value: console
       - key: LOGIN_OTP_ENABLED
         value: "false"
+      - key: LOGIN_OTP_MODE
+        value: new_device
+      - key: SMSGATE_USERNAME
+        sync: false
+      - key: SMSGATE_PASSWORD
+        sync: false
       - key: TWOFACTOR_API_KEY
         sync: false
       - key: FAST2SMS_API_KEY

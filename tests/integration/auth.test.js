@@ -243,7 +243,7 @@ test("a new IP within the limit needs the SMS code", async () => {
   assert.equal(r.status, 200);
   assert.equal(r.body.otp_required, true);
   assert.equal(r.body.token, undefined);
-  assert.equal(r.body.mobile_hint, "******3210");
+  assert.equal(r.body.channel, "console", "no SMS or email in tests: the code is in the log");
   const session = r.body.otp_session;
   const code = lastCode();
   assert.match(code, /^\d{6}$/);
@@ -369,4 +369,50 @@ test("health check reports the database", async () => {
   const r = await request(app).get("/api-health");
   assert.equal(r.status, 200);
   assert.deepEqual(r.body, { ok: true, db: "connected" });
+});
+
+test("every-login mode asks for a code each time, the superadmin's included", async () => {
+  process.env.LOGIN_OTP_MODE = "every_login";
+  try {
+    smsLog.length = 0;
+    const sa = await login("203.0.113.1", SA);
+    assert.equal(sa.body.otp_required, true, JSON.stringify(sa.body));
+    assert.equal(sa.body.token, undefined);
+    const ok = await as("203.0.113.1").post("/api/v1/user/verify-login-otp", { otp_session: sa.body.otp_session, otp: lastCode() });
+    assert.equal(ok.status, 200, ok.text);
+    assert.ok(ok.body.token);
+
+    // A known device still needs a code in this mode.
+    const user = await login("10.0.0.1", USER);
+    assert.equal(user.body.otp_required, true, JSON.stringify(user.body));
+  } finally {
+    delete process.env.LOGIN_OTP_MODE;
+  }
+  // Back to the default: known devices sign straight in.
+  assert.ok((await login("10.0.0.1", USER)).body.token);
+});
+
+test("codes go by email when SMS can't deliver", async (t) => {
+  const mailer = require("../../helpers/mailer");
+  const sent = [];
+  t.mock.method(mailer, "isMailConfigured", () => true);
+  t.mock.method(mailer, "sendMail", async (mail) => {
+    sent.push(mail);
+    return { ok: true };
+  });
+  process.env.SMS_PROVIDER = "smsgate"; // no keys: can't deliver
+  process.env.LOGIN_OTP_MODE = "every_login";
+  try {
+    const r = await login("10.0.0.1", USER);
+    assert.equal(r.body.channel, "email", JSON.stringify(r.body));
+    assert.equal(r.body.sent_to, "us******@test.local");
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].to, "user.one@test.local");
+    const code = sent[0].text.match(/sign-in code is (\d{6})/)[1];
+    const ok = await as("10.0.0.1").post("/api/v1/user/verify-login-otp", { otp_session: r.body.otp_session, otp: code });
+    assert.equal(ok.status, 200, ok.text);
+  } finally {
+    process.env.SMS_PROVIDER = "console";
+    delete process.env.LOGIN_OTP_MODE;
+  }
 });

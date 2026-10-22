@@ -70,3 +70,28 @@ test("smsHelper: 2Factor sends the code to its OTP endpoint and reads the reply"
   delete process.env.TWOFACTOR_API_KEY;
   process.env.SMS_PROVIDER = "console";
 });
+
+test("smsHelper: SMS Gateway for Android posts the message to the phone app", async (t) => {
+  const axios = require("axios");
+  const sms = require("../../helpers/smsHelper");
+  process.env.SMS_PROVIDER = "smsgate";
+  process.env.SMSGATE_USERNAME = "USER1";
+  process.env.SMSGATE_PASSWORD = "PASS1";
+  const calls = [];
+  t.mock.method(axios, "post", async (url, body, opts) => {
+    calls.push({ url, body, opts });
+    return { status: 202, data: { id: "m1", state: "Pending" } };
+  });
+  assert.equal(sms.canDeliver(), true);
+  const r = await sms.sendSms("9360474741", "code 123456", { otp: "123456" });
+  assert.deepEqual(r, { ok: true, provider: "smsgate" });
+  assert.equal(calls[0].url, "https://api.sms-gate.app/3rdparty/v1/message");
+  assert.deepEqual(calls[0].body, { message: "code 123456", phoneNumbers: ["+919360474741"] });
+  assert.deepEqual(calls[0].opts.auth, { username: "USER1", password: "PASS1" });
+
+  process.env.SMSGATE_URL = "http://192.168.1.20:8080/";
+  await sms.sendSms("9360474741", "x");
+  assert.equal(calls[1].url, "http://192.168.1.20:8080/message", "local server mode");
+  for (const k of ["SMSGATE_URL", "SMSGATE_USERNAME", "SMSGATE_PASSWORD"]) delete process.env[k];
+  process.env.SMS_PROVIDER = "console";
+});

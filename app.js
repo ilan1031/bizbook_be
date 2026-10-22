@@ -26,13 +26,18 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 16) {
   );
   process.exit(1);
 }
-// New-device sign-in codes go by SMS; say clearly when they can't be delivered.
-if (process.env.LOGIN_OTP_ENABLED === "true" && !require("./helpers/smsHelper").canDeliver()) {
-  console.warn(
-    process.env.NODE_ENV === "production"
-      ? "WARNING: LOGIN_OTP_ENABLED is on but no SMS provider can deliver (SMS_PROVIDER is console or its keys are missing). New-device codes are switched off until SMS_PROVIDER=fast2sms and FAST2SMS_API_KEY are set."
-      : "NOTE: SMS_PROVIDER is console: sign-in codes are printed in this log, not sent to phones."
-  );
+// Sign-in codes go by SMS, else email; say clearly when neither can deliver.
+if (process.env.LOGIN_OTP_ENABLED === "true") {
+  const sms = require("./helpers/smsHelper");
+  const { isMailConfigured } = require("./helpers/mailer");
+  const channels = [sms.canDeliver() && `SMS (${sms.provider()})`, isMailConfigured() && "email"].filter(Boolean);
+  if (channels.length) {
+    console.log(`Sign-in codes: ${channels.join(", then ")}${process.env.LOGIN_OTP_MODE === "every_login" ? ", on every login" : ", for new devices"}.`);
+  } else if (process.env.NODE_ENV === "production") {
+    console.warn("WARNING: LOGIN_OTP_ENABLED is on but neither SMS nor email is set up, so sign-in codes are off. Set SMS_PROVIDER (e.g. smsgate) or EMAIL_USER/EMAIL_PASS.");
+  } else {
+    console.warn("NOTE: no SMS provider or email set up: sign-in codes are printed in this log.");
+  }
 }
 if (
   process.env.NODE_ENV === "production" &&

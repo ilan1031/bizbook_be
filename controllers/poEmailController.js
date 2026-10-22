@@ -20,19 +20,17 @@ const transporter = nodemailer.createTransport({
   port: 465,
   secure: true,
   auth: {
-    user: process.env.EMAIL_USER || "your-email@gmail.com",
-    pass: process.env.EMAIL_PASS || "your-app-password"
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
   },
-  debug: true // Enable debug output
+  debug: false
 });
 
-transporter.verify((error, success) => {
-  if (error) {
-    console.error("SMTP Connection Error:", error);
-  } else {
-    // console.log("SMTP server is ready to take messages");
-  }
-});
+if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.NODE_ENV !== "test") {
+  transporter.verify((error) => {
+    if (error) console.error("SMTP Connection Error:", error.message);
+  });
+}
 
 // Helper function for standard email template
 function formatEmailTemplate(orderData) {

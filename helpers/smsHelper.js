@@ -4,6 +4,12 @@
 //              small free test credit; after that it's pay-per-SMS. Business
 //              SMS to Indian numbers needs DLT registration (Fast2SMS helps).
 //   twilio   - Twilio. Needs TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM.
+//   smsgate  - Free: your own Android phone sends the SMS from its SIM, via
+//              the open-source "SMS Gateway for Android" app (sms-gate.app).
+//              Needs SMSGATE_USERNAME and SMSGATE_PASSWORD (shown in the
+//              app). SMSGATE_URL defaults to the app's cloud relay
+//              (https://api.sms-gate.app/3rdparty/v1); for the app's local
+//              server use http://<phone-ip>:8080.
 //   2factor  - 2Factor.in (India), for sign-in codes only. Needs
 //              TWOFACTOR_API_KEY; TWOFACTOR_OTP_TEMPLATE optionally names an
 //              approved template (otherwise 2Factor's default OTP template).
@@ -25,6 +31,8 @@ const isConfigured = () => {
       );
     case "2factor":
       return Boolean(process.env.TWOFACTOR_API_KEY);
+    case "smsgate":
+      return Boolean(process.env.SMSGATE_USERNAME && process.env.SMSGATE_PASSWORD);
     case "console":
       return true;
     default:
@@ -77,6 +85,21 @@ const sendSms = async (to, message, options = {}) => {
       return { ok: false, provider: p, error: String(res.data?.message || "Send failed") };
     }
 
+    if (p === "smsgate") {
+      const base = (process.env.SMSGATE_URL || "https://api.sms-gate.app/3rdparty/v1").replace(/\/+$/, "");
+      const res = await axios.post(
+        `${base}/message`,
+        { message, phoneNumbers: [toE164(to)] },
+        {
+          auth: { username: process.env.SMSGATE_USERNAME, password: process.env.SMSGATE_PASSWORD },
+          timeout: 15000,
+        }
+      );
+      // The app queues the message and the phone sends it.
+      if (res.status >= 200 && res.status < 300) return { ok: true, provider: p };
+      return { ok: false, provider: p, error: `Gateway answered ${res.status}` };
+    }
+
     if (p === "2factor") {
       if (!options.otp) {
         return { ok: false, provider: p, error: "2Factor is set up for sign-in codes only" };
@@ -109,7 +132,11 @@ const sendSms = async (to, message, options = {}) => {
 
     return { ok: false, provider: p, error: `Unknown SMS provider "${p}"` };
   } catch (err) {
-    const detail = err.response?.data?.message || err.response?.data?.Details || err.message;
+    const detail =
+      err.response?.data?.message ||
+      err.response?.data?.Details ||
+      (err.response?.status === 401 ? "Wrong username or password" : null) ||
+      err.message;
     console.error(`[SMS:${p}] send failed:`, detail);
     return { ok: false, provider: p, error: String(detail) };
   }
