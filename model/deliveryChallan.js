@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { GST_LINE_FIELDS, GST_DOC_FIELDS } = require("../helpers/gstHelper");
 const { Schema } = mongoose;
 
 // Define the Line Item Schema
@@ -23,6 +24,7 @@ const lineItemSchema = new Schema({
   tax_name: { type: String },
   tax_type: { type: String },
   tax_percentage: { type: Number },
+  ...GST_LINE_FIELDS,
   line_item_taxes: [{ type: Schema.Types.Mixed }],
   item_total: { type: Number },
   item_total_formatted: { type: String },
@@ -166,6 +168,7 @@ const deliveryChallanSchema = new Schema({
    can_send_in_mail: { type: Boolean },
    organization_id: { type: String },
    tax_percentage:{type:Number},
+   ...GST_DOC_FIELDS,
    tax_type: {type: String},
    tds_option:{type: String},
    discount_percent: Number,

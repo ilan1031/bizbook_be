@@ -10,15 +10,19 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { getClientIp, CATALOG } = require("../helpers/rbac");
-const { sendSms, isConfigured: smsConfigured } = require("../helpers/smsHelper");
+const { sendSms, isConfigured: smsConfigured, canDeliver: smsCanDeliver } = require("../helpers/smsHelper");
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
 
 // SMS one-time code before a new IP is added to a user's allowed list.
 // On when LOGIN_OTP_ENABLED=true and an SMS provider is configured.
+// New-device codes need an SMS that reaches the phone. In production the
+// "console" provider (log only) would lock users out, so it doesn't count
+// there; locally it's handy for testing (the code is in the server log).
 const loginOtpEnabled = () =>
-  process.env.LOGIN_OTP_ENABLED === "true" && smsConfigured();
+  process.env.LOGIN_OTP_ENABLED === "true" &&
+  (process.env.NODE_ENV === "production" ? smsCanDeliver() : smsConfigured());
 
 const hashOtp = (code) =>
   crypto.createHmac("sha256", process.env.JWT_SECRET).update(String(code)).digest("hex");

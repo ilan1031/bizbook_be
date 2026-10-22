@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { GST_LINE_FIELDS, GST_DOC_FIELDS } = require("../helpers/gstHelper");
 const Schema = mongoose.Schema;
 
 // Define the LineItem schema
@@ -37,6 +38,7 @@ const LineItemSchema = new Schema({
   tax_name: { type: String, default: "" },
   tax_type: { type: String, default: "tax" },
   tax_percentage: { type: Number, default: 0 },
+  ...GST_LINE_FIELDS,
   item_total: { type: Number },
   item_total_formatted: { type: String },
   item_custom_fields: [{ type: Object }],
@@ -406,6 +408,7 @@ const RecurringInvoiceSchema = new Schema({
   avatax_tax_code: { type: String, default: "" },
   time_entry_ids: [{ type: String }],
   tax_percentage: { type: Number },
+  ...GST_DOC_FIELDS,
   deleted_at: { type: Date, default: null },
 
   // Recurrence fields

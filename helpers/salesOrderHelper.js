@@ -35,6 +35,8 @@ exports.createSalesData = async (req, rawData) => {
     }
     bData.salesorder_id = trimmed;
   }
+  // Orders are keyed by their number (as when the form sends one).
+  bData.salesorder_id = bData.salesorder_id || bData.salesorder_number;
 
   // User info and default status
   bData.created_by_id = userId;

@@ -369,6 +369,9 @@ class itemController {
           sku: 1,
           rate: 1,
           purchase_rate: 1,
+          gst_rate: 1,
+          is_taxable: 1,
+          hsn_or_sac: 1,
         }
       ).lean();
 

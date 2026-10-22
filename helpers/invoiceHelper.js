@@ -2,41 +2,43 @@ const InvoiceCollection = require("../model/invoice"); // Adjust path
 const commonHelper = require("../helpers/commonHelpers"); // Your existing helper
 const mongoose = require("mongoose");
 const { postingStatusFor } = require("./accountingHelper");
+const { priceSalesDocument, loadTaxContext, invoiceJournalLines } = require("./gstHelper");
 
 const money = (amount) =>
   `₹${Number(amount || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // Posts the journal for an invoice that was saved without one (invoices
-// converted from a quote, sales order or delivery challan) using the
-// invoice's own totals, and links it to the invoice. Same lines as
-// InvoiceController.createInvoice: Sales, TDS/TCS, discount, shipping,
-// adjustment, and the receivable.
+// converted from a quote, sales order or delivery challan, or older data) and
+// links it to the invoice. Invoices saved before GST pricing are priced first
+// so the stored totals and the journal agree.
 exports.postInvoiceJournal = async (invoice) => {
   if (!invoice || invoice.journal_id) return null;
   const JournalCollection = mongoose.model("Journal");
   const InvoiceModel = mongoose.model("Invoice");
-  const num = (v) => Number(v || 0);
-  const sub_total = num(invoice.sub_total);
-  const discount = num(invoice.discount_amount);
-  const tax = num(invoice.tax_total);
-  const shipping = num(invoice.shipping_charge);
-  const adjustment = num(invoice.adjustment);
-  const total = num(invoice.total) || sub_total - discount + shipping + adjustment;
-
-  const line = (coa_account_id, coa_account_name, creditOrDebit, amount) => ({
-    coa_account_id,
-    coa_account_name,
-    creditOrDebit,
-    amount,
-    amount_formatted: money(amount),
-  });
-  const lines = [line("AC_046", "Sales", "Credit", sub_total)];
-  if (invoice.tax_type === "TCS" && tax > 0) lines.push(line("AC_025", "TCS Payable", "Credit", tax));
-  else if (invoice.tax_type === "TDS" && tax > 0) lines.push(line("AC_006", "TDS Receivable", "Debit", tax));
-  if (discount > 0) lines.push(line("AC_050", "Discount", "Debit", discount));
-  if (shipping > 0) lines.push(line("AC_045", "Shipping Charge", "Credit", shipping));
-  if (adjustment !== 0) lines.push(line("AC_044", "Other Charges", adjustment > 0 ? "Credit" : "Debit", Math.abs(adjustment)));
-  lines.push(line("AC_019", "Accounts Receivable", "Debit", total));
+  const set = {};
+  if (!invoice.supply_type) {
+    const plain = typeof invoice.toObject === "function" ? invoice.toObject() : { ...invoice };
+    priceSalesDocument(plain, await loadTaxContext(invoice.organization_id, plain));
+    const balance = plain.total - Number(plain.payment_made || 0) - Number(plain.credits_applied || 0);
+    Object.assign(set, {
+      line_items: plain.line_items,
+      sub_total: plain.sub_total,
+      discount_amount: plain.discount_amount,
+      tax_total: plain.tax_total,
+      supply_type: plain.supply_type,
+      gst_total: plain.gst_total,
+      cgst_total: plain.cgst_total,
+      sgst_total: plain.sgst_total,
+      igst_total: plain.igst_total,
+      total: plain.total,
+      total_formatted: plain.total_formatted,
+      balance,
+      balance_formatted: money(balance),
+    });
+    Object.assign(invoice, set);
+  }
+  const lines = invoiceJournalLines(invoice);
+  const total = Number(invoice.total || 0);
 
   const journal_id = await commonHelper.generateUniqueId(JournalCollection, "journal_id", 5, "JL");
   const journal = await JournalCollection.create({
@@ -52,7 +54,7 @@ exports.postInvoiceJournal = async (invoice) => {
     line_items: lines,
     posting_status: postingStatusFor(invoice.status),
   });
-  await InvoiceModel.updateOne({ _id: invoice._id }, { $set: { journal_id } });
+  await InvoiceModel.updateOne({ _id: invoice._id }, { $set: { ...set, journal_id } });
   invoice.journal_id = journal_id;
   return journal;
 };
@@ -112,9 +114,9 @@ exports.createInvoiceData = async (req, rawData) => {
   bData.due_date_formatted = new Date(bData.due_date).toLocaleDateString(
     "en-GB"
   );
-    let balance =0 ;
-    bData.balance = bData.total;
-    bData.balance_formatted = `₹${balance.toFixed(2)}`;
+  priceSalesDocument(bData, await loadTaxContext(organization_id, bData));
+  bData.balance = bData.total;
+  bData.balance_formatted = money(bData.total);
 
   // Set default fields
    const defaultFields = {

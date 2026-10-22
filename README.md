@@ -25,6 +25,8 @@ The API listens on `PORT` (default 4000). `GET /api-health` reports server and d
 
   Messages: sign-up alerts to the superadmin, approval notices to users, and new-device codes.
 
+  With `console`, nothing reaches a phone. In production new-device codes are switched off until a real provider is set, so users aren't locked out. To check a provider, run `node scripts/test-sms.js <mobile>`, or use **Send test SMS** under Users & Access. Both send a test code the same way login does.
+
 ## Tests
 
 ```bash

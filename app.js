@@ -26,6 +26,14 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 16) {
   );
   process.exit(1);
 }
+// New-device sign-in codes go by SMS; say clearly when they can't be delivered.
+if (process.env.LOGIN_OTP_ENABLED === "true" && !require("./helpers/smsHelper").canDeliver()) {
+  console.warn(
+    process.env.NODE_ENV === "production"
+      ? "WARNING: LOGIN_OTP_ENABLED is on but no SMS provider can deliver (SMS_PROVIDER is console or its keys are missing). New-device codes are switched off until SMS_PROVIDER=fast2sms and FAST2SMS_API_KEY are set."
+      : "NOTE: SMS_PROVIDER is console: sign-in codes are printed in this log, not sent to phones."
+  );
+}
 if (
   process.env.NODE_ENV === "production" &&
   weakJwtSecrets.includes(process.env.JWT_SECRET)

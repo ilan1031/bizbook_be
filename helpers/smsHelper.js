@@ -25,6 +25,10 @@ const isConfigured = () => {
   }
 };
 
+// True when messages actually reach phones (a real provider with its keys).
+// "console" only writes to the server log.
+const canDeliver = () => provider() !== "console" && isConfigured();
+
 const digitsOnly = (n) => String(n || "").replace(/\D/g, "");
 
 // 10-digit Indian number for Fast2SMS.
@@ -88,4 +92,4 @@ const sendSms = async (to, message, options = {}) => {
   }
 };
 
-module.exports = { sendSms, isConfigured, provider };
+module.exports = { sendSms, isConfigured, canDeliver, provider };

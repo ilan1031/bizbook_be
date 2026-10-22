@@ -119,7 +119,9 @@ class AdminController {
 
   async testSms(req, res) {
     const to = String(req.body?.mobile || "").trim();
-    const result = await sendSms(to, "BizBooks: this is a test message from your SMS settings.");
+    // Sent like a real sign-in code (Fast2SMS OTP route), so a pass here
+    // means new-device codes will arrive too.
+    const result = await sendSms(to, "BizBooks: your sign-in code is 123456 (test).", { otp: "123456" });
     res.status(result.ok ? ST_CODES.OK : ST_CODES.BAD_REQUEST).json({
       status: result.ok,
       ...result,

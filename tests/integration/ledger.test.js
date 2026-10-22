@@ -434,6 +434,94 @@ test("bill payments add up instead of replacing each other", async () => {
   assert.equal(over.status, 400);
 });
 
+const lineOf = (j, id) => j.line_items.find((l) => l.coa_account_id === id);
+
+test("GST: same-state invoice charges CGST + SGST and posts them as output tax", async () => {
+  const res = await api("post", `/api/v1/invoices?org_id=${org}`, {
+    customer_id: customer.contact_id,
+    customer_name: customer.contact_name,
+    date: today,
+    due_date: nextMonth,
+    status: "sent",
+    line_items: [{ item_id: "IT-2", name: "Laptop", quantity: 1, rate: 10000, gst_rate: 18 }],
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  const inv = res.body.data;
+  assert.equal(inv.supply_type, "intra", "customer and company are both in Tamil Nadu");
+  assert.equal(inv.cgst_total, 900);
+  assert.equal(inv.sgst_total, 900);
+  assert.equal(inv.total, 11800);
+  assert.equal(inv.balance, 11800);
+  const j = await journal(inv.journal_id);
+  assert.equal(lineOf(j, "AC_046").amount, 10000);
+  assert.equal(lineOf(j, "AC_029").amount, 900);
+  assert.equal(lineOf(j, "AC_030").amount, 900);
+  assert.equal(lineOf(j, "AC_019").amount, 11800);
+});
+
+test("GST: other-state place of supply charges IGST", async () => {
+  const res = await api("post", `/api/v1/invoices?org_id=${org}`, {
+    customer_id: customer.contact_id,
+    customer_name: customer.contact_name,
+    place_of_supply: "[KA] - Karnataka",
+    date: today,
+    due_date: nextMonth,
+    status: "sent",
+    line_items: [{ name: "Support", quantity: 2, rate: 1000, gst_rate: 12 }],
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  const inv = res.body.data;
+  assert.equal(inv.supply_type, "inter");
+  assert.equal(inv.igst_total, 240);
+  assert.equal(inv.cgst_total, 0);
+  assert.equal(inv.total, 2240);
+  assert.equal(lineOf(await journal(inv.journal_id), "AC_028").amount, 240);
+});
+
+test("GST: quotes and sales orders are priced the same way; a converted quote carries its GST", async () => {
+  const q = await api("post", `/api/v1/estimates?organization_id=${org}`, {
+    customer_id: customer.contact_id,
+    customer_name: customer.contact_name,
+    date: today,
+    status: "sent",
+    discount_percent: 10,
+    line_items: [{ name: "Design", quantity: 1, rate: 1000, gst_rate: 5 }],
+    total: 1, // the server works out the total itself
+  });
+  assert.equal(q.status, 201, JSON.stringify(q.body));
+  const quote = q.body.data.msg || q.body.data;
+  assert.equal(quote.discount_amount, 100);
+  assert.equal(quote.gst_total, 45);
+  assert.equal(quote.total, 945);
+
+  const edited = await api("put", `/api/v1/estimates/${quote.quote_id}?organization_id=${org}`, {
+    line_items: [{ name: "Design", quantity: 2, rate: 1000, gst_rate: 5 }],
+  });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.equal(edited.body.data.total, 1890, "2000 - 10% + 5% GST");
+
+  const so = await api("post", `/api/v1/salesorders?organization_id=${org}`, {
+    customer_id: customer.contact_id,
+    customer_name: customer.contact_name,
+    date: today,
+    place_of_supply: "Karnataka",
+    line_items: [{ name: "Hardware", quantity: 1, rate: 500, gst_rate: 28 }],
+  });
+  assert.equal(so.status, 200, JSON.stringify(so.body));
+  assert.equal(so.body.data.igst_total, 140);
+  assert.equal(so.body.data.total, 640);
+
+  const conv = await api("post", `/api/v1/estimates/convert?organization_id=${org}&quote_id=${quote.quote_id}`, {});
+  assert.equal(conv.status, 200, JSON.stringify(conv.body));
+  const converted = await mongoose.model("Invoice").findOne({ invoice_id: conv.body.data.invoice?.invoice_id || conv.body.data.invoice_id }).lean()
+    || await mongoose.model("Invoice").findOne({ organization_id: { $in: [org, String(org)] } }).sort({ _id: -1 }).lean();
+  assert.equal(converted.total, 1890);
+  assert.equal(converted.cgst_total + converted.sgst_total, 90);
+  const cj = await journal(converted.journal_id);
+  assert.equal(cj.posting_status, "draft", "converted invoices start as drafts");
+  assert.equal(lineOf(cj, "AC_029").amount + lineOf(cj, "AC_030").amount, 90);
+});
+
 test("every journal balances", async () => {
   const all = await journals();
   assert.ok(all.length >= 8);
@@ -446,28 +534,31 @@ test("every journal balances", async () => {
 
 test("P&L counts only posted documents", async () => {
   const pl = await profitAndLoss();
-  assert.equal(pl.operatingIncome, 11000, "edited sent invoice (draft/void excluded) less the credit note");
+  assert.equal(pl.operatingIncome, 23000, "sent invoices (draft/void excluded) less the credit note; GST is not income");
   assert.equal(pl.costOfGoodsSold, 3500, "open bill less the vendor credit");
   assert.equal(pl.operatingExpenses, 1500);
-  assert.equal(pl.netProfitLoss, 6000);
+  assert.equal(pl.netProfitLoss, 18000);
 });
 
 test("balance sheet balances and agrees with the P&L", async () => {
   const bs = await balanceSheet();
   assert.equal(bs.checks.is_balanced, true, JSON.stringify(bs.totals));
-  assert.equal(accountAmount(bs, "Accounts Receivable"), 5400);
+  assert.equal(accountAmount(bs, "Accounts Receivable"), 5400 + 11800 + 2240);
+  assert.equal(accountAmount(bs, "Output CGST"), 900);
+  assert.equal(accountAmount(bs, "Output SGST"), 900);
+  assert.equal(accountAmount(bs, "Output IGST"), 240);
   assert.equal(accountAmount(bs, "Accounts Payable"), 1100);
   assert.equal(accountAmount(bs, "TDS Payable"), 400);
   assert.equal(accountAmount(bs, "Petty Cash"), 6000 + 50000 - 2000 - 1500 - 400);
-  assert.equal(bs.totals.assets, 57500);
-  assert.equal(bs.totals.liabilities_and_equity, 57500);
+  assert.equal(bs.totals.assets, 57500 + 14040);
+  assert.equal(bs.totals.liabilities_and_equity, 57500 + 14040);
 });
 
 test("dashboard cards show what's still unpaid", async () => {
   const res = await api("get", `/api/v1/kpi/summary?org_id=${org}`);
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const { receivables, payables } = res.body.data;
-  assert.equal(receivables.total, 5400, "draft and void invoices don't count; credits applied do");
+  assert.equal(receivables.total, 5400 + 14040, "draft and void invoices don't count; credits applied do");
   assert.equal(receivables.overdue, 0);
   assert.equal(payables.total, 2900, "draft bill doesn't count; credit and payments applied do");
 });

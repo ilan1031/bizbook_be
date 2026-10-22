@@ -12,11 +12,21 @@ const MESSAGES = require("../config/messages");
 const { createSalesData } = require("../helpers/salesOrderHelper");
 const InvoiceCollection = require("../model/invoice");
 const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
+const { priceSalesDocument, loadTaxContext } = require("../helpers/gstHelper");
+
+// Fields priceSalesDocument sets.
+const PRICED_FIELDS = [
+  "line_items", "sub_total", "sub_total_formatted", "discount_amount", "discount_amount_formatted",
+  "discount_total", "tax_total", "tax_total_formatted", "supply_type", "gst_total", "cgst_total",
+  "sgst_total", "igst_total", "total", "total_formatted",
+];
 
 class SalesOrderController {
   async createSalesOrder(req,res){
     try{
       const salesData = await createSalesData(req,req.body);
+      // Totals (discount, GST by place of supply, TDS/TCS) from the lines.
+      priceSalesDocument(salesData, await loadTaxContext(req.query.organization_id, salesData));
       const savedSalesOrder = await new SalesOrderCollection (salesData).save();
       res.status(200).json({
         status:true,
@@ -434,33 +444,12 @@ class SalesOrderController {
         });
       }
 
-      // Recalculate totals if line items are updated
-      if (updateData.line_items && updateData.line_items.length > 0) {
-        let subTotal = 0;
-
-        // Calculate sub-total from line items
-        updateData.line_items.forEach((item) => {
-          const lineTotal = (item.quantity || 0) * (item.rate || 0);
-          item.item_total = lineTotal;
-          subTotal += lineTotal;
-        });
-
-        updateData["sub_total"] = subTotal;
-
-        // Calculate tax amount if applicable
-        const taxRate =
-          updateData.tax_percentage || salesOrder.tax_percentage || 0;
-        const taxAmount = (subTotal * taxRate) / 100;
-        updateData["tax_total"] = taxAmount;
-
-        // Calculate discount if applicable
-        const discountAmount =
-          updateData.discount_amount || salesOrder.discount_amount || 0;
-
-        // Calculate final total
-        updateData["total"] = subTotal + taxAmount - discountAmount;
-      }
-      console.log(updateData.place_of_supply, "place_of_supply");
+      // Re-price the order as it will be after this edit.
+      delete updateData.salesorder_id;
+      delete updateData.organization_id;
+      const merged = { ...salesOrder.toObject(), ...updateData };
+      priceSalesDocument(merged, await loadTaxContext(organization_id, merged));
+      for (const field of PRICED_FIELDS) updateData[field] = merged[field];
 
       // Perform the update
       let updatedSalesOrder = await SalesOrderCollection.findOneAndUpdate(

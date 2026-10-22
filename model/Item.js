@@ -56,6 +56,7 @@ const ItemSchema = new mongoose.Schema(
     product_type: String,
     product_type_formatted: String,
     is_taxable: Boolean,
+    gst_rate: { type: Number, default: 0 }, // % charged on sales (CGST+SGST or IGST)
     tax_exemption_id: String,
     tax_exemption_code: String,
     has_attachment: Boolean,

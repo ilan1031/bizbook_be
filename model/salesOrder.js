@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { GST_LINE_FIELDS, GST_DOC_FIELDS } = require("../helpers/gstHelper");
 
 // Define the schema
 const salesOrderSchema = new mongoose.Schema({
@@ -134,6 +135,7 @@ const salesOrderSchema = new mongoose.Schema({
       tax_name: String,
       tax_type: String,
       tax_percentage: Number,
+      ...GST_LINE_FIELDS,
       tds_tax_id: String,
       tds_tax_name: String,
       tds_tax_percentage: String,
@@ -336,6 +338,7 @@ const salesOrderSchema = new mongoose.Schema({
   can_send_in_mail: { type: Boolean },
   organization_id: { type: String },
   tax_percentage:{type:Number},
+  ...GST_DOC_FIELDS,
   tax_type: {type: String},
   tds_option:{type: String},
   deleted_at: { type: Date, default: null },

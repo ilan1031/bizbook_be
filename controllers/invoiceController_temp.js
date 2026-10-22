@@ -15,6 +15,16 @@ const OrganizationCollection = require("../model/organizationSchema");
 const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
 const userActivityHelper = require("../helpers/userActivityHelper");
 const { postingStatusFor, syncJournalPosting } = require("../helpers/accountingHelper");
+const { priceSalesDocument, loadTaxContext, invoiceJournalLines } = require("../helpers/gstHelper");
+
+// Fields priceSalesDocument sets on an invoice.
+const PRICED_FIELDS = [
+  "line_items", "sub_total", "sub_total_formatted", "bcy_sub_total", "discount_amount",
+  "discount_amount_formatted", "discount_total", "discount_total_formatted",
+  "sub_total_exclusive_of_discount", "tax_total", "tax_total_formatted", "bcy_tax_total",
+  "supply_type", "gst_total", "cgst_total", "sgst_total", "igst_total", "total",
+  "total_formatted", "bcy_total",
+];
 
 const UserCollection = mongoose.model("user");
 require("dotenv").config();
@@ -74,6 +84,11 @@ class InvoiceController {
       // Set status defaults
       invoiceData["status"] = invoiceData.status || "draft";
       invoiceData["status_formatted"] = invoiceData.status_formatted || "Draft";
+      // Older forms sent "send"; the rest of the app (overdue, filters) uses "sent".
+      if (invoiceData.status === "send") {
+        invoiceData["status"] = "sent";
+        invoiceData["status_formatted"] = "Sent";
+      }
 
       // Set dates
       const currentDate = new Date();
@@ -145,104 +160,17 @@ class InvoiceController {
         })}`;
       };
 
-      // Handle line items calculation
-      let calculatedSubTotal = 0;
-      if (
-        Array.isArray(invoiceData.line_items) &&
-        invoiceData.line_items.length > 0
-      ) {
-        invoiceData.line_items.forEach((item) => {
-          // Generate line item ID if not present
-          if (!item.line_item_id) {
-            item.line_item_id = Math.random().toString(36).substring(2, 15);
-          }
-
-          const quantity = Number(item.quantity || 0);
-          const rate = Number(item.rate || 0);
-          const lineTotal = quantity * rate;
-
-          item.item_total = lineTotal;
-          item.item_total_formatted = formatCurrency(lineTotal);
-          item.item_total_inclusive_of_tax = lineTotal;
-          item.item_total_inclusive_of_tax_formatted =
-            formatCurrency(lineTotal);
-
-          // Progress invoice details
-          item.progress_invoice_details = {
-            invoiced_quantity: 0,
-            invoiced_quantity_formatted: "0.00",
-            invoiced_value: 0,
-            invoiced_value_formatted: "₹0.00",
-            balance_amount: lineTotal,
-            balance_amount_formatted: formatCurrency(lineTotal),
-            is_invoiced: false,
-          };
-
-          // Handle tags
-          item.tags = Array.isArray(item.tags)
-            ? item.tags.filter(
-                (tag) =>
-                  typeof tag.tag_id === "number" &&
-                  typeof tag.tag_option_id === "number"
-              )
-            : [];
-
-          calculatedSubTotal += lineTotal;
-        });
-      }
-
-      // Use calculated subtotal or provided subtotal
-      const sub_total = Number(invoiceData.sub_total || calculatedSubTotal);
-      const discount = Number(invoiceData.discount_amount || 0);
-      const adjustment = Number(invoiceData.adjustment || 0);
-      const tax_percentage = Number(invoiceData.tax_percentage || 0);
-      const tax_type = invoiceData.tax_type; // "TDS" or "TCS"
-      const shipping_charge = Number(invoiceData.shipping_charge || 0);
-
-      // Calculate discount if percentage is provided
-      let discountAmount = discount;
-      if (
-        invoiceData.discount_type === "percentage" &&
-        invoiceData.discount_percent
-      ) {
-        discountAmount =
-          (sub_total * Number(invoiceData.discount_percent)) / 100;
-      }
-
-      // Calculate tax amount
-      const tax_amount = (tax_percentage / 100) * (sub_total - discountAmount);
-
-      // Calculate total receivable
-      const total_receivable =
-        sub_total -
-        discountAmount +
-        (tax_type === "TCS" ? tax_amount : -tax_amount) +
-        adjustment +
-        shipping_charge;
-
-      // Set calculated values
-      invoiceData["sub_total"] = sub_total;
-      invoiceData["sub_total_formatted"] = formatCurrency(sub_total);
-      invoiceData["bcy_sub_total"] = sub_total;
-
-      invoiceData["discount_amount"] = discountAmount;
-      invoiceData["discount_total"] = discountAmount;
-      invoiceData["discount_total_formatted"] = formatCurrency(discountAmount);
-      invoiceData["bcy_discount_total"] = discountAmount;
-
-      const subTotalAfterDiscount = sub_total - discountAmount;
-      invoiceData["sub_total_exclusive_of_discount"] = subTotalAfterDiscount;
-      invoiceData["sub_total_exclusive_of_discount_formatted"] = formatCurrency(
-        subTotalAfterDiscount
-      );
-
-      invoiceData["tax_total"] = tax_amount;
-      invoiceData["tax_total_formatted"] = formatCurrency(tax_amount);
-      invoiceData["bcy_tax_total"] = tax_amount;
-
-      invoiceData["total"] = total_receivable;
-      invoiceData["total_formatted"] = formatCurrency(total_receivable);
-      invoiceData["bcy_total"] = total_receivable;
+      // Line ids and tags, then every total (discount, GST by place of
+      // supply, TDS/TCS) and the journal lines come from the shared pricing.
+      (invoiceData.line_items || []).forEach((item) => {
+        if (!item.line_item_id) item.line_item_id = Math.random().toString(36).substring(2, 15);
+        item.tags = Array.isArray(item.tags)
+          ? item.tags.filter((tag) => typeof tag.tag_id === "number" && typeof tag.tag_option_id === "number")
+          : [];
+      });
+      priceSalesDocument(invoiceData, await loadTaxContext(orgId, invoiceData));
+      const total_receivable = invoiceData.total;
+      const Journal_line_items = invoiceJournalLines(invoiceData);
 
       // Calculate balance
       const paymentMade = Number(invoiceData.payment_made || 0);
@@ -258,78 +186,6 @@ class InvoiceController {
         5,
         "JL"
       );
-
-      // Create Journal Line Items
-      const Journal_line_items = [
-        {
-          coa_account_id: "AC_046",
-          coa_account_name: "Sales",
-          creditOrDebit: "Credit",
-          amount: sub_total,
-          amount_formatted: formatCurrency(sub_total),
-        },
-      ];
-
-      // Add tax-specific entry
-      if (tax_type === "TCS" && tax_amount > 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_025",
-          coa_account_name: "TCS Payable",
-          creditOrDebit: "Credit",
-          amount: tax_amount,
-          amount_formatted: formatCurrency(tax_amount),
-        });
-      } else if (tax_type === "TDS" && tax_amount > 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_006",
-          coa_account_name: "TDS Receivable",
-          creditOrDebit: "Debit",
-          amount: tax_amount,
-          amount_formatted: formatCurrency(tax_amount),
-        });
-      }
-
-      // Add discount if any
-      if (discountAmount > 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_050",
-          coa_account_name: "Discount",
-          creditOrDebit: "Debit",
-          amount: discountAmount,
-          amount_formatted: formatCurrency(discountAmount),
-        });
-      }
-
-      // Add shipping charge if any
-      if (shipping_charge > 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_045",
-          coa_account_name: "Shipping Charge",
-          creditOrDebit: "Credit",
-          amount: shipping_charge,
-          amount_formatted: formatCurrency(shipping_charge),
-        });
-      }
-
-      // Add adjustment if any
-      if (adjustment !== 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_044",
-          coa_account_name: "Other Charges",
-          creditOrDebit: adjustment > 0 ? "Credit" : "Debit",
-          amount: Math.abs(adjustment),
-          amount_formatted: formatCurrency(Math.abs(adjustment)),
-        });
-      }
-
-      // Final receivable entry
-      Journal_line_items.push({
-        coa_account_id: "AC_019",
-        coa_account_name: "Accounts Receivable",
-        creditOrDebit: "Debit",
-        amount: total_receivable,
-        amount_formatted: formatCurrency(total_receivable),
-      });
 
       // Create journal data
       const journalData = {
@@ -903,198 +759,28 @@ class InvoiceController {
         })}`;
       };
 
-      // ✅ Recalculate totals using the same logic as createInvoice
-      if (updateData.line_items && updateData.line_items.length > 0) {
-        let subTotal = 0;
-
-        // Calculate sub-total from line items
-        updateData.line_items.forEach((item) => {
-          // Generate line item ID if not present
-          if (!item.line_item_id) {
-            item.line_item_id = Math.random().toString(36).substring(2, 15);
-          }
-
-          const quantity = Number(item.quantity || 0);
-          const rate = Number(item.rate || 0);
-          const discount = Number(item.discount || 0);
-
-          // Calculate line total considering discount
-          const lineTotal = quantity * rate * (1 - discount / 100);
-
-          item.item_total = lineTotal;
-          item.item_total_formatted = formatCurrency(lineTotal);
-          item.item_total_inclusive_of_tax = lineTotal;
-          item.item_total_inclusive_of_tax_formatted =
-            formatCurrency(lineTotal);
-
-          // Progress invoice details
-          item.progress_invoice_details = {
-            invoiced_quantity: 0,
-            invoiced_quantity_formatted: "0.00",
-            invoiced_value: 0,
-            invoiced_value_formatted: "₹0.00",
-            balance_amount: lineTotal,
-            balance_amount_formatted: formatCurrency(lineTotal),
-            is_invoiced: false,
-          };
-
-          // Handle tags
-          item.tags = Array.isArray(item.tags)
-            ? item.tags.filter(
-                (tag) =>
-                  typeof tag.tag_id === "number" &&
-                  typeof tag.tag_option_id === "number"
-              )
-            : [];
-
-          subTotal += lineTotal;
-        });
-
-        updateData["sub_total"] = subTotal;
-        updateData["sub_total_formatted"] = formatCurrency(subTotal);
-        updateData["bcy_sub_total"] = subTotal;
+      // Payments, credits and identifiers are the server's, not the form's.
+      for (const field of ["payment_made", "credits_applied", "balance", "journal_id", "invoice_id", "invoice_number", "organization_id"]) {
+        delete updateData[field];
       }
+      updateData["organization_id"] = organization_id;
 
-      // ✅ Use existing values or updated values for calculations
-      const sub_total = Number(updateData.sub_total || invoice.sub_total || 0);
-      const discount = Number(
-        updateData.discount_amount || invoice.discount_amount || 0
-      );
-      const adjustment = Number(
-        updateData.adjustment || invoice.adjustment || 0
-      );
-      const shipping_charge = Number(
-        updateData.shipping_charge || invoice.shipping_charge || 0
-      );
-      const tax_percentage = Number(
-        updateData.tax_percentage || invoice.tax_percentage || 0
-      );
-      const tax_type = updateData.tax_type || invoice.tax_type || "";
-
-      // Calculate discount if percentage is provided
-      let discountAmount = discount;
-      if (
-        updateData.discount_type === "percentage" &&
-        updateData.discount_percent
-      ) {
-        discountAmount =
-          (sub_total * Number(updateData.discount_percent)) / 100;
-      }
-
-      // Calculate tax amount using same logic as createInvoice
-      const tax_amount = (tax_percentage / 100) * (sub_total - discountAmount);
-
-      // Calculate total receivable using same logic as createInvoice
-      const total_receivable =
-        sub_total -
-        discountAmount +
-        (tax_type === "TCS" ? tax_amount : -tax_amount) +
-        adjustment +
-        shipping_charge;
-
-      // Update calculated values
-      updateData["discount_amount"] = discountAmount;
-      updateData["discount_total"] = discountAmount;
-      updateData["discount_total_formatted"] = formatCurrency(discountAmount);
-      updateData["bcy_discount_total"] = discountAmount;
-
-      const subTotalAfterDiscount = sub_total - discountAmount;
-      updateData["sub_total_exclusive_of_discount"] = subTotalAfterDiscount;
-      updateData["sub_total_exclusive_of_discount_formatted"] = formatCurrency(
-        subTotalAfterDiscount
-      );
-
-      updateData["tax_total"] = tax_amount;
-      updateData["tax_total_formatted"] = formatCurrency(tax_amount);
-      updateData["bcy_tax_total"] = tax_amount;
-
-      updateData["total"] = total_receivable;
-      updateData["total_formatted"] = formatCurrency(total_receivable);
-      updateData["bcy_total"] = total_receivable;
+      // Re-price the invoice as it will be after this edit.
+      const merged = { ...invoice.toObject(), ...updateData };
+      (merged.line_items || []).forEach((item) => {
+        if (!item.line_item_id) item.line_item_id = Math.random().toString(36).substring(2, 15);
+      });
+      priceSalesDocument(merged, await loadTaxContext(organization_id, merged));
+      for (const field of PRICED_FIELDS) updateData[field] = merged[field];
+      const total_receivable = merged.total;
 
       // Calculate balance considering payments and credits
-      const paymentMade = Number(
-        updateData.payment_made || invoice.payment_made || 0
-      );
-      const creditsApplied = Number(
-        updateData.credits_applied || invoice.credits_applied || 0
-      );
-      const balance = total_receivable - paymentMade - creditsApplied;
-
+      const balance =
+        total_receivable - Number(invoice.payment_made || 0) - Number(invoice.credits_applied || 0);
       updateData["balance"] = balance;
       updateData["balance_formatted"] = formatCurrency(balance);
 
-      // ✅ Prepare Journal Line Items using same structure as createInvoice
-      const Journal_line_items = [
-        {
-          coa_account_id: "AC_046",
-          coa_account_name: "Sales",
-          creditOrDebit: "Credit",
-          amount: sub_total,
-          amount_formatted: formatCurrency(sub_total),
-        },
-      ];
-
-      // Add tax-specific entry
-      if (tax_type === "TCS" && tax_amount > 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_025",
-          coa_account_name: "TCS Payable",
-          creditOrDebit: "Credit",
-          amount: tax_amount,
-          amount_formatted: formatCurrency(tax_amount),
-        });
-      } else if (tax_type === "TDS" && tax_amount > 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_006",
-          coa_account_name: "TDS Receivable",
-          creditOrDebit: "Debit",
-          amount: tax_amount,
-          amount_formatted: formatCurrency(tax_amount),
-        });
-      }
-
-      // Add discount if any
-      if (discountAmount > 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_050",
-          coa_account_name: "Discount",
-          creditOrDebit: "Debit",
-          amount: discountAmount,
-          amount_formatted: formatCurrency(discountAmount),
-        });
-      }
-
-      // Add shipping charge if any
-      if (shipping_charge > 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_045",
-          coa_account_name: "Shipping Charge",
-          creditOrDebit: "Credit",
-          amount: shipping_charge,
-          amount_formatted: formatCurrency(shipping_charge),
-        });
-      }
-
-      // Add adjustment if any
-      if (adjustment !== 0) {
-        Journal_line_items.push({
-          coa_account_id: "AC_044",
-          coa_account_name: "Other Charges",
-          creditOrDebit: adjustment > 0 ? "Credit" : "Debit",
-          amount: Math.abs(adjustment),
-          amount_formatted: formatCurrency(Math.abs(adjustment)),
-        });
-      }
-
-      // Final receivable entry
-      Journal_line_items.push({
-        coa_account_id: "AC_019",
-        coa_account_name: "Accounts Receivable",
-        creditOrDebit: "Debit",
-        amount: total_receivable,
-        amount_formatted: formatCurrency(total_receivable),
-      });
+      const Journal_line_items = invoiceJournalLines(merged);
 
       // ✅ Prepare journal update data (keeping same journal_id)
       const updatedJournal = {

@@ -5,6 +5,14 @@ const RecurringInvoiceCollection = require("../model/recurringInvoice");
 const InvoiceCollection = require("../model/invoice");
 const SalesOrderCollection = require("../model/salesOrder");
 const queryHelper = require("../helpers/query");
+const { priceSalesDocument, loadTaxContext, invoiceJournalLines } = require("../helpers/gstHelper");
+
+// Fields priceSalesDocument sets.
+const PRICED_FIELDS = [
+  "line_items", "sub_total", "sub_total_formatted", "discount_amount", "discount_amount_formatted",
+  "discount_total", "tax_total", "tax_total_formatted", "supply_type", "gst_total", "cgst_total",
+  "sgst_total", "igst_total", "total", "total_formatted",
+];
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const { default: axios } = require("axios");
 const commonHelper = require("../helpers/commonHelpers");
@@ -331,6 +339,13 @@ class RecurringInvoiceController {
         bData.line_items = [];
       }
 
+      // Totals (discount, GST by place of supply, TDS/TCS) from the lines.
+      if (bData.line_items.length) {
+        priceSalesDocument(bData, await loadTaxContext(organization_id, bData));
+        bData.balance = bData.total;
+        bData.balance_formatted = formatCurrency(bData.total);
+      }
+
       // Billing & Shipping Address
       bData.billing_address = {
         street: bData.billing_address?.street || "",
@@ -441,7 +456,10 @@ class RecurringInvoiceController {
         total_amount_formatted: formatCurrency(bData.total),
         type: "Recurring Invoice",
         customer_name: bData.customer_name,
-        line_items: Journal_line_items,
+        line_items: bData.line_items.length ? invoiceJournalLines(bData) : Journal_line_items,
+        // A recurring profile is a template, not a sale: the invoices it
+        // generates are posted, the profile isn't.
+        posting_status: "draft",
       };
 
       // Save journal entry
@@ -1765,6 +1783,15 @@ class RecurringInvoiceController {
       }
       bData.comments.push(commentData);
 
+      // Re-price the profile as it will be after this edit.
+      const repriced = {
+        ...(typeof existingInvoice.toObject === "function" ? existingInvoice.toObject() : existingInvoice),
+        ...bData,
+      };
+      priceSalesDocument(repriced, await loadTaxContext(organization_id, repriced));
+      for (const field of PRICED_FIELDS) bData[field] = repriced[field];
+      bData.balance = repriced.total;
+
       // Update the journal entry if journal_id exists
       let updatedJournal = null;
       if (bData.journal_id && existingInvoice.journal_id) {
@@ -1847,10 +1874,11 @@ class RecurringInvoiceController {
           const journalUpdateData = {
             journal_date: bData.date || existingInvoice.date,
             journal_date_formatted: bData.date_formatted || existingInvoice.date_formatted,
-            total_amount: total_receivable,
-            total_amount_formatted: formatCurrency(total_receivable),
+            total_amount: repriced.total,
+            total_amount_formatted: formatCurrency(repriced.total),
             customer_name: bData.customer_name || existingInvoice.customer_name,
-            line_items: Journal_line_items,
+            line_items: invoiceJournalLines(repriced),
+            posting_status: "draft", // a template; generated invoices are posted
           };
 
           // Update the journal entry
