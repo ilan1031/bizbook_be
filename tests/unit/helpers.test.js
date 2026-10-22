@@ -25,6 +25,16 @@ test("smsHelper: rejects missing numbers and unconfigured providers without thro
   assert.equal(res.ok, false);
   assert.match(res.error, /not configured/);
 
+  process.env.SMS_PROVIDER = "2factor";
+  delete process.env.TWOFACTOR_API_KEY;
+  assert.equal(sms.isConfigured(), false);
+  assert.equal(sms.canDeliver(), false);
+  process.env.TWOFACTOR_API_KEY = "test-key";
+  assert.equal(sms.canDeliver(), true);
+  const notOtp = await sms.sendSms("9876543210", "Your account is approved");
+  assert.equal(notOtp.ok, false, "2Factor sends sign-in codes only");
+  delete process.env.TWOFACTOR_API_KEY;
+
   process.env.SMS_PROVIDER = "carrier-pigeon";
   assert.equal(sms.isConfigured(), false);
   process.env.SMS_PROVIDER = "console";
@@ -39,4 +49,24 @@ test("accountingHelper: paise conversion is exact", () => {
   assert.equal(isDebitNormal("expense"), true);
   assert.equal(isDebitNormal("accounts_payable"), false);
   assert.equal(isDebitNormal("income"), false);
+});
+
+test("smsHelper: 2Factor sends the code to its OTP endpoint and reads the reply", async (t) => {
+  const axios = require("axios");
+  const sms = require("../../helpers/smsHelper");
+  process.env.SMS_PROVIDER = "2factor";
+  process.env.TWOFACTOR_API_KEY = "KEY-123";
+  const calls = [];
+  t.mock.method(axios, "get", async (url) => {
+    calls.push(url);
+    return { data: calls.length === 1 ? { Status: "Success", Details: "sess" } : { Status: "Error", Details: "Invalid API Key" } };
+  });
+  const ok = await sms.sendSms("+91 93604 74741", "code", { otp: "123456" });
+  assert.deepEqual(ok, { ok: true, provider: "2factor" });
+  assert.equal(calls[0], "https://2factor.in/API/V1/KEY-123/SMS/9360474741/123456");
+  const bad = await sms.sendSms("9360474741", "code", { otp: "654321" });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error, "Invalid API Key");
+  delete process.env.TWOFACTOR_API_KEY;
+  process.env.SMS_PROVIDER = "console";
 });

@@ -21,7 +21,8 @@ The API listens on `PORT` (default 4000). `GET /api-health` reports server and d
 - **SMS.** `SMS_PROVIDER` selects how messages go out:
   - `console` logs them (development).
   - `fast2sms` is for India: a small free test credit, then pay per SMS, and business SMS needs DLT registration.
-  - `twilio` is the third option.
+  - `2factor` (2Factor.in, India) sends sign-in codes only, through 2Factor's OTP template, and you pay only for delivered codes. It is the simplest way to get new-device codes working. Set `TWOFACTOR_API_KEY`. Approval notices and sign-up alerts aren't sent with it.
+  - `twilio` is the other option.
 
   Messages: sign-up alerts to the superadmin, approval notices to users, and new-device codes.
 

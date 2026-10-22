@@ -4,6 +4,11 @@
 //              small free test credit; after that it's pay-per-SMS. Business
 //              SMS to Indian numbers needs DLT registration (Fast2SMS helps).
 //   twilio   - Twilio. Needs TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM.
+//   2factor  - 2Factor.in (India), for sign-in codes only. Needs
+//              TWOFACTOR_API_KEY; TWOFACTOR_OTP_TEMPLATE optionally names an
+//              approved template (otherwise 2Factor's default OTP template).
+//              Charged only for delivered codes. Other messages (approval
+//              notices, sign-up alerts) are not sent with this provider.
 // Never throws: returns { ok, provider, error? } so a failed SMS can't break
 // sign-up or login.
 const axios = require("axios");
@@ -18,6 +23,8 @@ const isConfigured = () => {
       return Boolean(
         process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM
       );
+    case "2factor":
+      return Boolean(process.env.TWOFACTOR_API_KEY);
     case "console":
       return true;
     default:
@@ -70,6 +77,22 @@ const sendSms = async (to, message, options = {}) => {
       return { ok: false, provider: p, error: String(res.data?.message || "Send failed") };
     }
 
+    if (p === "2factor") {
+      if (!options.otp) {
+        return { ok: false, provider: p, error: "2Factor is set up for sign-in codes only" };
+      }
+      const key = encodeURIComponent(process.env.TWOFACTOR_API_KEY);
+      const template = process.env.TWOFACTOR_OTP_TEMPLATE
+        ? `/${encodeURIComponent(process.env.TWOFACTOR_OTP_TEMPLATE)}`
+        : "";
+      const res = await axios.get(
+        `https://2factor.in/API/V1/${key}/SMS/${toIndianTen(to)}/${encodeURIComponent(String(options.otp))}${template}`,
+        { timeout: 10000 }
+      );
+      if (res.data?.Status === "Success") return { ok: true, provider: p };
+      return { ok: false, provider: p, error: String(res.data?.Details || "Send failed") };
+    }
+
     if (p === "twilio") {
       const sid = process.env.TWILIO_ACCOUNT_SID;
       const params = new URLSearchParams({
@@ -86,7 +109,7 @@ const sendSms = async (to, message, options = {}) => {
 
     return { ok: false, provider: p, error: `Unknown SMS provider "${p}"` };
   } catch (err) {
-    const detail = err.response?.data?.message || err.message;
+    const detail = err.response?.data?.message || err.response?.data?.Details || err.message;
     console.error(`[SMS:${p}] send failed:`, detail);
     return { ok: false, provider: p, error: String(detail) };
   }
