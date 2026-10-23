@@ -377,16 +377,10 @@ class itemController {
 
       console.log("Items found:", itemsData ? itemsData.length : 0);
 
-      if (itemsData && itemsData.length > 0) {
-        return res.status(ST_CODES.OK).send({
-          success: true,
-          message: itemsData,
-        });
-      }
-
-      return res.status(ST_CODES.NOT_FOUND).send({
-        success: false,
-        message: "No items found",
+      // An organisation with no items yet gets an empty list, not an error.
+      return res.status(ST_CODES.OK).send({
+        success: true,
+        message: itemsData || [],
       });
     } catch (error) {
       console.log("itemList error:", error);
