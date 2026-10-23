@@ -3,6 +3,7 @@ const OrgCollection = mongoose.model("Organization");
 const ColumnCollection = mongoose.model("Columns");
 const COA_Collection = mongoose.model("Chart_of_account");
 const queryHelper = require("../helpers/query");
+const { LOGO_ERROR, isValidLogo } = require("../helpers/logo");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
 const UsersCollection = mongoose.model("user");
@@ -108,6 +109,7 @@ class OrgController {
         user_role: 1,
         plan_name: 1,
         org_type: 1,
+        logo: 1,
       };
       const limitInt = parseInt(limit, 10);
       const pageInt = parseInt(page, 10);
@@ -189,6 +191,7 @@ class OrgController {
         industry_type: 1,
         theme: 1,
         gst_in: 1,
+        logo: 1,
         createdAt: 1,
         // organization_email: 1, // Added for email templates
         account_created_date: 1,
@@ -273,7 +276,12 @@ class OrgController {
         "theme",
         "gst_in",
         "organization_email",
+        "logo",
       ];
+
+      if (updateData.logo !== undefined && !isValidLogo(updateData.logo)) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: LOGO_ERROR });
+      }
 
       const cleanUpdateData = {};
       allowedFields.forEach((field) => {

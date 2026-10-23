@@ -394,6 +394,25 @@ test("templates: defaults, saving needs the Templates permission, and input is c
   assert.equal(after.body.data.quote.title, "QUOTATION", "quote template untouched");
   // Another company's templates are out of reach.
   assert.equal((await asUser("put", `/api/v1/org/templates/invoice?organization_id=${org}`, {})).status, 403);
+
+  // The detailed layout's old name still works.
+  assert.equal(d.body.data.invoice.style, "detailed");
+  const old = await asUser("put", `/api/v1/org/templates/quote?organization_id=${userOrg}`, { style: "terranova" });
+  assert.equal(old.body.data.style, "detailed");
+});
+
+test("organisation logo: saved on the organisation, checked, and returned with it", async () => {
+  const logo = "data:image/png;base64,iVBORw0KGgo=";
+  const bad = await asUser("put", `/api/v1/organization/${userOrg}`, { logo: "javascript:alert(1)" });
+  assert.equal(bad.status, 400);
+  const ok = await asUser("put", `/api/v1/organization/${userOrg}`, { logo });
+  assert.equal(ok.status, 200, ok.text);
+  assert.equal((await asUser("get", `/api/v1/organization/${userOrg}`)).body.data.logo, logo);
+  const list = await asUser("post", "/api/v1/org/get-organisation", {});
+  assert.equal(list.body.data.find((o) => String(o.organization_id) === String(userOrg)).logo, logo);
+  assert.equal((await asUser("put", `/api/v1/organization/${userOrg}`, { logo: "" })).status, 200);
+  // Another company's logo is out of reach.
+  assert.equal((await asUser("put", `/api/v1/organization/${org}`, { logo })).status, 403);
 });
 
 test("portal sign-ins can change their password and use an emailed reset link once", async () => {

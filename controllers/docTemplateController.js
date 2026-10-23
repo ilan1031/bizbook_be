@@ -4,12 +4,16 @@
 //       "Invoice & Quote Templates" edit permission; see FEATURE_RULES)
 // Reading is open to anyone in the organisation, since printing a document
 // needs its template.
+// The header's logo and company name come from the organisation itself; a
+// logo saved on a template earlier is only used when the organisation has none.
 const mongoose = require("mongoose");
 const ST_CODES = require("../helpers/statusCodeHelpers");
+const { MAX_LOGO, LOGO_ERROR, isValidLogo } = require("../helpers/logo");
 
 const TYPES = ["invoice", "quote"];
-const STYLES = ["standard", "terranova"];
-const MAX_LOGO = 400 * 1024; // data URL characters
+const STYLES = ["standard", "detailed"];
+// "terranova" was the detailed layout's first name.
+const styleOf = (s) => (s === "terranova" ? "detailed" : s);
 
 const DocTemplate =
   mongoose.models.doc_template ||
@@ -28,7 +32,7 @@ const DocTemplate =
 
 const DEFAULTS = {
   invoice: {
-    style: "terranova",
+    style: "detailed",
     title: "TAX INVOICE",
     subtitle: "",
     accent: "#1f1f1f",
@@ -46,7 +50,7 @@ const DEFAULTS = {
     logo: "",
   },
   quote: {
-    style: "terranova",
+    style: "detailed",
     title: "QUOTATION",
     subtitle: "",
     accent: "#1f1f1f",
@@ -73,16 +77,14 @@ const clean = (type, input = {}) => {
   const d = DEFAULTS[type];
   const bank = input.bank || {};
   const logo = str(input.logo, MAX_LOGO + 1);
-  if (logo && (logo.length > MAX_LOGO || !/^data:image\/(png|jpe?g|svg\+xml|webp);base64,/.test(logo))) {
-    return { error: "The logo must be a PNG, JPG, SVG or WebP image under about 300 KB" };
-  }
+  if (!isValidLogo(logo)) return { error: LOGO_ERROR };
   const advance = Number(input.advance_percent ?? d.advance_percent);
   if (!Number.isFinite(advance) || advance < 0 || advance > 100) return { error: "Advance must be between 0 and 100 percent" };
   const accent = str(input.accent || d.accent, 20);
   if (!/^#[0-9a-fA-F]{3,8}$/.test(accent)) return { error: "Accent colour must be a hex colour like #1f1f1f" };
   return {
     settings: {
-      style: STYLES.includes(input.style) ? input.style : d.style,
+      style: STYLES.includes(styleOf(input.style)) ? styleOf(input.style) : d.style,
       title: str(input.title ?? d.title, 60),
       subtitle: str(input.subtitle ?? d.subtitle, 80),
       accent,
@@ -120,7 +122,13 @@ class DocTemplateController {
       const data = {};
       for (const type of TYPES) {
         const row = rows.find((r) => r.type === type);
-        data[type] = { ...DEFAULTS[type], ...(row?.settings || {}), bank: { ...DEFAULTS[type].bank, ...(row?.settings?.bank || {}) } };
+        const saved = row?.settings || {};
+        data[type] = {
+          ...DEFAULTS[type],
+          ...saved,
+          style: styleOf(saved.style) || DEFAULTS[type].style,
+          bank: { ...DEFAULTS[type].bank, ...(saved.bank || {}) },
+        };
       }
       return res.status(ST_CODES.OK).json({ data, defaults: DEFAULTS });
     } catch (error) {

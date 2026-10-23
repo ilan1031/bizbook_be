@@ -46,6 +46,11 @@ const organizationSchema = new mongoose.Schema(
       type: String,
       default: false,
     },
+    // Image data URL shown on printed invoices and quotes.
+    logo: {
+      type: String,
+      default: "",
+    },
     phone: {
       type: Number,
       required: true,

@@ -661,6 +661,8 @@ class InvoiceController {
             phone: 1,
             address: 1,
             gst_number: 1,
+            gst_in: 1,
+            logo: 1,
             _id: 0, // Exclude _id field
           }
         ).lean();
