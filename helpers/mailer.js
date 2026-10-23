@@ -27,7 +27,44 @@ const getTransporter = () => {
   return transporter;
 };
 
-const sendMail = async ({ to, subject, text, html }) => {
+const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+const cleanList = (v) =>
+  (Array.isArray(v) ? v : String(v || "").split(/[,;]/)).map((x) => String(x).trim()).filter(Boolean);
+
+// Email to a customer or vendor on behalf of a business user. Gmail (and
+// most SMTP servers) only deliver reliably from the authenticated mailbox,
+// so the message is sent from it, shown under the business's name, and
+// replies go to the user's own address (replyTo).
+// Returns { ok, channel, messageId?, error? } - channel "console" means it
+// was only printed (no mailbox configured) and nothing reached the customer.
+const sendCustomerMail = async ({ to, cc, bcc, subject, html, text, businessName, replyTo, attachments }) => {
+  const toList = cleanList(to);
+  const bad = [...toList, ...cleanList(cc), ...cleanList(bcc)].find((a) => !EMAIL_RE.test(a));
+  if (!toList.length) return { ok: false, error: "No recipient email address" };
+  if (bad) return { ok: false, error: `"${bad}" isn't a valid email address` };
+  if (!subject) return { ok: false, error: "Subject is required" };
+  const mailbox = process.env.EMAIL_FROM_ADDRESS || process.env.EMAIL_USER;
+  const name = String(businessName || "").replace(/["<>\r\n]/g, "").trim();
+  const result = await sendMail({
+    to: toList.join(", "),
+    subject,
+    html,
+    text,
+    from: mailbox ? (name ? `"${name}" <${mailbox}>` : mailbox) : undefined,
+    extra: {
+      cc: cleanList(cc).join(", ") || undefined,
+      bcc: cleanList(bcc).join(", ") || undefined,
+      replyTo: EMAIL_RE.test(String(replyTo || "")) ? replyTo : undefined,
+      attachments,
+    },
+  });
+  if (result.ok && result.channel !== "email") {
+    return { ok: false, channel: result.channel, error: "Email isn't set up on the server (EMAIL_USER / EMAIL_PASS), so nothing was sent." };
+  }
+  return result;
+};
+
+const sendMail = async ({ to, subject, text, html, from, extra = {} }) => {
   if (!to) return { ok: false, error: "No email address" };
   if (!isMailConfigured()) {
     if (isProduction()) return { ok: false, error: "Email is not configured (EMAIL_USER / EMAIL_PASS)" };
@@ -35,14 +72,15 @@ const sendMail = async ({ to, subject, text, html }) => {
     return { ok: true, channel: "console" };
   }
   try {
-    await getTransporter().sendMail({
-      from: process.env.EMAIL_FROM || `BizBooks <${process.env.EMAIL_USER}>`,
+    const info = await getTransporter().sendMail({
+      from: from || process.env.EMAIL_FROM || `BizBooks <${process.env.EMAIL_USER}>`,
       to,
       subject,
       text,
       html,
+      ...extra,
     });
-    return { ok: true, channel: "email" };
+    return { ok: true, channel: "email", messageId: info.messageId };
   } catch (err) {
     console.error("[mail] send failed:", err.message);
     return { ok: false, error: err.message };
@@ -64,4 +102,4 @@ const layout = (title, bodyHtml) => `<!doctype html><html><body style="margin:0;
 <tr><td style="padding:24px"><h1 style="font-size:18px;margin:0 0 12px">${escapeHtml(title)}</h1>${bodyHtml}</td></tr>
 </table></td></tr></table></body></html>`;
 
-module.exports = { isMailConfigured, canSendMail, sendMail, appUrl, escapeHtml, layout };
+module.exports = { isMailConfigured, canSendMail, sendMail, sendCustomerMail, appUrl, escapeHtml, layout };

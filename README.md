@@ -68,3 +68,35 @@ node scripts/backfill-posting-status.js --apply   # writes it
 3. **Allow Render to reach the database.** In Atlas → Network Access, allow Render's outbound IPs, or `0.0.0.0/0`.
 
 Uploaded files are stored on local disk (`uploads/`), which is temporary on Render. Use a persistent disk or move uploads to ImageKit for production.
+
+--------->
+
+MongoDB is up; the backend and frontend aren’t. Starting both.
+
+Starting frontend dev server on port 3000
+cd /e/gitFiles/Ongoing/bizbooks-backend && DB_Coll="mongodb://127.0.0.1:27018/bizbooks_qa?replicaSet=rs0" node ./bin/www
+Command running in background with ID: bs10d4ptq. Output is being written to: C:\Users\ABI\AppData\Local\Temp\claude\E--gitFiles-Ongoing\6c5195ff-eef1-4030-9b25-31bc73a8a73d\tasks\bs10d4ptq.output. You will be notified when it completes — do not poll that file or sleep while waiting. Read the file only if the user asks for progress, or if you need a line it prints before you can go on, such as a server's ready line or port.
+Session cwd remains E:\gitFiles\Ongoing; directory changes made by the backgrounded command do not apply to subsequent commands.
+for i in $(seq 1 30); do b=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/api-health); f=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/organisation/login); [ "$b" = 200 ] && [ "$f" = 200 ] && break; sleep 2; done; echo "backend $b frontend $f"
+backend 503 frontend 200
+The backend health check says 503, so checking its log.
+
+Rechecked backend health and log
+The running mongod isn’t the replica set on port 27018. Starting it.
+
+Starting local MongoDB replica set on 27018
+MongoDB is up now, but the backend gave up connecting earlier. Restarting it.
+
+Restarting backend now that MongoDB is up
+The project is running locally.
+
+Frontend: http://localhost:3000
+Backend API: http://localhost:4000. It reports connected to MongoDB.
+Database: a local MongoDB replica set on port 27018, using the bizbooks_qa database.
+Sign in at http://localhost:3000/organisation/login as the superadmin, abielanabielan@gmail.com. The sign-in code goes to that mailbox.
+
+The customer portal is at http://localhost:3000/portal.
+
+The full frontend lint and a production build had not finished when the last session ended, and I haven’t pushed either repo. The backend changes are committed locally (6ab4da3). I’ll run lint and the build next. I’ll push both repos to bizbooks_uat once they pass, unless you want to check the app first.
+
+---------->

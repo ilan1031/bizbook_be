@@ -6,6 +6,7 @@ const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
 // Import the model this way:
 const EmailLog = require("../model/emailLog");
+const mailer = require("../helpers/mailer");
 
 // Configure nodemailer with Gmail credentials
 const transporter = nodemailer.createTransport({
@@ -136,28 +137,34 @@ class EmailController {
         currency,
       });
 
-    const mailOptions = {
-      from: req.body.from_email,
+    // Sent from the server's mailbox under the business name; the user's
+    // address (from_email) is the reply-to, so replies reach them. The
+    // sender is never taken from the request.
+    const org = await mongoose
+      .model("Organization")
+      .findOne(
+        { organization_id: { $in: [String(req.query.organization_id || req.body.organization_id), Number(req.query.organization_id || req.body.organization_id)] } },
+        { org_name: 1 }
+      )
+      .lean();
+    const delivery = await mailer.sendCustomerMail({
       to: req.body.to_email,
+      cc: req.body.cc_emails,
+      bcc: req.body.bcc_emails,
       subject: req.body.subject,
       html: emailBody,
-    };
-
-    try {
-      const info = await transporter.sendMail(mailOptions);
-      res.status(200).json({
-        status: true,
-        message: "Email sent successfully",
-        messageId: info.messageId,
-      });
-    } catch (error) {
-      console.error("Error sending email:", error);
-      res.status(500).json({
-        status: false,
-        message: "Failed to send email",
-        error: error.message,
-      });
+      businessName: org?.org_name || company_name,
+      replyTo: req.body.from_email || res.user?.email,
+    });
+    if (!delivery.ok) {
+      console.error("Error sending email:", delivery.error);
+      return res.status(502).json({ status: false, message: "Failed to send email", error: delivery.error });
     }
+    res.status(200).json({
+      status: true,
+      message: "Email sent successfully",
+      messageId: delivery.messageId,
+    });
   }
 
   // Get email logs for an organization

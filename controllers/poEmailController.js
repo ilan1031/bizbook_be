@@ -11,6 +11,7 @@ const PurchaseOrder = require("../model/purchaseOrder");
 const Organization = require("../model/organizationSchema");
 const jwt = require("jsonwebtoken");
 const apiHandler = require("../handler/api-handler");
+const mailer = require("../helpers/mailer");
 // const contactDetails = require('../model/contactDetails');
 
 // Create email transporter
@@ -394,8 +395,24 @@ const poEmailController = {
       
       // Send the email
       try {
-        const info = await transporter.sendMail(mailOptions);
-        
+        // Sent from the server's mailbox under the business name; the user's
+        // address is the reply-to (see mailer.sendCustomerMail).
+        const org = await Organization.findOne(
+          { organization_id: { $in: [String(organization_id), Number(organization_id)] } },
+          { org_name: 1 }
+        ).lean();
+        const info = await mailer.sendCustomerMail({
+          to: mailOptions.to,
+          cc: mailOptions.cc,
+          bcc: mailOptions.bcc,
+          subject: mailOptions.subject,
+          html: mailOptions.html,
+          businessName: org?.org_name || company_name,
+          replyTo: from_email,
+          attachments: mailOptions.attachments,
+        });
+        if (!info.ok) throw new Error(info.error);
+
         // Update email log with success info
         await POEmailLog.findOneAndUpdate(
           { email_log_id: emailLogId },
@@ -461,9 +478,17 @@ const poEmailController = {
     if (!contactId || !email || !organizationId || !contact_person_id) {
       return res.status(ST_CODES.BAD_REQUEST).json({
         status: false,
-        message: "Missing required parameters: contactId, email, and organizationId are mandatory."
+        message: "Missing required parameters: contactId, contact_person_id, email, and organizationId are mandatory."
       });
     }
+
+    if (!mailer.isMailConfigured()) {
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+        status: false,
+        message: "Portal invitation email is not configured. Set EMAIL_USER and EMAIL_PASS on the backend."
+      });
+    }
+
     let contact_id = contactId;
     let organization_id = organizationId;
     // let token = authToken;
@@ -508,6 +533,12 @@ const poEmailController = {
       });
     }
     const organizationDetails = await Organization.findOne({organization_id:organizationId});
+    if (!organizationDetails) {
+      return res.status(ST_CODES.NOT_FOUND).json({
+        status: false,
+        message: "Organization not found"
+      });
+    }
     
     // Generate a unique token for this invitation - including organization_id
     const inviteToken = generateInviteToken({
@@ -546,7 +577,7 @@ const poEmailController = {
     
     // Prepare mail options
     const mailOptions = {
-      from: process.env.EMAIL_FROM || `${companyName} <no-reply@yourcompany.com>`,
+      from: process.env.EMAIL_FROM || `${companyName} <${process.env.EMAIL_USER}>`,
       to: email,
       subject: `${companyName} has invited you to join their portal`,
       html: emailHtml
@@ -582,14 +613,37 @@ const poEmailController = {
     
     // Send the email
     try {
-      const info = await transporter.sendMail(mailOptions);
+      const delivery = await mailer.sendMail({
+        ...mailOptions,
+        text: `Hello ${name || contact.contact_name || "Customer"},\n\nYou are invited to ${organizationDetails.org_name}'s client portal.\nSign in: ${portalUrl}\nAccept the invitation: ${activateUrl}`,
+      });
+
+      if (!delivery.ok || delivery.channel !== "email") {
+        const deliveryError =
+          delivery.error ||
+          "Email is not configured for delivery; the invitation was not sent.";
+        await POEmailLog.findOneAndUpdate(
+          { email_log_id: emailLogId },
+          {
+            status: "failed",
+            error_message: deliveryError,
+            updated_at: new Date()
+          }
+        );
+
+        return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+          status: false,
+          message: "Failed to send portal invitation",
+          error: deliveryError
+        });
+      }
       
       // Update email log with success info
       await POEmailLog.findOneAndUpdate(
         { email_log_id: emailLogId },
         {
           status: 'sent',
-          message_id: info.messageId,
+          message_id: delivery.messageId,
           updated_at: new Date()
         }
       );
@@ -647,7 +701,7 @@ const poEmailController = {
         status: true,
         message: "Portal invitation sent successfully",
         data: {
-          messageId: info.messageId,
+          messageId: delivery.messageId,
           emailLogId: emailLogId,
           token: inviteToken
         }

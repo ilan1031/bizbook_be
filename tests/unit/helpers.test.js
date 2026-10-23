@@ -76,3 +76,30 @@ test("accountingHelper: paise conversion is exact", () => {
   assert.equal(isDebitNormal("accounts_payable"), false);
   assert.equal(isDebitNormal("income"), false);
 });
+
+test("mailer: customer email is checked, sent from the server mailbox, and never claims success when unsent", async () => {
+  const mailer = require("../../helpers/mailer");
+  const saved = { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS, node: process.env.NODE_ENV };
+  try {
+    process.env.EMAIL_USER = "";
+    process.env.EMAIL_PASS = "";
+    const base = { subject: "Quote", html: "<p>x</p>", businessName: "Acme" };
+    assert.match((await mailer.sendCustomerMail({ ...base, to: "" })).error, /No recipient/);
+    assert.match((await mailer.sendCustomerMail({ ...base, to: "nope" })).error, /isn't a valid email/);
+    assert.match((await mailer.sendCustomerMail({ ...base, to: "a@b.co", cc: "bad" })).error, /"bad"/);
+    assert.match((await mailer.sendCustomerMail({ to: "a@b.co", html: "x" })).error, /Subject/);
+    // No mailbox locally: it's only logged, and the caller is told so.
+    process.env.NODE_ENV = "development";
+    const log = console.log;
+    console.log = () => {};
+    const unsent = await mailer.sendCustomerMail({ ...base, to: "a@b.co; c@d.co" });
+    console.log = log;
+    assert.equal(unsent.ok, false);
+    assert.equal(unsent.channel, "console");
+    assert.match(unsent.error, /nothing was sent/);
+  } finally {
+    process.env.EMAIL_USER = saved.user ?? "";
+    process.env.EMAIL_PASS = saved.pass ?? "";
+    process.env.NODE_ENV = saved.node;
+  }
+});
