@@ -327,7 +327,7 @@ class usersController {
   async getMe(req, res) {
     try {
       const user = await UsersCollection.findById(res.locals.user_id)
-        .select("email mobile company_name role status permissions ip_limit allowed_ips")
+        .select("email mobile company_name role status permissions limits ip_limit allowed_ips")
         .lean();
       if (!user) return res.status(ST_CODES.NOT_FOUND).json({ message: "User not found" });
       res.status(ST_CODES.OK).json({
@@ -342,9 +342,13 @@ class usersController {
           permissions: user.permissions || {},
           ip_limit: user.ip_limit ?? 2,
           ip_count: (user.allowed_ips || []).length,
+          limits: user.limits || {},
+          usage: (await require("../helpers/usageLimits").usageFor([user._id]))[String(user._id)],
           catalog: CATALOG,
           always_allowed_routes: require("../helpers/rbac").ALWAYS_ALLOWED_ROUTES,
           shared_routes: require("../helpers/rbac").SHARED_ROUTES,
+          // Modules without screens yet: nobody is linked to them.
+          planned_routes: require("../helpers/rbac").PAGES.filter((p) => p.planned).flatMap((p) => p.routes),
         },
       });
     } catch (error) {

@@ -43,6 +43,14 @@ const userSchema = new mongoose.Schema(
     },
     // { [pageKey]: ["view", "create", "edit", "delete"] }
     permissions: { type: Object, default: {} },
+    // Create limits set by the superadmin (null = no limit); see
+    // helpers/usageLimits.js.
+    limits: {
+      per_day: { type: Number, default: null },
+      per_month: { type: Number, default: null },
+      per_year: { type: Number, default: null },
+      max_organizations: { type: Number, default: null },
+    },
     // Max number of distinct IP addresses this user may log in from.
     ip_limit: { type: Number, default: 2, min: 0, max: 50 },
     allowed_ips: [

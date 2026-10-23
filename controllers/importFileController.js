@@ -104,6 +104,10 @@ class ImportFilesController {
       let keys;
       let restrictedKeys;
       let Qdata = req.query.moduleName;
+      const fixed = require("./recordImportController").COLUMNS[Qdata];
+      if (fixed) {
+        return res.status(ST_CODES.OK).json({ success: true, message: "Columns fetched", data: fixed });
+      }
       console.log(Qdata, "Qdata");
       if (Qdata == "bills") {
         collectionName = BillsCollection;

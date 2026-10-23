@@ -241,11 +241,10 @@ class ContactController {
         });
       }
 
-      // Build contact query
-      let contactQuery = {
-        admin_id,
-        organization_id,
-      };
+      // Build contact query. A customer-portal sign-in reads its own
+      // contact (the middleware only lets it ask for that one), which
+      // belongs to the business user rather than to the client.
+      let contactQuery = res.locals.role === "client" ? { organization_id } : { admin_id, organization_id };
 
       // Handle both ObjectId and string IDs
       if (mongoose.Types.ObjectId.isValid(contact_id)) {

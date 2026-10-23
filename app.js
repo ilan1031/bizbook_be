@@ -157,10 +157,12 @@ app.set("view engine", "ejs");
 // but it's a landmine (the previous code did both at once). Reflect an
 // allow-listed origin instead so credentialed cross-origin requests stay
 // restricted to our own frontend(s).
-// FRONTEND_URL may list several origins separated by commas
+// FRONTEND_URL (and PORTAL_URL, the customer portal) may list several
+// origins separated by commas
 // (e.g. the Vercel production URL and a preview URL).
 const allowedOrigins = [
-  ...String(process.env.FRONTEND_URL || "")
+  ...[process.env.FRONTEND_URL, process.env.PORTAL_URL]
+    .join(",")
     .split(",")
     .map((o) => o.trim().replace(/\/+$/, ""))
     .filter(Boolean),
@@ -233,6 +235,10 @@ app.use(
     "/api/v1/user/verify-login-otp",
     "/api/v1/client/login",
     "/api/v1/client/register",
+    "/api/v1/client/forgot-password",
+    "/api/v1/client/reset-password",
+    "/api/v1/user/change-password",
+    "/api/v1/client/change-password",
   ],
   authLimiter
 );

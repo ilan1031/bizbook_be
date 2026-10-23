@@ -20,16 +20,13 @@ const PAGES = [
   { key: "banking", label: "Banking", group: "General", routes: ["/banking"], planned: true },
 
   { key: "customers", label: "Customers", group: "Sales", routes: ["/sales/customer"] },
-  { key: "quotes", label: "Quotes", group: "Sales", routes: ["/sales/quotes"], actions: WITH_CONVERT },
+  { key: "quotes", label: "Quotes", group: "Sales", routes: ["/sales/quotes", "/print/quote"], actions: WITH_CONVERT },
   { key: "salesOrders", label: "Sales Orders", group: "Sales", routes: ["/sales/salesOrder"], actions: WITH_CONVERT },
   { key: "deliveryChallans", label: "Delivery Challans", group: "Sales", routes: ["/sales/deliveryChallan"], actions: WITH_CONVERT },
-  { key: "invoices", label: "Invoices", group: "Sales", routes: ["/sales/invoices"] },
+  { key: "invoices", label: "Invoices", group: "Sales", routes: ["/sales/invoices", "/print/invoice"] },
   { key: "paymentsReceived", label: "Payments Received", group: "Sales", routes: ["/sales/paymentsReceived"] },
   { key: "recurringInvoices", label: "Recurring Invoices", group: "Sales", routes: ["/sales/recurringInvoice"] },
   { key: "creditNotes", label: "Credit Notes", group: "Sales", routes: ["/sales/creditNotes"] },
-  // Lets the user invite customers to the customer portal; while it's off,
-  // that user's customers can't use the portal either.
-  { key: "customerPortal", label: "Customer Portal", group: "Sales", routes: [], apiOnly: true, actions: ["view", "create"] },
 
   { key: "vendors", label: "Vendors", group: "Purchase", routes: ["/purchase/vendor"] },
   { key: "expenses", label: "Expenses", group: "Purchase", routes: ["/purchase/expense"] },
@@ -50,9 +47,20 @@ const PAGES = [
   { key: "balanceSheet", label: "Balance Sheet", group: "Reports", routes: ["/reports/balancesheet"], actions: VIEW_ONLY },
   { key: "journalReport", label: "Journal Report", group: "Reports", routes: ["/reports/journalreport"], actions: VIEW_ONLY },
 
-  { key: "imports", label: "Import Data", group: "Other", routes: ["/import", "/import-files", "/importzoho"], actions: ["view", "create"] },
-  { key: "tally", label: "Tally Vouchers", group: "Other", routes: ["/tally"] },
-  { key: "assistant", label: "AI Assistant", group: "Other", routes: ["/bot"], actions: VIEW_ONLY },
+  // Features: switched on per user like pages. apiOnly ones have no screen
+  // of their own (they're buttons, menus or behaviour inside other screens).
+  { key: "tally", label: "Classic view & toggle", group: "Features", routes: ["/tally"] },
+  { key: "imports", label: "Import Data", group: "Features", routes: ["/import", "/import-files"], actions: ["view", "create"] },
+  { key: "assistant", label: "AI Assistant", group: "Features", routes: ["/bot"], actions: VIEW_ONLY },
+  // Lets the user invite customers to the customer portal; while it's off,
+  // that user's customers can't use the portal either.
+  { key: "customerPortal", label: "Customer Portal", group: "Features", routes: [], apiOnly: true, actions: ["view", "create"] },
+  { key: "templates", label: "Invoice & Quote Templates", group: "Features", routes: ["/settings/templates"], actions: ["view", "edit"] },
+  { key: "quickCreate", label: "Quick Create (+) menu", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
+  { key: "globalSearch", label: "Global Search", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
+  { key: "notifications", label: "Notifications", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
+  { key: "bulkActions", label: "Bulk Actions on lists", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
+  { key: "exportData", label: "Export & Print", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
   { key: "documents", label: "Documents", group: "Other", routes: ["/documents"], planned: true },
   { key: "payroll", label: "Payroll", group: "Other", routes: ["/payroll"], planned: true },
   { key: "configure", label: "Configure Features", group: "Other", routes: ["/configure"], planned: true },
@@ -68,8 +76,17 @@ const CATALOG = PAGES.filter((p) => !p.planned);
 // Frontend routes every logged-in, active user may open regardless of page
 // permissions (own company setup), and helper routes that belong to whatever
 // page a user is working in (allowed once they have any page at all).
-const ALWAYS_ALLOWED_ROUTES = ["/organisation", "/organization-list", "/no-access"];
+const ALWAYS_ALLOWED_ROUTES = ["/organisation", "/organization-list", "/no-access", "/profile"];
 const SHARED_ROUTES = ["/common"];
+
+// Feature switches that apply on top of the page rules below: a request
+// matching one of these also needs that feature (and action).
+const FEATURE_RULES = [
+  { re: /^\/api\/v1\/user\/search$/, feature: "globalSearch", action: "view" },
+  { re: /^\/api\/v1\/user\/notifications$/, feature: "notifications", action: "view" },
+  { re: /^\/api\/v1\/(sales|purchase|common)\/export$/, feature: "exportData", action: "view" },
+  { re: /^\/api\/v1\/org\/templates(\/|$)/, methods: ["PUT", "POST", "PATCH", "DELETE"], feature: "templates", action: "edit" },
+];
 
 // Backend API rules, checked in order; the first match wins.
 //   pages: [...]  - needs the action on ANY of these pages
@@ -96,6 +113,9 @@ const API_RULES = [
 
   { re: /^\/api\/v1\/(estimates|estimate-id|estimate|clientestimates)(\/|$)/, pages: ["quotes"] },
   { re: /^\/api\/v1\/import\/quote$/, pages: ["quotes"] },
+  { re: /^\/api\/v1\/import\/customers$/, pages: ["customers"], action: "create" },
+  { re: /^\/api\/v1\/import\/vendors$/, pages: ["vendors"], action: "create" },
+  { re: /^\/api\/v1\/import\/items$/, pages: ["items"], action: "create" },
   { re: /^\/api\/v1\/ask$/, pages: ["assistant"], action: "view" },
   { re: /^\/api\/v1\/(invoices|invoice-id|invoice)(\/|$)/, pages: ["invoices"] },
   { re: /^\/api\/v1\/(salesorders|sales-order)(\/|$)|^\/api\/v1\/sales\/unique-id$/, pages: ["salesOrders"] },
@@ -151,10 +171,26 @@ const hasAction = (user, page, action) =>
 const hasAnyPage = (user) =>
   Object.values(userPerms(user)).some((a) => Array.isArray(a) && a.length > 0);
 
+const cleanPath = (rawPath) => rawPath.split("?")[0].replace(/\/+$/, "") || "/";
+
+// The page rule a request falls under and the action it performs, e.g.
+// { page: "invoices", action: "create" } - used for the create limits.
+const classifyRequest = (method, rawPath) => {
+  const path = cleanPath(rawPath);
+  const rule = API_RULES.find((r) => r.re.test(path));
+  if (!rule || !rule.pages) return null;
+  return { page: rule.pages[0], action: rule.action || actionFor(method, path) };
+};
+
 // Returns null when allowed, otherwise a short reason.
 const checkApiAccess = (user, method, rawPath) => {
   if (user.role === "superadmin") return null;
-  const path = rawPath.split("?")[0].replace(/\/+$/, "") || "/";
+  const path = cleanPath(rawPath);
+  const gate = FEATURE_RULES.find((r) => r.re.test(path) && (!r.methods || r.methods.includes(method)));
+  if (gate && !hasAction(user, gate.feature, gate.action)) {
+    const label = PAGES.find((p) => p.key === gate.feature)?.label || gate.feature;
+    return `${label} isn't switched on for your account`;
+  }
   const rule = API_RULES.find((r) => r.re.test(path));
   if (!rule) return "This action isn't available to your account";
   if (rule.open) return null;
@@ -198,6 +234,7 @@ module.exports = {
   ALWAYS_ALLOWED_ROUTES,
   SHARED_ROUTES,
   actionFor,
+  classifyRequest,
   checkApiAccess,
   sanitizePermissions,
   getClientIp,

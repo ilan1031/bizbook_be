@@ -520,9 +520,11 @@ const poEmailController = {
     });
     
     // Create portal URL with token
-    const baseUrl = process.env.FRONTEND_URL;
-    const portalUrl = `${baseUrl}/${organizationId}/login`;
-    const activateUrl = `${baseUrl}/authentication/create-password?token=${inviteToken}`;
+    // The customer portal lives at /portal in the main app; PORTAL_URL
+    // overrides the host if it is served elsewhere.
+    const baseUrl = (process.env.PORTAL_URL || process.env.FRONTEND_URL || "").split(",")[0].trim().replace(/\/$/, "");
+    const portalUrl = `${baseUrl}/portal/${organizationId}/login`;
+    const activateUrl = `${baseUrl}/portal/create-password?token=${inviteToken}`;
     
     // Prepare email data
     const emailData = {

@@ -3,11 +3,19 @@ const mongoose = require("mongoose");
 const usersCollection = mongoose.model("user");
 const ClientCollection = mongoose.model("clients");
 const OrgCollection = mongoose.model("Organization");
-const { checkApiAccess, getClientIp } = require("../helpers/rbac");
+const { checkApiAccess, classifyRequest, getClientIp } = require("../helpers/rbac");
+const { checkCreateLimit, recordCreate, checkOrgLimit } = require("../helpers/usageLimits");
 const ContactCollection = mongoose.model("Contact");
 
-// What a customer-portal token may call: the portal's quote endpoints.
-const CLIENT_API = /^\/api\/v1\/clientestimates(\/|\?|$)/;
+// What a customer-portal token may call: the portal's quote endpoints, the
+// token check, changing their password, and reading their own contact record.
+const CLIENT_API = /^\/api\/v1\/(clientestimates(\/|\?|$)|verify-token(\?|$)|client\/change-password$)/;
+const CLIENT_CONTACT = /^\/api\/v1\/contact\/([^/?]+)(\?|$)/;
+const clientMayCall = (req, client) => {
+  if (CLIENT_API.test(req.originalUrl)) return true;
+  const own = req.method === "GET" && req.originalUrl.match(CLIENT_CONTACT);
+  return Boolean(own && decodeURIComponent(own[1]) === String(client.client_id));
+};
 
 const authMiddleware = async (req, res, next) => {
   const token = req.headers.authorization; // Extract token from header 'x-auth-token'
@@ -36,7 +44,7 @@ const authMiddleware = async (req, res, next) => {
       // only while the business user who owns them is active and has the
       // Customer Portal switched on by the superadmin.
       if (decoded.role === "client") {
-        if (!CLIENT_API.test(req.originalUrl)) {
+        if (!clientMayCall(req, user)) {
           return res.status(403).json({ code: "FORBIDDEN", message: "Not available in the customer portal.", success: false });
         }
         const contact = await ContactCollection.findOne({ contact_id: user.client_id }, { admin_id: 1 }).lean();
@@ -75,6 +83,21 @@ const authMiddleware = async (req, res, next) => {
         const denied = checkApiAccess(user, req.method, req.originalUrl);
         if (denied) {
           return res.status(403).json({ code: "FORBIDDEN", message: denied, success: false });
+        }
+
+        // Create limits set by the superadmin. The customer / vendor / item
+        // imports count their rows themselves (recordImportController).
+        const kind = req.method !== "GET" && classifyRequest(req.method, req.originalUrl);
+        if (kind && kind.action === "create" && !/^\/api\/v1\/import\/(customers|vendors|items)(\?|$)/.test(req.originalUrl)) {
+          const over = await checkCreateLimit(user);
+          if (over) return res.status(429).json({ ...over, success: false });
+          res.on("finish", () => {
+            if (res.statusCode < 400) recordCreate(user._id, kind.page).catch(() => {});
+          });
+        }
+        if (req.method === "POST" && /^\/api\/v1\/org\/create-organisation/.test(req.originalUrl)) {
+          const over = await checkOrgLimit(user);
+          if (over) return res.status(429).json({ ...over, success: false });
         }
       }
 

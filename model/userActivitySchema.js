@@ -8,14 +8,15 @@ const userActivityScema = new mongoose.Schema(
     organization_id: {
       type: String,
     },
+    // The contact the activity is about: a Contact _id or its contact_id
+    // (callers pass either).
     user_id: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Contact", // Reference to Vendor collection
+      type: String,
     },
     ref_id: { type: mongoose.Schema.Types.ObjectId, required: true },
     ref_collection: {
       type: String,
-      enum: ["purchase_order", "po_bill", "invoice","Expense"],
+      enum: ["purchase_order", "po_bill", "invoice", "Invoice", "Expense", "expense", "Recurring_Expense", "payment"],
       required: true,
     },
     message: {

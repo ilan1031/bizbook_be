@@ -640,10 +640,16 @@ class purchaseOrderController {
   async updateIndividualPurchaseOrder(req, res) {
     try {
       const { org_id, po_id } = req.query;
-      const poData = req.body;
+      // Never let the body move the PO to another owner, org or number.
+      const {
+        _id, admin_id, org_id: _org, organization_id, purchase_number, bills, createdAt, updatedAt,
+        ...poData
+      } = req.body || {};
       if (req.file) {
         poData["documents"] = req.file.filename;
       }
+      // multipart bodies send numbers as strings
+      if (poData.status !== undefined) poData.status = Number(poData.status);
       // console.log(poData, "---------poData");
       poData["purchase_order_number"] = poData.purchaseOrderNumber;
       poData["reference_number"] = poData.referenceNumber;
@@ -674,6 +680,9 @@ class purchaseOrderController {
         { $set: poData }, // Updating fields with request body data
         { new: true, runValidators: true } // Returns updated document and applies schema validation
       );
+      if (!updatedPO) {
+        return res.status(ST_CODES.NOT_FOUND).json({ success: false, message: "Purchase Order not found" });
+      }
       await logUserActivity(
         res.locals.user_id,
         org_id,

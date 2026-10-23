@@ -19,6 +19,8 @@ services:
         generateValue: true
       - key: FRONTEND_URL
         sync: false
+      - key: PORTAL_URL
+        sync: false
       - key: SUPERADMIN_EMAIL
         sync: false
       - key: SUPERADMIN_PASSWORD

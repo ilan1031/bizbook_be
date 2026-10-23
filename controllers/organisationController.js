@@ -135,6 +135,20 @@ class OrgController {
   /**
    * Get individual organization details by organization_id
    */
+  async getPublicOrganization(req, res) {
+    try {
+      const org = await OrgCollection.findOne(
+        { organization_id: String(req.params.organization_id) },
+        { _id: 0, organization_id: 1, org_name: 1, portal_name: 1 }
+      ).lean();
+      if (!org) return res.status(ST_CODES.NOT_FOUND).send({ status: false, message: "Organization not found" });
+      return res.status(ST_CODES.OK).send({ status: true, data: org });
+    } catch (error) {
+      console.error("getPublicOrganization error:", error);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).send({ status: false, message: "Something went wrong" });
+    }
+  }
+
   async getOrganizationById(req, res) {
     try {
       const { organization_id } = req.params;

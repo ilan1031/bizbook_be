@@ -16,11 +16,19 @@ The API listens on `PORT` (default 4000). `GET /api-health` reports server and d
 
 - **Superadmin.** The account in `SUPERADMIN_EMAIL` is created (or promoted) on startup. It can always sign in and manages everyone else under **Users & Access** in the app.
 - **Sign-up needs approval.** New accounts start as *pending* and can't sign in until the superadmin activates them. Inactive accounts are refused too, including any sessions that are already open.
-- **Pages and actions.** A user sees nothing until the superadmin switches pages on, each with view / create / edit / delete, plus **convert** on quotes, sales orders and delivery challans. Import, Tally vouchers, the AI assistant and the **Customer Portal** are pages too: with the portal off, that user's customers can't sign in to it. Portal sign-ins can only reach the portal's own endpoints. The same permissions are enforced on every API call (`helpers/rbac.js`, `middleware/userMiddleware.js`).
+- **Pages and actions.** A user sees nothing until the superadmin switches pages on, each with view / create / edit / delete, plus **convert** on quotes, sales orders and delivery challans. Import, Classic (voucher) view, the AI assistant and the **Customer Portal** are pages too: with the portal off, that user's customers can't sign in to it. Portal sign-ins can only reach the portal's own endpoints (its quotes, the token check and their own contact record). The same permissions are enforced on every API call (`helpers/rbac.js`, `middleware/userMiddleware.js`).
 - **Device (IP) limit.** Each user may sign in from up to `ip_limit` IP addresses (default 2). The sign-up IP is the first one. A new IP within the limit is added on sign-in (after the emailed code). Beyond the limit, sign-in is refused until the superadmin removes an old IP.
 - **Sign-in codes by email.** With `LOGIN_OTP_ENABLED=true`, every sign-in (the superadmin's included) needs a 6-digit code emailed to the user. Set `LOGIN_OTP_MODE=new_device` to ask only from a new IP. In production, codes need `EMAIL_USER` / `EMAIL_PASS`; without them codes are off rather than locking anyone out. Locally, without them, emails are printed in the server log.
 - **Account emails.** Every sign-up emails the superadmin (with a link to Users & Access), and activating a pending user emails them that they're approved. Same mailbox settings.
 - **Gmail setup.** In the Google account you'll send from: turn on 2-Step Verification, open https://myaccount.google.com/apppasswords, create an app password (any name, e.g. BizBooks), and put the 16 letters in `EMAIL_PASS` with the address in `EMAIL_USER`. Check it with `node scripts/test-email.js you@example.com` or **Send test email** under Users & Access.
+
+## Top bar and imports
+
+- **Search** (`GET /api/v1/user/search?organization_id=&q=`) looks through customers, vendors, items and every document type, but only on pages the user may view.
+- **Notifications** (`GET /api/v1/user/notifications?organization_id=`) are worked out from the books each time: overdue invoices and bills, bills due within 7 days, unsent drafts, unapplied credits, and pending sign-ups for the superadmin. Nothing is stored; the browser remembers what was read.
+- **Profile** (`GET/PATCH /api/v1/user/profile`, `POST /api/v1/user/change-password`).
+- **Imports** of customers, vendors and items (`POST /api/v1/import/customers|vendors|items?org_id=`, rows already mapped by the import screen). Names that already exist are skipped. Each needs create on that page.
+- **Customer portal.** It is part of the web app at `/portal` (sign-in at `/portal/<organisation id>/login`, invitation links at `/portal/create-password`). Invite emails use `FRONTEND_URL`, or `PORTAL_URL` if the portal is served from another host (also allowed by CORS). Its sign-in page reads the organisation name without a token.
 
 ## Tests
 

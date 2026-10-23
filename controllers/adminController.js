@@ -4,12 +4,13 @@ const ST_CODES = require("../helpers/statusCodeHelpers");
 const { CATALOG, sanitizePermissions } = require("../helpers/rbac");
 const { isMailConfigured, sendMail } = require("../helpers/mailer");
 const { sendApprovedEmail } = require("../helpers/accountEmails");
+const { sanitizeLimits, usageFor } = require("../helpers/usageLimits");
 
 const STATUSES = ["pending", "active", "inactive"];
 
 // Fields the admin screen shows; never the password or OTP hash.
 const PUBLIC_FIELDS =
-  "email mobile company_name country state role status permissions ip_limit allowed_ips last_login_at approved_at createdAt";
+  "email mobile company_name country state role status permissions limits ip_limit allowed_ips last_login_at approved_at createdAt";
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(String(id));
 
@@ -24,6 +25,16 @@ class AdminController {
         .select(PUBLIC_FIELDS)
         .sort({ createdAt: -1 })
         .lean();
+      // Records created today / this month / this year, against the limits.
+      const usage = await usageFor(users.map((u) => u._id));
+      const orgCounts = await mongoose.model("Organization").aggregate([
+        { $match: { admin_id: { $in: users.map((u) => u._id) } } },
+        { $group: { _id: "$admin_id", n: { $sum: 1 } } },
+      ]);
+      const orgsBy = Object.fromEntries(orgCounts.map((o) => [String(o._id), o.n]));
+      for (const u of users) {
+        u.usage = { ...usage[String(u._id)], organizations: orgsBy[String(u._id)] || 0 };
+      }
       const counts = await UsersCollection.aggregate([
         { $group: { _id: "$status", n: { $sum: 1 } } },
       ]);
@@ -40,7 +51,7 @@ class AdminController {
     }
   }
 
-  // Update status, permissions and/or IP limit for one user.
+  // Update status, permissions, create limits and/or IP limit for one user.
   async updateUser(req, res) {
     try {
       const { id } = req.params;
@@ -56,7 +67,7 @@ class AdminController {
         });
       }
 
-      const { status, permissions, ip_limit } = req.body || {};
+      const { status, permissions, ip_limit, limits } = req.body || {};
       const wasActive = user.status === "active";
 
       if (status !== undefined) {
@@ -79,6 +90,12 @@ class AdminController {
           });
         }
         user.ip_limit = limit;
+      }
+      if (limits !== undefined) {
+        const checked = sanitizeLimits(limits);
+        if (checked.error) return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: checked.error });
+        user.limits = checked.limits;
+        user.markModified("limits");
       }
       await user.save();
 
