@@ -659,14 +659,13 @@ const poEmailController = {
           invited_at: new Date().toISOString()
         };
         
-        // Update the contact using the API
-        const contactUpdateResponse = await apiHandler.updateContact(
-          contactId,
-          organizationId,
-          contactUpdateData,
-          authToken
+        // Marking the contact as invited is part of inviting, so it is done
+        // here directly (not through the edit endpoint, which needs edit
+        // rights on customers). The contact belongs to this organisation.
+        await mongoose.model("Contact").updateOne(
+          { contact_id: String(contactId), organization_id: String(organizationId) },
+          { $set: contactUpdateData }
         );
-        console.log(contactPerson,"----contactPerson---")
         
         // Only proceed if we have the contact person details
         if (contactPerson && contactPerson.contact_person_id) {
@@ -681,11 +680,9 @@ const poEmailController = {
             invited_at: new Date().toISOString()
           };
           console.log(contactPersonUpdateData,"----contactPersonUpdateData----")
-          // Use API handler to update the contact person
-          const updateResponse = await apiHandler.updateContactPerson(
-            contactPerson.contact_person_id, 
-            contactPersonUpdateData, 
-            authToken
+          await mongoose.model("contactDetails").updateOne(
+            { contact_person_id: contactPerson.contact_person_id, organization_id: String(organizationId) },
+            { $set: contactPersonUpdateData }
           );
           
         } else {

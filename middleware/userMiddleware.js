@@ -5,6 +5,7 @@ const ClientCollection = mongoose.model("clients");
 const OrgCollection = mongoose.model("Organization");
 const { checkApiAccess, classifyRequest, getClientIp } = require("../helpers/rbac");
 const { checkCreateLimit, recordCreate, checkOrgLimit } = require("../helpers/usageLimits");
+const { isInternal } = require("../helpers/internalCall");
 const ContactCollection = mongoose.model("Contact");
 
 // What a customer-portal token may call: the portal's quote endpoints, the
@@ -73,7 +74,9 @@ const authMiddleware = async (req, res, next) => {
           });
         }
         const ip = getClientIp(req);
-        if (!(user.allowed_ips || []).some((entry) => entry.ip === ip)) {
+        // The device check is about the person; the backend's own calls
+        // (made on their behalf, with their token) skip it.
+        if (!isInternal(req) && !(user.allowed_ips || []).some((entry) => entry.ip === ip)) {
           return res.status(403).json({
             code: "IP_NOT_ALLOWED",
             message: "This device's IP address isn't approved for your account. Please sign in again.",
@@ -87,7 +90,8 @@ const authMiddleware = async (req, res, next) => {
 
         // Create limits set by the superadmin. The customer / vendor / item
         // imports count their rows themselves (recordImportController).
-        const kind = req.method !== "GET" && classifyRequest(req.method, req.originalUrl);
+        // The backend's own follow-up calls are part of a request already counted.
+        const kind = req.method !== "GET" && !isInternal(req) && classifyRequest(req.method, req.originalUrl);
         if (kind && kind.action === "create" && !/^\/api\/v1\/import\/(customers|vendors|items)(\?|$)/.test(req.originalUrl)) {
           const over = await checkCreateLimit(user);
           if (over) return res.status(429).json({ ...over, success: false });

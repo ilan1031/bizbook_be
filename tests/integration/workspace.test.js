@@ -437,3 +437,106 @@ test("portal sign-ins can change their password and use an emailed reset link on
   const fresh = await mongoose.model("clients").findById(client._id);
   assert.ok(await bcrypt.compare("Reset@12345", fresh.password));
 });
+
+test("a regular user's portal invite works: the backend's own calls aren't blocked by the device check", async () => {
+  const mailer = require("../../helpers/mailer");
+  const realSend = mailer.sendMail;
+  const realUser = process.env.EMAIL_USER;
+  const realPass = process.env.EMAIL_PASS;
+  // The invite makes calls to this API over HTTP, so serve the app on a real port.
+  const server = await new Promise((resolve) => {
+    const srv = app.listen(0, "127.0.0.1", () => resolve(srv));
+  });
+  const realPort = process.env.PORT;
+  process.env.PORT = String(server.address().port);
+  const sent = [];
+  process.env.EMAIL_USER = "sender@example.com"; // only so the invite sees a mailbox...
+  process.env.EMAIL_PASS = "x";
+  mailer.sendMail = async (m) => {
+    sent.push(m); // ...the message itself is captured, never sent
+    return { ok: true, channel: "email", messageId: "<test@example.com>" };
+  };
+  try {
+    await asSa("patch", `/api/v1/admin/users/${userId}`, {
+      permissions: { customers: ["view", "create"], customerPortal: ["view", "create"] },
+    });
+    const person = await mongoose.model("contactDetails").create({
+      contact_person_id: "CP-INVITE-1",
+      admin_id: userId,
+      contact_id: "CU-W1",
+      organization_id: userOrg,
+      first_name: "Ravi",
+      email: "ravi@example.com",
+    });
+    assert.ok(person);
+    const r = await asUser("post", "/api/v1/email/invite-portal", {
+      contactId: "CU-W1",
+      contact_person_id: "CP-INVITE-1",
+      admin_id: userId,
+      email: "ravi@example.com",
+      name: "Ravi",
+      organizationId: userOrg,
+    });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].to, "ravi@example.com");
+    assert.match(sent[0].html || sent[0].text, /\/portal\/create-password\?token=/);
+    assert.match(sent[0].text, new RegExp(`/portal/${userOrg}/login`));
+    // The contact is marked invited even though this user can't edit customers.
+    const contact = await mongoose.model("Contact").findOne({ contact_id: "CU-W1", organization_id: userOrg }).lean();
+    assert.equal(contact.portal_status, "enabled");
+    assert.ok(contact.invited_at);
+    const personAfter = await mongoose.model("contactDetails").findOne({ contact_person_id: "CP-INVITE-1" }).lean();
+    assert.equal(personAfter.is_added_in_portal, true);
+    assert.equal(personAfter.is_portal_invitation_accepted, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (realPort === undefined) delete process.env.PORT;
+    else process.env.PORT = realPort;
+    mailer.sendMail = realSend;
+    process.env.EMAIL_USER = realUser;
+    process.env.EMAIL_PASS = realPass;
+  }
+});
+
+test("the internal-call header is only honoured from this process", async () => {
+  const { HEADER } = require("../../helpers/internalCall");
+  // A guessed header from outside doesn't get past the device check.
+  const r = await request(app)
+    .get("/api/v1/user/me")
+    .set("X-Forwarded-For", "198.51.100.200")
+    .set(HEADER, "guess")
+    .set("Authorization", `Bearer ${userToken}`);
+  assert.equal(r.status, 403);
+  assert.equal(r.body.code, "IP_NOT_ALLOWED");
+});
+
+test("recurring-invoice emails go to the customer's contact email, from the server mailbox", async () => {
+  const mailer = require("../../helpers/mailer");
+  const helper = require("../../helpers/emailHelper");
+  const real = mailer.sendCustomerMail;
+  const calls = [];
+  mailer.sendCustomerMail = async (m) => {
+    calls.push(m);
+    return { ok: true, channel: "email", messageId: "<r@example.com>" };
+  };
+  try {
+    // CU-W1 has the person added by the invite test (not flagged primary) - still found.
+    const ok = await helper.sendInvoiceNotificationEmail(
+      { organization_id: userOrg, customer_id: "CU-W1", customer_name: "Kumaran Stores", invoice_number: "INV-9", invoice_id: "9", date_formatted: "01/01/2026" },
+      { profile_name: "Monthly" }
+    );
+    assert.equal(ok.success, true, JSON.stringify(ok));
+    assert.equal(calls[0].to, "ravi@example.com");
+    assert.equal(calls[0].businessName, "Searcher Org");
+    // A customer with no email anywhere is reported, not silently skipped.
+    const none = await helper.sendInvoiceNotificationEmail(
+      { organization_id: userOrg, customer_id: "CU-NOBODY", customer_name: "X", invoice_number: "INV-10" },
+      {}
+    );
+    assert.equal(none.success, false);
+    assert.match(none.error, /No email address/);
+  } finally {
+    mailer.sendCustomerMail = real;
+  }
+});

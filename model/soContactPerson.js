@@ -19,6 +19,8 @@ const contactPersonSchema = new mongoose.Schema(
     is_primary_contact: {type:Boolean, default:false},
     is_added_in_portal:{type:Boolean,default:false},
     is_portal_invitation_accepted: { type: Boolean, default: false },
+    invited_by: { type: String },
+    invited_at: { type: String },
   },
   { timestamps: true }
 );
