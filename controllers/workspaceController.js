@@ -19,6 +19,7 @@ const Expense = require("../model/expenseModel");
 const { CreditNote, VendorCredit } = require("../model/creditDocumentModels");
 const { toPaise, fromPaise } = require("../helpers/accountingHelper");
 
+const ContactPerson = require("../model/contactPerson");
 const UsersCollection = mongoose.model("user");
 const ClientCollection = mongoose.model("clients");
 
@@ -256,6 +257,35 @@ class WorkspaceController {
           detail: `${open.length} open ${label}${open.length > 1 ? "s" : ""}. Apply them to ${page === "creditNotes" ? "invoices" : "bills"} or refund them.`,
           href,
         });
+      }
+
+      // Customers who accepted a portal invitation in the last week.
+      if (orgId && canView(user, "customers")) {
+        const accepted = await ContactPerson.find(
+          { organization_id: orgId, is_portal_invitation_accepted: true, portal_accepted_at: { $gte: new Date(Date.now() - 7 * DAY) } },
+          { contact_id: 1, contact_person_id: 1, first_name: 1, last_name: 1, email: 1, portal_accepted_at: 1 }
+        )
+          .sort({ portal_accepted_at: -1 })
+          .lean();
+        if (accepted.length) {
+          const names = new Map(
+            (await Contact.find({ organization_id: orgId, contact_id: { $in: accepted.map((p) => p.contact_id) } }, { contact_id: 1, contact_name: 1 }).lean()).map(
+              (c) => [c.contact_id, c.contact_name]
+            )
+          );
+          for (const p of accepted) {
+            const who = [p.first_name, p.last_name].filter(Boolean).join(" ") || p.email;
+            const customer = names.get(p.contact_id) || "A customer";
+            items.push({
+              id: `portal-accepted-${p.contact_person_id}`,
+              severity: "success",
+              title: `${customer} accepted your portal invitation`,
+              detail: `${who} (${p.email}) can now sign in to the customer portal.`,
+              href: `/sales/customer/${p.contact_id}`,
+              date: p.portal_accepted_at,
+            });
+          }
+        }
       }
 
       return res.status(ST_CODES.OK).json({ data: items });

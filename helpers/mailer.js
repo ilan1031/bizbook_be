@@ -27,7 +27,9 @@ const getTransporter = () => {
   return transporter;
 };
 
-const sendMail = async ({ to, subject, text, html }) => {
+// fromName shows as the sender's name (the address stays EMAIL_USER, or
+// EMAIL_FROM when set); replyTo sends replies somewhere else.
+const sendMail = async ({ to, subject, text, html, fromName, replyTo }) => {
   if (!to) return { ok: false, error: "No email address" };
   if (!isMailConfigured()) {
     if (isProduction()) return { ok: false, error: "Email is not configured (EMAIL_USER / EMAIL_PASS)" };
@@ -36,7 +38,8 @@ const sendMail = async ({ to, subject, text, html }) => {
   }
   try {
     await getTransporter().sendMail({
-      from: process.env.EMAIL_FROM || `BizBooks <${process.env.EMAIL_USER}>`,
+      from: process.env.EMAIL_FROM || `${String(fromName || "BizBooks").replace(/[<>"]/g, "")} <${process.env.EMAIL_USER}>`,
+      ...(replyTo ? { replyTo } : {}),
       to,
       subject,
       text,

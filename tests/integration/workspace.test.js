@@ -415,6 +415,57 @@ test("organisation logo: saved on the organisation, checked, and returned with i
   assert.equal((await asUser("put", `/api/v1/organization/${org}`, { logo })).status, 403);
 });
 
+test("portal invite: emails the customer; accepting needs the link and tells whoever invited them", async () => {
+  const mailer = require("../../helpers/mailer");
+  const realSend = mailer.sendMail;
+  const sent = [];
+  mailer.sendMail = async (m) => {
+    sent.push(m);
+    return { ok: true, channel: "email" };
+  };
+  try {
+    // Someone else's organisation can't be used.
+    const other = await asSa("post", "/api/v1/email/invite-portal", { contactId: customer.contact_id, organizationId: userOrg });
+    assert.equal(other.status, 403, other.text);
+
+    // No contact person yet: the customer's own email becomes the primary one.
+    const r = await asSa("post", "/api/v1/email/invite-portal", { contactId: customer.contact_id, organizationId: org });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].to, "kumar@example.com");
+    assert.equal(sent[0].fromName, "Workspace Test Pvt Ltd");
+    const token = decodeURIComponent(sent[0].text.match(/create-password\?token=(\S+)/)[1]);
+    const person = await mongoose.model("contactDetails").findOne({ contact_id: customer.contact_id }).lean();
+    assert.ok(person.is_added_in_portal && person.is_primary_contact && person.invited_at);
+    assert.equal(person.is_portal_invitation_accepted, false);
+
+    // Accepting: only with the invitation link, and only once.
+    const register = (body) => request(app).post("/api/v1/client/register").send(body);
+    assert.equal((await register({ email: "kumar@example.com", password: "Secret@123", clientPersonId: person.contact_person_id })).status, 400);
+    assert.equal((await register({ token: saToken, password: "Secret@123" })).status, 400, "a login token isn't an invitation");
+    assert.equal((await register({ token, password: "weak" })).status, 400);
+    const ok = await register({ token, password: "Secret@123" });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(String(ok.body.org_id), org);
+    assert.equal((await register({ token, password: "Secret@123" })).status, 400, "used link");
+
+    const after = await mongoose.model("contactDetails").findOne({ contact_person_id: person.contact_person_id }).lean();
+    assert.ok(after.is_portal_invitation_accepted && after.portal_accepted_at);
+    for (let i = 0; i < 20 && sent.length < 2; i++) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(sent[1].to, "superadmin@test.local", "the inviter hears about it");
+    assert.match(sent[1].subject, /Kumar Traders accepted your customer portal invitation/);
+
+    const n = await asSa("get", `/api/v1/user/notifications?organization_id=${org}`);
+    assert.ok(n.body.data.some((i) => i.id === `portal-accepted-${person.contact_person_id}`), "shown in notifications");
+
+    const again = await asSa("post", "/api/v1/email/invite-portal", { contactId: customer.contact_id, organizationId: org });
+    assert.equal(again.status, 400, "already accepted");
+    assert.equal(sent.length, 2);
+  } finally {
+    mailer.sendMail = realSend;
+  }
+});
+
 test("portal sign-ins can change their password and use an emailed reset link once", async () => {
   const bcrypt = require("bcryptjs");
   const ctrl = require("../../controllers/portalPasswordController");

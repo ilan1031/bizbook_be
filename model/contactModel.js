@@ -28,6 +28,7 @@ const ContactSchema = new Schema(
     phone: String,
     mobile: String,
     invited_by: String,
+    invited_at: Date,
     portal_status: String,
     portal_status_formatted: String,
     is_client_review_asked: Boolean,

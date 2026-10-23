@@ -11,6 +11,9 @@ const PurchaseOrder = require("../model/purchaseOrder");
 const Organization = require("../model/organizationSchema");
 const jwt = require("jsonwebtoken");
 const apiHandler = require("../handler/api-handler");
+const ContactCollection = require("../model/contactModel");
+const ContactPersonCollection = require("../model/contactPerson");
+const portalEmails = require("../helpers/portalEmails");
 // const contactDetails = require('../model/contactDetails');
 
 // Create email transporter
@@ -168,6 +171,7 @@ async function getOrderDetails(order_id, order_type) {
 function generateInviteToken(contactData) {
   // Create a token payload with organization_id included
   const payload = {
+    purpose: "portal_invite",
     clientId: contactData.clientId,
     name: contactData.name,
     email: contactData.email,
@@ -442,244 +446,134 @@ const poEmailController = {
       });
     }
   },
-  // Verify portal invitation with improved API usage
+  // POST /email/invite-portal  { contactId, contact_person_id?, email?, organizationId }
+  // Emails a customer's contact person a link to set a portal password.
+  // Without contact_person_id it invites the customer's primary contact (or
+  // creates one from the customer's own email).
   async sendPortalInvite(req, res) {
-  try {
-    console.log("Portal Invitation Request Received");
-    const user_id = res.locals?.user_id || req.session?.user_id;
-    const authToken = req.headers.authorization;
-    // Get data from request body
-    const { 
-      contactId,
-      contact_person_id,
-      email, 
-      name,
-      organizationId,
-      companyName = "Our Company"
-    } = req.body;
-    // Validate required parameters
-    if (!contactId || !email || !organizationId || !contact_person_id) {
-      return res.status(ST_CODES.BAD_REQUEST).json({
-        status: false,
-        message: "Missing required parameters: contactId, email, and organizationId are mandatory."
-      });
-    }
-    let contact_id = contactId;
-    let organization_id = organizationId;
-    // let token = authToken;
-    let contact;
     try {
-      const contactResponse = await apiHandler.getContactInformation(contact_id, organization_id, authToken);
-      
-      contact = contactResponse.data.data;
-      // console.log(contact_id, organization_id, authToken,"contactResponsecontactResponsecontactResponse");
-      
-      // return
-      if (!contact) {
-        return res.status(ST_CODES.NOT_FOUND).json({
-          status: false,
-          message: "Contact not found"
-        });
+      const user_id = res.locals?.user_id;
+      const { contactId, contact_person_id } = req.body;
+      const organizationId = String(req.body.organizationId || req.body.organization_id || "");
+      if (!contactId || !organizationId) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "contactId and organizationId are required." });
       }
-    } catch (apiError) {
-      return res.status(ST_CODES.NOT_FOUND).json({
-        status: false,
-        message: "Failed to retrieve contact information",
-        error: apiError.message
-      });
-    }
-    // Get contact person information
-    let contactPerson;
-    try {
-      const contactPersonResponse = await apiHandler.getContactPersonInformationById(contact_person_id, organization_id, authToken);
-      contactPerson = contactPersonResponse.data.data;
-      
-      if (!contactPerson) {
-        return res.status(ST_CODES.NOT_FOUND).json({
-          status: false,
-          message: "Contact person not found"
-        });
+
+      // The request names the organisation as organizationId, which the
+      // auth middleware's tenant check doesn't see, so check it here.
+      const organization = await Organization.findOne({ organization_id: organizationId, admin_id: user_id }).lean();
+      if (!organization) {
+        return res.status(ST_CODES.FORBIDDEN || 403).json({ status: false, message: "You do not have access to this organization." });
       }
-    } catch (apiError) {
-      return res.status(ST_CODES.NOT_FOUND).json({
-        status: false,
-        message: "Failed to retrieve contact person information",
-        error: apiError.message
+
+      const contact = await ContactCollection.findOne({ contact_id: String(contactId), organization_id: organizationId }).lean();
+      if (!contact) return res.status(ST_CODES.NOT_FOUND).json({ status: false, message: "Customer not found" });
+
+      let person = contact_person_id
+        ? await ContactPersonCollection.findOne({ contact_person_id: String(contact_person_id), contact_id: contact.contact_id }).lean()
+        : (await ContactPersonCollection.findOne({ contact_id: contact.contact_id, is_primary_contact: true }).lean()) ||
+          (await ContactPersonCollection.findOne({ contact_id: contact.contact_id, email: contact.email }).lean());
+      if (contact_person_id && !person) {
+        return res.status(ST_CODES.NOT_FOUND).json({ status: false, message: "Contact person not found" });
+      }
+      if (!person) {
+        if (!contact.email) {
+          return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "Add an email address for this customer first." });
+        }
+        person = (
+          await ContactPersonCollection.create({
+            contact_person_id: await commonHelper.generateUniqueId(ContactPersonCollection, "contact_person_id"),
+            contact_id: contact.contact_id,
+            organization_id: organizationId,
+            admin_id: user_id,
+            first_name: contact.contact_name,
+            email: contact.email,
+            is_primary_contact: true,
+          })
+        ).toObject();
+      }
+
+      const email = String(person.email || "").trim();
+      if (!email) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "This contact person has no email address." });
+      }
+      if (person.is_portal_invitation_accepted) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: `${email} has already accepted the invitation and can sign in to the portal.` });
+      }
+
+      const name = [person.first_name, person.last_name].filter(Boolean).join(" ") || contact.contact_name || "there";
+      const inviteToken = generateInviteToken({
+        clientId: contact.contact_id,
+        clientPersonId: person.contact_person_id,
+        name,
+        email,
+        org_name: organization.org_name,
+        organization_id: organizationId,
       });
-    }
-    const organizationDetails = await Organization.findOne({organization_id:organizationId});
-    
-    // Generate a unique token for this invitation - including organization_id
-    const inviteToken = generateInviteToken({
-      clientId: contactId,
-      clientPersonId: contact_person_id,
-      name: name || contact.contact_name,
-      email: email,
-      org_name:organizationDetails.org_name,
-      organization_id: organizationId  // Include organization_id in token
-    });
-    
-    // Create portal URL with token
-    // The customer portal lives at /portal in the main app; PORTAL_URL
-    // overrides the host if it is served elsewhere.
-    const baseUrl = (process.env.PORTAL_URL || process.env.FRONTEND_URL || "").split(",")[0].trim().replace(/\/$/, "");
-    const portalUrl = `${baseUrl}/portal/${organizationId}/login`;
-    const activateUrl = `${baseUrl}/portal/create-password?token=${inviteToken}`;
-    
-    // Prepare email data
-    const emailData = {
-      name: name || contact.contact_name,
-      companyName: organizationDetails.org_name,
-      portalUrl: portalUrl,
-      activateUrl:activateUrl,
-      username: email
-    };
-    
-    // Create email content
-    const emailHtml = formatPortalInvitationTemplate(emailData);
-    
-    // Generate unique ID for email log
-    const emailLogId = await commonHelper.generateUniqueId(
-      POEmailLog,
-      "email_log_id"
-    );
-    
-    // Prepare mail options
-    const mailOptions = {
-      from: process.env.EMAIL_FROM || `${companyName} <no-reply@yourcompany.com>`,
-      to: email,
-      subject: `${companyName} has invited you to join their portal`,
-      html: emailHtml
-    };
-    
-    // Create email log entry
-    const emailLogData = {
-      email_log_id: emailLogId,
-      from_email: mailOptions.from,
-      to_email: email,
-      cc_emails: '',
-      bcc_emails: '',
-      subject: mailOptions.subject,
-      body: emailHtml,
-      attachment_names: [],
-      organization_id: organizationId,
-      contact_id: contactId,
-      email_type: 'portal_invitation',
-      status: 'pending',
-      created_by: user_id || 'system'
-    };
-    
-    // Insert into database using queryHelper
-    const addEmailLog = await queryHelper.insertData(POEmailLog, emailLogData);
-    
-    if (!addEmailLog.status) {
-      return res.status(ST_CODES.BAD_REQUEST).json({
-        status: false,
-        message: "Failed to create email log entry",
-        error: addEmailLog.msg
+
+      const subject = `${organization.org_name} has invited you to their customer portal`;
+      const emailLogId = await commonHelper.generateUniqueId(POEmailLog, "email_log_id");
+      await queryHelper.insertData(POEmailLog, {
+        email_log_id: emailLogId,
+        from_email: organization.org_name,
+        to_email: email,
+        cc_emails: "",
+        bcc_emails: "",
+        subject,
+        body: "",
+        attachment_names: [],
+        organization_id: organizationId,
+        contact_id: contact.contact_id,
+        email_type: "portal_invitation",
+        status: "pending",
+        created_by: user_id || "system",
       });
-    }
-    
-    // Send the email
-    try {
-      const info = await transporter.sendMail(mailOptions);
-      
-      // Update email log with success info
+
+      const sent = await portalEmails.sendPortalInvite({
+        to: email,
+        name,
+        orgName: organization.org_name,
+        orgEmail: organization.email,
+        organizationId,
+        token: inviteToken,
+      });
       await POEmailLog.findOneAndUpdate(
         { email_log_id: emailLogId },
-        {
-          status: 'sent',
-          message_id: info.messageId,
-          updated_at: new Date()
-        }
+        sent.ok ? { status: "sent", updated_at: new Date() } : { status: "failed", error_message: sent.error, updated_at: new Date() }
       );
-      
-      // Prepare update data for contact
-      try {
-        // Update contact information to reflect invitation status
-        const contactUpdateData = {
-          portal_status: 'enabled',
-          portal_status_formatted: 'Enabled',
-          is_portal_enabled: true,
-          invited_by: user_id || 'system',
-          invited_at: new Date().toISOString()
-        };
-        
-        // Update the contact using the API
-        const contactUpdateResponse = await apiHandler.updateContact(
-          contactId,
-          organizationId,
-          contactUpdateData,
-          authToken
-        );
-        console.log(contactPerson,"----contactPerson---")
-        
-        // Only proceed if we have the contact person details
-        if (contactPerson && contactPerson.contact_person_id) {
-          console.log("Updating contact person with ID:", contactPerson.contact_person_id);
-          
-          // Update contact person information
-          const contactPersonUpdateData = {
-            can_invite: true,  // Set to true after sending invitation
-            is_added_in_portal:true,
-            is_portal_invitation_accepted:false,
-            invited_by: user_id || 'system',
-            invited_at: new Date().toISOString()
-          };
-          console.log(contactPersonUpdateData,"----contactPersonUpdateData----")
-          // Use API handler to update the contact person
-          const updateResponse = await apiHandler.updateContactPerson(
-            contactPerson.contact_person_id, 
-            contactPersonUpdateData, 
-            authToken
-          );
-          
-        } else {
-          console.log("Warning: No contact person details available for update");
-        }
-      } catch (contactUpdateError) {
-        console.error("Error updating contact information:", contactUpdateError);
-        // Don't fail the whole operation if contact update fails
+      if (!sent.ok) {
+        return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
+          status: false,
+          message: `Couldn't send the invitation email: ${sent.error}`,
+        });
       }
-      
-      // Success response
+
+      const now = new Date();
+      await ContactPersonCollection.updateOne(
+        { contact_person_id: person.contact_person_id },
+        { $set: { can_invite: true, is_added_in_portal: true, is_portal_invitation_accepted: false, invited_by: String(user_id || ""), invited_at: now } }
+      );
+      await ContactCollection.updateOne(
+        { contact_id: contact.contact_id, organization_id: organizationId },
+        { $set: { portal_status: "invited", portal_status_formatted: "Invited", is_portal_enabled: true, invited_by: String(user_id || ""), invited_at: now } }
+      );
+
       return res.status(ST_CODES.OK).json({
         status: true,
-        message: "Portal invitation sent successfully",
-        data: {
-          messageId: info.messageId,
-          emailLogId: emailLogId,
-          token: inviteToken
-        }
+        message:
+          sent.channel === "console"
+            ? `Invitation for ${email} printed in the server log (email isn't set up on this server).`
+            : `Portal invitation sent to ${email}`,
+        data: { emailLogId, email, contact_person_id: person.contact_person_id },
       });
-    } catch (emailError) {
-      // Update email log with error info
-      await POEmailLog.findOneAndUpdate(
-        { email_log_id: emailLogId },
-        {
-          status: 'failed',
-          error_message: emailError.message,
-          updated_at: new Date()
-        }
-      );
-      
+    } catch (error) {
+      console.error("Portal invitation error:", error);
       return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
         status: false,
-        message: "Failed to send portal invitation",
-        error: emailError.message
+        message: "Couldn't send the portal invitation. Please try again later.",
       });
     }
-    
-  } catch (error) {
-    console.error("Portal invitation error:", error);
-    
-    return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
-      status: false,
-      message: "Internal Server Error: Unable to send portal invitation. Please try again later.",
-      error: error.message
-    });
-  }
-},
+  },
 
 // Verify portal invitation with improved API usage
 async verifyPortalInvite(req, res) {
