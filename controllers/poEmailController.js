@@ -497,11 +497,43 @@ const poEmailController = {
       if (!email) {
         return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "This contact person has no email address." });
       }
-      if (person.is_portal_invitation_accepted) {
-        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: `${email} has already accepted the invitation and can sign in to the portal.` });
-      }
-
       const name = [person.first_name, person.last_name].filter(Boolean).join(" ") || contact.contact_name || "there";
+
+      // Already accepted: "Resend Portal Link" emails the sign-in link instead.
+      if (person.is_portal_invitation_accepted) {
+        const linkSent = await portalEmails.sendPortalLink({
+          to: email,
+          name,
+          orgName: organization.org_name,
+          orgEmail: organization.email,
+          organizationId,
+        });
+        await queryHelper.insertData(POEmailLog, {
+          email_log_id: await commonHelper.generateUniqueId(POEmailLog, "email_log_id"),
+          from_email: organization.org_name,
+          to_email: email,
+          subject: `Your link to the ${organization.org_name} customer portal`,
+          body: "",
+          attachment_names: [],
+          organization_id: organizationId,
+          contact_id: contact.contact_id,
+          email_type: "portal_link",
+          status: linkSent.ok ? "sent" : "failed",
+          error_message: linkSent.ok ? undefined : linkSent.error,
+          created_by: user_id || "system",
+        });
+        if (!linkSent.ok) {
+          return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ status: false, message: `Couldn't send the portal link: ${linkSent.error}` });
+        }
+        return res.status(ST_CODES.OK).json({
+          status: true,
+          message:
+            linkSent.channel === "console"
+              ? `Portal link for ${email} printed in the server log (email isn't set up on this server).`
+              : `Portal link sent to ${email}`,
+          data: { email, contact_person_id: person.contact_person_id },
+        });
+      }
       const inviteToken = generateInviteToken({
         clientId: contact.contact_id,
         clientPersonId: person.contact_person_id,

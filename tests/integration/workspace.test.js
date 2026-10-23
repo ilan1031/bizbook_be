@@ -458,9 +458,14 @@ test("portal invite: emails the customer; accepting needs the link and tells who
     const n = await asSa("get", `/api/v1/user/notifications?organization_id=${org}`);
     assert.ok(n.body.data.some((i) => i.id === `portal-accepted-${person.contact_person_id}`), "shown in notifications");
 
+    // Once accepted, "Resend Portal Link" emails the sign-in link, no new invitation.
     const again = await asSa("post", "/api/v1/email/invite-portal", { contactId: customer.contact_id, organizationId: org });
-    assert.equal(again.status, 400, "already accepted");
-    assert.equal(sent.length, 2);
+    assert.equal(again.status, 200, again.text);
+    assert.equal(sent.length, 3);
+    assert.equal(sent[2].to, "kumar@example.com");
+    assert.match(sent[2].subject, /Your link to the Workspace Test Pvt Ltd customer portal/);
+    assert.match(sent[2].text, new RegExp(`/portal/${org}/login`));
+    assert.doesNotMatch(sent[2].text, /token=/);
   } finally {
     mailer.sendMail = realSend;
   }

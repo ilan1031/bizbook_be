@@ -39,6 +39,27 @@ ${button(activateUrl, "Accept invitation")}
   });
 };
 
+// For a customer who already accepted: the sign-in link again.
+const sendPortalLink = async ({ to, name, orgName, orgEmail, organizationId }) => {
+  const loginUrl = portalLoginUrl(organizationId);
+  return mailer.sendMail({
+    to,
+    fromName: orgName,
+    replyTo: orgEmail || undefined,
+    subject: `Your link to the ${orgName} customer portal`,
+    text:
+      `Hi ${name},\n\nHere's your link to the ${orgName} customer portal, where you can see your quotes, invoices and payments:\n${loginUrl}\n\n` +
+      `Sign in with ${to}. Forgot your password? Choose "Forgot password" on the sign-in page.`,
+    html: layout(
+      `Your link to the ${orgName} customer portal`,
+      `<p>Hi ${escapeHtml(name)},</p>
+<p>Here's your link to the <b>${escapeHtml(orgName)}</b> customer portal, where you can see your quotes, invoices and payments.</p>
+${button(loginUrl, "Open the portal")}
+<p style="color:#6c718a;font-size:13px">Sign in with <b>${escapeHtml(to)}</b>. Forgot your password? Choose "Forgot password" on the sign-in page.</p>`
+    ),
+  });
+};
+
 const sendInviteAccepted = async ({ to, personName, personEmail, customerName, orgName, contactUrl }) =>
   mailer.sendMail({
     to,
@@ -53,4 +74,4 @@ ${button(contactUrl, "View customer")}`
     ),
   });
 
-module.exports = { sendPortalInvite, sendInviteAccepted, portalLoginUrl, portalActivateUrl };
+module.exports = { sendPortalInvite, sendPortalLink, sendInviteAccepted, portalLoginUrl, portalActivateUrl };
