@@ -79,6 +79,11 @@ test.before(async () => {
   });
   assert.equal(o.status, 200, o.text);
   org = String(o.body.data?.organization_id || o.body.organization_id);
+  const createdOrg = await mongoose.model("Organization").findOne({ organization_id: org }).lean();
+  assert.equal(createdOrg.industry_type, "IT");
+  assert.equal(createdOrg.fiscal_year_start_month, "APRIL");
+  assert.equal(createdOrg.language_code, "EN");
+  assert.equal(createdOrg.theme, "primary");
 
   await asSa("post", "/api/v1/contact", {
     organization_id: org,
@@ -196,11 +201,46 @@ test("profile can be read and updated", async () => {
   assert.equal(r.body.data.devices[0].ip, USER_IP);
 
   assert.equal((await asUser("patch", "/api/v1/user/profile", { mobile: "12" })).status, 400);
-  const u = await asUser("patch", "/api/v1/user/profile", { company_name: "Search Co Ltd", role: "superadmin" });
+  const profileImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lJ8AAAAASUVORK5CYII=";
+  const u = await asUser("patch", "/api/v1/user/profile", {
+    company_name: "Search Co Ltd",
+    profile_image: profileImage,
+    role: "superadmin",
+  });
   assert.equal(u.status, 200, u.text);
   const user = await mongoose.model("user").findById(userId).lean();
   assert.equal(user.company_name, "Search Co Ltd");
+  assert.equal(user.profile_image, profileImage);
   assert.equal(user.role, "user", "profile updates can't change the role");
+  assert.equal((await asUser("get", "/api/v1/user/profile")).body.data.profile_image, profileImage);
+  assert.equal(
+    (await asUser("patch", "/api/v1/user/profile", { profile_image: "data:image/svg+xml;base64,PHN2Zz4=" })).status,
+    400
+  );
+});
+
+test("organization profile image can be read, updated and persisted", async () => {
+  const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lJ8AAAAASUVORK5CYII=";
+  const updated = await asSa("put", `/api/v1/organization/${org}`, {
+    org_image: image,
+    phone: "+1 (408) 555-1212",
+    zip: "",
+  });
+  assert.equal(updated.status, 200, updated.text);
+  assert.equal(updated.body.data.org_image, image);
+  assert.equal(updated.body.data.phone, 14085551212);
+
+  const fetched = await asSa("get", `/api/v1/organization/${org}`);
+  assert.equal(fetched.status, 200, fetched.text);
+  assert.equal(fetched.body.data.org_image, image);
+  const stored = await mongoose.model("Organization").findOne({ organization_id: org }).lean();
+  assert.equal(stored.org_image, image);
+  assert.match(stored.org_image, /^data:image\/png;base64,/);
+
+  const invalid = await asSa("put", `/api/v1/organization/${org}`, {
+    org_image: "data:image/svg+xml;base64,PHN2Zz4=",
+  });
+  assert.equal(invalid.status, 400);
 });
 
 test("password change checks the current password and the rules", async () => {
@@ -539,4 +579,72 @@ test("recurring-invoice emails go to the customer's contact email, from the serv
   } finally {
     mailer.sendCustomerMail = real;
   }
+});
+
+test("invitation link lifecycle: set password once, then the link means 'sign in'", async () => {
+  const claims = {
+    clientId: "CU-W1",
+    clientPersonId: "CP-INVITE-1",
+    name: "Ravi",
+    email: "ravi@example.com",
+    organization_id: userOrg,
+    org_name: "Searcher Org",
+  };
+  const link = (extra = {}, opts = { expiresIn: "24h" }) => jwt.sign({ ...claims, ...extra }, process.env.JWT_SECRET, opts);
+  const status = (token) => request(app).get("/api/v1/client/invite-status").query({ token });
+  const register = (body) => request(app).post("/api/v1/client/register").send(body);
+
+  // Before any password: pending, and it says who it's for.
+  const token = link();
+  const pending = await status(token);
+  assert.equal(pending.body.data.state, "pending");
+  assert.equal(pending.body.data.email, "ravi@example.com");
+  assert.equal(pending.body.data.org_name, "Searcher Org");
+
+  // Bad links.
+  assert.equal((await status("garbage")).body.data.state, "invalid");
+  assert.equal((await status(jwt.sign(claims, "wrong-secret"))).body.data.state, "invalid");
+  assert.equal((await status(link({}, { expiresIn: -10 }))).body.data.state, "expired");
+  assert.equal((await register({ token: "garbage", password: "Valid@12345" })).status, 400);
+  // The body can't pick who to register: no link, no account.
+  assert.equal((await register({ email: "ravi@example.com", clientId: "CU-W1", clientPersonId: "CP-INVITE-1", password: "Valid@12345" })).status, 400);
+  assert.equal((await register({ token, password: "weak" })).status, 400);
+
+  // Setting the password works once and signs them in.
+  const ok = await register({ token, password: "Valid@12345" });
+  assert.equal(ok.status, 200, ok.text);
+  assert.ok(ok.body.token);
+  assert.equal(String(ok.body.org_id), String(userOrg));
+  assert.equal(ok.body.data.password, undefined);
+  assert.equal((await mongoose.model("clients").countDocuments({ email: "ravi@example.com" })), 1);
+
+  // Opening the same link again: "registered", with the organisation to sign in to.
+  const again = await status(token);
+  assert.equal(again.body.data.state, "registered");
+  assert.equal(String(again.body.data.organization_id), String(userOrg));
+  assert.equal(again.body.data.email, undefined, "no address is revealed once registered");
+  const second = await register({ token, password: "Other@12345" });
+  assert.equal(second.status, 409);
+  assert.equal(second.body.code, "ALREADY_REGISTERED");
+  assert.equal(String(second.body.organization_id), String(userOrg));
+
+  // The password they chose is the one that works, through the portal sign-in.
+  const login = await request(app)
+    .post("/api/v1/client/login")
+    .send({ email: "ravi@example.com", password: "Valid@12345", role: "client", organization_id: userOrg });
+  assert.equal(login.status, 200, login.text);
+
+  // A withdrawn invitation stops working.
+  await mongoose.model("contactDetails").create({
+    contact_person_id: "CP-INVITE-2",
+    admin_id: userId,
+    contact_id: "CU-W1",
+    organization_id: userOrg,
+    first_name: "Meena",
+    email: "meena@example.com",
+    is_added_in_portal: false,
+  });
+  const withdrawn = link({ email: "meena@example.com", clientPersonId: "CP-INVITE-2" });
+  assert.equal((await status(withdrawn)).body.data.state, "revoked");
+  assert.equal((await register({ token: withdrawn, password: "Valid@12345" })).status, 400);
 });

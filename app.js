@@ -238,6 +238,7 @@ app.use(
     "/api/v1/client/login",
     "/api/v1/client/register",
     "/api/v1/client/forgot-password",
+    "/api/v1/client/invite-status",
     "/api/v1/client/reset-password",
     "/api/v1/user/change-password",
     "/api/v1/client/change-password",

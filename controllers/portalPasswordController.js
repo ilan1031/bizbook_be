@@ -6,6 +6,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const mailer = require("../helpers/mailer");
+const { readInvite } = require("../helpers/portalInvite");
 
 const ClientCollection = mongoose.model("clients");
 const PASSWORD_RULE = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])(?=.{8,})/;
@@ -19,6 +20,27 @@ const portalBase = () =>
     .replace(/\/+$/, "");
 
 class PortalPasswordController {
+  // GET /client/invite-status?token=  (public)
+  // What an invitation link can still be used for, so the page can show
+  // "set your password", "sign in" (already done) or "expired".
+  async inviteStatus(req, res) {
+    try {
+      const invite = await readInvite(req.query.token);
+      return res.status(ST_CODES.OK).json({
+        status: true,
+        data: {
+          state: invite.state,
+          email: invite.state === "pending" ? invite.email : undefined,
+          organization_id: invite.organization_id || undefined,
+          org_name: invite.org_name || undefined,
+        },
+      });
+    } catch (error) {
+      console.error("portal inviteStatus error:", error);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ message: "Couldn't check the invitation" });
+    }
+  }
+
   // POST /client/forgot-password { email, organization_id }
   // Always answers the same way, so it can't be used to find accounts.
   async forgotPassword(req, res) {

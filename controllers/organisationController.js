@@ -8,6 +8,7 @@ const commonHelper = require("../helpers/commonHelpers");
 const UsersCollection = mongoose.model("user");
 const columnsJson = require("../helpers/columns.json");
 const chartOfAccountsJson = require("../helpers/chartOfAccounts.json");
+const validateImageDataUrl = require("../helpers/imageDataUrl");
 const fs = require("fs");
 const path = require("path");
 
@@ -96,6 +97,7 @@ class OrgController {
       const gets = {
         organization_id: 1,
         org_name: 1,
+        org_image: 1,
         first_street: 1,
         second_street: 1,
         city: 1,
@@ -171,6 +173,7 @@ class OrgController {
         organization_id: 1,
         org_name: 1,
         organization_name: "$org_name", // Alias for compatibility
+        org_image: 1,
         portal_name: 1,
         admin_id: 1,
         phone: 1,
@@ -181,6 +184,7 @@ class OrgController {
         first_street: 1,
         second_street: 1,
         zip: 1,
+        industry_type: 1,
         fiscal_year_start_month: 1,
         language_code: 1,
         time_zone: 1,
@@ -256,8 +260,10 @@ class OrgController {
       // Clean up update data to match schema
       const allowedFields = [
         "org_name",
+        "org_image",
         "portal_name",
         "phone",
+        "email",
         "country",
         "state",
         "city",
@@ -272,15 +278,48 @@ class OrgController {
         "industry_type",
         "theme",
         "gst_in",
-        "organization_email",
       ];
 
       const cleanUpdateData = {};
-      allowedFields.forEach((field) => {
-        if (updateData[field] !== undefined) {
-          cleanUpdateData[field] = updateData[field];
+      for (const field of allowedFields) {
+        if (updateData[field] === undefined) continue;
+        if (field === "org_image") {
+          const imageError = validateImageDataUrl(updateData[field], "Organization image");
+          if (imageError) {
+            return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: imageError });
+          }
         }
-      });
+        if (field === "phone" || field === "zip") {
+          const value = String(updateData[field]).trim();
+          if (!value) continue;
+          if (field === "phone") {
+            if (!/^[+\d\s().-]+$/.test(value)) {
+              return res.status(ST_CODES.BAD_REQUEST).send({
+                status: false,
+                message: "Phone may contain digits, spaces, +, parentheses, dots or hyphens",
+              });
+            }
+            const digits = value.replace(/\D/g, "");
+            if (!digits || digits.length > 15) {
+              return res.status(ST_CODES.BAD_REQUEST).send({
+                status: false,
+                message: "Phone must contain up to 15 digits",
+              });
+            }
+            cleanUpdateData[field] = Number(digits);
+            continue;
+          }
+          if (!/^\d+$/.test(value) || value.length > 12) {
+            return res.status(ST_CODES.BAD_REQUEST).send({
+              status: false,
+              message: "Postal code must contain only digits",
+            });
+          }
+          cleanUpdateData[field] = Number(value);
+          continue;
+        }
+        cleanUpdateData[field] = updateData[field];
+      }
 
       // Update the organization
       const updatedOrg = await OrgCollection.findOneAndUpdate(

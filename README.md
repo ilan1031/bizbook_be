@@ -26,7 +26,7 @@ The API listens on `PORT` (default 4000). `GET /api-health` reports server and d
 
 - **Search** (`GET /api/v1/user/search?organization_id=&q=`) looks through customers, vendors, items and every document type, but only on pages the user may view.
 - **Notifications** (`GET /api/v1/user/notifications?organization_id=`) are worked out from the books each time: overdue invoices and bills, bills due within 7 days, unsent drafts, unapplied credits, and pending sign-ups for the superadmin. Nothing is stored; the browser remembers what was read.
-- **Profile** (`GET/PATCH /api/v1/user/profile`, `POST /api/v1/user/change-password`).
+- **Profile** (`GET/PATCH /api/v1/user/profile`, `POST /api/v1/user/change-password`). Profile photos and organization logos are stored as validated image data in MongoDB; the profile page previews both before saving.
 - **Imports** of customers, vendors and items (`POST /api/v1/import/customers|vendors|items?org_id=`, rows already mapped by the import screen). Names that already exist are skipped. Each needs create on that page.
 - **Customer portal.** It is part of the web app at `/portal` (sign-in at `/portal/<organisation id>/login`, invitation links at `/portal/create-password`). Invite emails use `FRONTEND_URL`, or `PORTAL_URL` if the portal is served from another host (also allowed by CORS). Its sign-in page reads the organisation name without a token.
 

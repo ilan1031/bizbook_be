@@ -70,10 +70,18 @@ function formatPortalInvitationTemplate(data) {
   const {
     name = "Customer",
     companyName = "Our Company",
-    portalUrl = "#",
     activateUrl = "#",
     username = "",
+    logoUrl = "",
   } = data;
+  const escapeHtml = (value) =>
+    String(value ?? "").replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    })[character]);
 
   return `
     <!DOCTYPE html>
@@ -90,63 +98,72 @@ function formatPortalInvitationTemplate(data) {
           margin: 0;
           padding: 0;
         }
-        .container {
-          max-width: 600px;
+        body { background-color: #f7f7f7; }
+        .page { width: 100%; background-color: #f7f7f7; }
+        .card {
+          width: 100%;
+          max-width: 700px;
           margin: 0 auto;
-          padding: 20px;
-          background-color: white;
-          border: 1px solid #e0e0e0;
+          background-color: #fff;
         }
-        .main-container{
-          padding: 20px;
-          background-color: #f9f9f9;
-        }
-        .header {
-          text-align: left;
-          margin-bottom: 25px;
-        }
-        .content {
-          padding: 20px;
-          border-radius: 4px;
-        }
-        .button {
-          display: inline-block;
-          padding: 10px 20px;
-          margin: 20px 0;
-          background-color: #26c281;
-          color: white !important;
-          text-decoration: none;
-          border-radius: 4px;
-          text-align: center;
-        }
-        .footer {
-          margin-top: 20px;
-          font-size: 12px;
-          color: #666;
-          text-align: center;
+        .header { text-align: center; padding: 24px 20px 12px; }
+        .logo { display: block; max-width: 160px; max-height: 64px; margin: 0 auto; }
+        .content { padding: 16px 24px 8px; }
+        .invite-box { border: 1px solid #dedede; padding: 22px; }
+        .footer { padding: 10px 20px 22px; font-size: 12px; color: #666; text-align: center; }
+        @media only screen and (max-width: 600px) {
+          .content { padding: 12px 16px 8px !important; }
+          .invite-box { padding: 16px !important; }
+          .header { padding: 20px 16px 8px !important; }
         }
       </style>
     </head>
     <body>
-      <div class="main-container">
-        <div class="header">
-          <h4>Hi ${name},</h4>
-        </div>
-        <div class="content">
-          <p>You are invited to ${companyName}'s client portal.</p>
-          
-          <p>In the portal you can view your invoices, estimates, payment history and make payment via secure payment gateways.</p>
-        </div>
-        <div class="container">
-          <p>You can login to the portal any time by accessing the Portal URL found below.</p>
-          <p>Portal URL : <a href="${portalUrl}">${portalUrl}</a></p>
-
-          <p>Username: ${username}</p>
-          
-          <a href="${activateUrl}" class="button">Accept Invitation</a> 
-        </div>
-        <p>You can always reach out to us in case you require any assistance.</p>
-      </div>
+      <table role="presentation" class="page" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;background-color:#f7f7f7">
+        <tr>
+          <td align="center" style="padding:20px 12px">
+            <table role="presentation" class="card" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:700px;background-color:#fff">
+              <tr>
+                <td class="header">
+                  <p style="font-size:20px;font-weight:700;margin:0 0 10px">${escapeHtml(companyName)}</p>
+                  ${logoUrl ? `<img class="logo" src="${escapeHtml(logoUrl)}" alt="BizBooks" />` : ""}
+                </td>
+              </tr>
+              <tr>
+                <td class="content" style="padding:16px 24px 8px">
+                  <p>Hi ${escapeHtml(name)},</p>
+                  <p><strong>${escapeHtml(companyName)}</strong> has invited you to access its customer portal, powered by BizBooks.</p>
+                  <p>Accept the invitation below to create your password. After signing in, you can view invoices, estimates and payment history, and make payments securely.</p>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:8px 24px 16px">
+                  <table role="presentation" class="invite-box" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border:1px solid #dedede;padding:22px">
+                    <tr>
+                      <td style="padding-bottom:20px">Your portal username: <strong>${escapeHtml(username)}</strong></td>
+                    </tr>
+                    <tr>
+                      <td align="center">
+                        <a href="${escapeHtml(activateUrl)}" style="display:inline-block;padding:14px 24px;background-color:#26c281;color:#fff;text-decoration:none;border-radius:4px;font-weight:700">
+                          Accept ${escapeHtml(companyName)}'s Invitation
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:0 24px">
+                  <p>If you have questions about this invitation, please contact ${escapeHtml(companyName)}.</p>
+                </td>
+              </tr>
+              <tr>
+                <td class="footer" style="padding:10px 20px 22px;font-size:12px;color:#666;text-align:center">This invitation was sent by ${escapeHtml(companyName)} via BizBooks.</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     </body>
     </html>
   `;
@@ -471,8 +488,7 @@ const poEmailController = {
       contact_person_id,
       email, 
       name,
-      organizationId,
-      companyName = "Our Company"
+      organizationId
     } = req.body;
     // Validate required parameters
     if (!contactId || !email || !organizationId || !contact_person_id) {
@@ -539,12 +555,18 @@ const poEmailController = {
         message: "Organization not found"
       });
     }
+    const recipientName =
+      name ||
+      [contactPerson.salutation, contactPerson.first_name, contactPerson.last_name]
+        .filter(Boolean)
+        .join(" ") ||
+      "Customer";
     
     // Generate a unique token for this invitation - including organization_id
     const inviteToken = generateInviteToken({
       clientId: contactId,
       clientPersonId: contact_person_id,
-      name: name || contact.contact_name,
+      name: recipientName,
       email: email,
       org_name:organizationDetails.org_name,
       organization_id: organizationId  // Include organization_id in token
@@ -554,16 +576,18 @@ const poEmailController = {
     // The customer portal lives at /portal in the main app; PORTAL_URL
     // overrides the host if it is served elsewhere.
     const baseUrl = (process.env.PORTAL_URL || process.env.FRONTEND_URL || "").split(",")[0].trim().replace(/\/$/, "");
-    const portalUrl = `${baseUrl}/portal/${organizationId}/login`;
-    const activateUrl = `${baseUrl}/portal/create-password?token=${inviteToken}`;
+    const frontendUrl = (process.env.FRONTEND_URL || process.env.PORTAL_URL || "").split(",")[0].trim().replace(/\/$/, "");
+    const activateUrl = `${baseUrl}/portal/create-password?token=${encodeURIComponent(inviteToken)}`;
+    const portalUrl = `${baseUrl}/portal/${encodeURIComponent(organizationId)}/login`;
+    const orgName = organizationDetails.org_name;
     
     // Prepare email data
     const emailData = {
-      name: name || contact.contact_name,
-      companyName: organizationDetails.org_name,
-      portalUrl: portalUrl,
+      name: recipientName,
+      companyName: orgName,
       activateUrl:activateUrl,
-      username: email
+      username: email,
+      logoUrl: `${frontendUrl}/books-logo.jpg`
     };
     
     // Create email content
@@ -577,9 +601,10 @@ const poEmailController = {
     
     // Prepare mail options
     const mailOptions = {
-      from: process.env.EMAIL_FROM || `${companyName} <${process.env.EMAIL_USER}>`,
+      from: process.env.EMAIL_FROM || `${orgName} via BizBooks <${process.env.EMAIL_USER}>`,
       to: email,
-      subject: `${companyName} has invited you to join their portal`,
+      subject: `${orgName} invited you to its customer portal | BizBooks`,
+      text: `Hi ${recipientName},\n\n${orgName} has invited you to access its customer portal, powered by BizBooks.\n\nAccept the invitation and create your password: ${activateUrl}\n\nYour portal username: ${email}\nSign in to the portal: ${portalUrl}\n\nThis invitation was sent by ${orgName} via BizBooks.`,
       html: emailHtml
     };
     
@@ -613,10 +638,7 @@ const poEmailController = {
     
     // Send the email
     try {
-      const delivery = await mailer.sendMail({
-        ...mailOptions,
-        text: `Hello ${name || contact.contact_name || "Customer"},\n\nYou are invited to ${organizationDetails.org_name}'s client portal.\nSign in: ${portalUrl}\nAccept the invitation: ${activateUrl}`,
-      });
+      const delivery = await mailer.sendMail(mailOptions);
 
       if (!delivery.ok || delivery.channel !== "email") {
         const deliveryError =

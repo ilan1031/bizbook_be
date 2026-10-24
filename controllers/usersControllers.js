@@ -10,6 +10,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { getClientIp, CATALOG } = require("../helpers/rbac");
+const { readInvite } = require("../helpers/portalInvite");
 const { canSendCodes, sendLoginCode, sendSignupAlert } = require("../helpers/accountEmails");
 
 const OTP_TTL_MS = 5 * 60 * 1000;
@@ -521,76 +522,71 @@ class usersController {
     }
   }
 
+  // POST /client/register { token, password }
+  // Sets the customer's portal password from their invitation link. Who they
+  // are comes from the signed link, never from the request body, and a link
+  // that was already used (or whose invitation was withdrawn) is refused.
   async clientRegister(req, res) {
     try {
-      const { email, role, password, clientId, clientPersonId } = req.body;
-
-      if (!email || !password) {
-        return res.status(400).json({ message: "All fields are required" });
+      const { token: inviteToken, password } = req.body || {};
+      if (!inviteToken || !password) {
+        return res.status(400).json({ message: "The invitation link and a password are required" });
       }
 
-      const existingUser = await ClientCollection.findOne({
-        email,
-        role: role,
-      });
-      if (existingUser)
+      const invite = await readInvite(inviteToken);
+      if (invite.state === "registered") {
+        return res.status(409).json({
+          code: "ALREADY_REGISTERED",
+          message: "You've already set your password. Please sign in.",
+          organization_id: invite.organization_id,
+        });
+      }
+      if (invite.state !== "pending") {
+        const messages = {
+          expired: "This invitation has expired. Ask the business to send you a new one.",
+          revoked: "This invitation is no longer active. Ask the business to send you a new one.",
+          invalid: "This invitation link isn't valid.",
+        };
+        return res.status(400).json({ code: `INVITE_${invite.state.toUpperCase()}`, message: messages[invite.state] });
+      }
+
+      const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])(?=.{8,})/;
+      if (!passwordRegex.test(String(password))) {
         return res.status(400).json({
           message:
-            "The Customer Portal has already been enabled for this email address. Try signing in to the portal instead, or sign up using a different email address.",
+            "Password must be at least 8 characters long and include at least one uppercase letter, one number, and one special character.",
         });
-      const contact = await ContactPersonCollection.findOne({
-        email,
-        contact_person_id: clientPersonId,
-      });
-      if (contact && contact.is_added_in_portal) {
-        const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])(?=.{8,})/;
-        if (!passwordRegex.test(password)) {
-          return res.status(400).json({
-            message:
-              "Password must be at least 8 characters long and include at least one uppercase letter, one number, and one special character.",
-          });
-        }
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const capitalize = (str) => str.charAt(0).toUpperCase() + str.slice(1);
-        const newUser = new ClientCollection({
-          email,
-          password: hashedPassword,
-          client_id: contact.contact_id,
-          client_person_id: contact.contact_person_id,
-          role: role,
-          status: "active",
-          role_formatted: capitalize(role.toString()),
-        });
-        await newUser.save();
-        const updatecontactPerson =
-          await ContactPersonCollection.findOneAndUpdate(
-            { contact_person_id: contact.contact_person_id },
-            {
-              is_portal_invitation_accepted: true,
-            },
-            { new: true }
-          );
-        const token = jwt.sign(
-          { userId: newUser._id, role: "client" },
-          process.env.JWT_SECRET,
-          {
-            expiresIn: "10d",
-          }
-        );
-        let contactData = await ContactCollection.findOne({
-          contact_id: newUser.client_id,
-        });
-        const { password: _omit, ...safeNewUser } = newUser.toObject();
-        res.status(ST_CODES.OK).json({
-          message: "User registered successfully",
-          status: true,
-          token,
-          org_id: contactData.organization_id,
-          data: safeNewUser,
-        });
-      } else {
-        return res.status(404).json({ message: "This account does not exist" });
       }
+
+      const contact = invite.person && (await ContactPersonCollection.findOne({ contact_person_id: invite.claims.clientPersonId }));
+      if (!contact) return res.status(404).json({ message: "This account does not exist" });
+
+      const hashedPassword = await bcrypt.hash(String(password), 10);
+      const newUser = new ClientCollection({
+        email: invite.email,
+        password: hashedPassword,
+        client_id: contact.contact_id,
+        client_person_id: contact.contact_person_id,
+        role: "client",
+        status: "active",
+        role_formatted: "Client",
+      });
+      await newUser.save();
+      await ContactPersonCollection.findOneAndUpdate(
+        { contact_person_id: contact.contact_person_id },
+        { is_portal_invitation_accepted: true },
+        { new: true }
+      );
+      const token = jwt.sign({ userId: newUser._id, role: "client" }, process.env.JWT_SECRET, { expiresIn: "10d" });
+      const contactData = await ContactCollection.findOne({ contact_id: newUser.client_id });
+      const { password: _omit, ...safeNewUser } = newUser.toObject();
+      res.status(ST_CODES.OK).json({
+        message: "User registered successfully",
+        status: true,
+        token,
+        org_id: contactData?.organization_id || invite.organization_id,
+        data: safeNewUser,
+      });
     } catch (error) {
       console.log("reg error", error);
       res

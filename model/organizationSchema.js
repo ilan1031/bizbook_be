@@ -14,11 +14,19 @@ const organizationSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    org_image: {
+      type: String,
+      default: "",
+    },
     contact_name: {
       type: String,
     },
     industry_name: {
       type: String,
+    },
+    industry_type: {
+      type: String,
+      default: "",
     },
     email: {
       type: String,
@@ -63,6 +71,15 @@ const organizationSchema = new mongoose.Schema(
     },
 
     state: {
+      type: String,
+    },
+    fiscal_year_start_month: {
+      type: String,
+    },
+    language_code: {
+      type: String,
+    },
+    theme: {
       type: String,
     },
     tax_basis: {

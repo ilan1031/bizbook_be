@@ -20,6 +20,10 @@ const userSchema = new mongoose.Schema(
     company_name: {
       type: String,
     },
+    profile_image: {
+      type: String,
+      default: "",
+    },
     country: {
       type: String,
     },

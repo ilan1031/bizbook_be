@@ -18,6 +18,7 @@ const Bill = require("../model/billsSchema");
 const Expense = require("../model/expenseModel");
 const { CreditNote, VendorCredit } = require("../model/creditDocumentModels");
 const { toPaise, fromPaise } = require("../helpers/accountingHelper");
+const validateImageDataUrl = require("../helpers/imageDataUrl");
 
 const UsersCollection = mongoose.model("user");
 const ClientCollection = mongoose.model("clients");
@@ -273,6 +274,7 @@ class WorkspaceController {
         email: u.email,
         mobile: u.mobile,
         company_name: u.company_name || "",
+        profile_image: u.profile_image || "",
         country: u.country || "",
         state: u.state || "",
         role: u.role || "user",
@@ -290,12 +292,17 @@ class WorkspaceController {
     });
   }
 
-  // PATCH /user/profile - company name, mobile, country, state.
+  // PATCH /user/profile - account details and profile image.
   async updateProfile(req, res) {
     try {
       const body = req.body || {};
       const update = {};
       if (body.company_name !== undefined) update.company_name = String(body.company_name).trim().slice(0, 120);
+      if (body.profile_image !== undefined) {
+        const imageError = validateImageDataUrl(body.profile_image, "Profile image");
+        if (imageError) return res.status(ST_CODES.BAD_REQUEST).json({ message: imageError });
+        update.profile_image = body.profile_image;
+      }
       if (body.country !== undefined) update.country = String(body.country).trim().slice(0, 60);
       if (body.state !== undefined) update.state = String(body.state).trim().slice(0, 60);
       if (body.mobile !== undefined) {

@@ -269,11 +269,11 @@ class ContactController {
         contact_id: contact.contact_id,
       });
 
-      // Find organization
-      const organization = await OrganizationCollection.findOne({
-        organization_id,
-        admin_id,
-      });
+      // Find organization. A portal customer reads their business's details
+      // (the contact above already belongs to that organisation).
+      const organization = await OrganizationCollection.findOne(
+        res.locals.role === "client" ? { organization_id } : { organization_id, admin_id }
+      );
 
       // Calculate receivable/payable amount based on contact type
       let totalAmount = 0;
@@ -375,6 +375,7 @@ class ContactController {
             city: organization.city,
             country: organization.country,
             gst_in: organization.gst_in,
+            email: organization.email,
             phone: organization.phone,
             zip: organization.zip,
             state: organization.state,
@@ -391,7 +392,7 @@ class ContactController {
         : null;
       // Add admin email based on admin_id
       const admin = await UserCollection.findOne(
-        { _id: admin_id },
+        { _id: res.locals.role === "client" ? contact.admin_id : admin_id },
         { email: 1 }
       );
       contactData.admin_email = admin ? admin.email : null;

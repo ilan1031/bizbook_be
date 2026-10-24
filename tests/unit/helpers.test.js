@@ -103,3 +103,17 @@ test("mailer: customer email is checked, sent from the server mailbox, and never
     process.env.NODE_ENV = saved.node;
   }
 });
+
+test("imageDataUrl: accepts valid images of every size, rejects everything else", () => {
+  const validate = require("../../helpers/imageDataUrl");
+  const png = (extra) =>
+    "data:image/png;base64," + Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(extra)]).toString("base64");
+  // Base64 has no "=" padding when the size is a multiple of 3; both must pass.
+  for (let extra = 0; extra < 12; extra++) assert.equal(validate(png(extra), "Logo"), null, `size ${8 + extra}`);
+  assert.equal(validate("", "Logo"), null, "empty clears the image");
+  assert.match(validate("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=", "Logo"), /PNG, JPG or WebP/);
+  assert.match(validate("data:text/html;base64,PGI+", "Logo"), /PNG, JPG or WebP/);
+  assert.match(validate("data:image/png;base64,@@@@", "Logo"), /PNG, JPG or WebP/);
+  assert.match(validate("data:image/png;base64," + Buffer.from("hello world!").toString("base64"), "Logo"), /not a valid/);
+  assert.match(validate(png(2 * 1024 * 1024), "Logo"), /smaller than 1 MB/);
+});
