@@ -17,7 +17,7 @@ const ALL_ACTIONS = WITH_CONVERT;
 const PAGES = [
   { key: "home", label: "Dashboard", group: "General", routes: ["/home"], actions: VIEW_ONLY },
   { key: "items", label: "Items", group: "General", routes: ["/items", "/item"] },
-  { key: "banking", label: "Banking", group: "General", routes: ["/banking"], planned: true },
+  { key: "banking", label: "Banking", group: "General", routes: ["/banking"] },
 
   { key: "customers", label: "Customers", group: "Sales", routes: ["/sales/customer"] },
   { key: "quotes", label: "Quotes", group: "Sales", routes: ["/sales/quotes", "/print/quote"], actions: WITH_CONVERT },
@@ -178,6 +178,8 @@ const API_RULES = [
   { re: /^\/api\/v1\/reports\/day-book$/, pages: ["dayBook"], action: "view" },
   { re: /^\/api\/v1\/reports\/cash-flow$/, pages: ["cashFlow"], action: "view" },
   { re: /^\/api\/v1\/reports\/gst-summary$/, pages: ["gstSummary"], action: "view" },
+  // Bank statements: view reads, create imports, edit matches, delete removes.
+  { re: /^\/api\/v1\/banking(\/|$)/, pages: ["banking"] },
 
   { re: /^\/api\/v1\/email\/(invite-portal|verify-invite)$/, pages: ["customerPortal"], action: "create" },
   // Emailing a document: only users who can create or edit sales/purchase
