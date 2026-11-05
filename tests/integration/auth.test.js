@@ -159,7 +159,7 @@ test("sign-up creates a pending account without a token and alerts the superadmi
 
 test("every sign-up emails the superadmin", async () => {
   mailLog.length = 0;
-  await as("10.3.0.1").post("/api/v1/user/user-register", { ...USER, email: "second@test.local" });
+  await as("10.3.0.1").post("/api/v1/user/user-register", { ...USER, email: "second@test.local", phoneNumber: "9876500002" });
   for (let i = 0; i < 20 && !mailLog.some((l) => /second@test\.local/.test(l)); i++) {
     await new Promise((res) => setTimeout(res, 50));
   }
@@ -371,7 +371,8 @@ test("admin user list never exposes passwords or OTP hashes", async () => {
 
 test("requests without a valid token are rejected", async () => {
   assert.equal((await as("10.0.0.1").get("/api/v1/user/me")).status, 401);
-  assert.equal((await as("10.0.0.1").get("/api/v1/user/me", "not-a-token")).status, 400);
+  // A bad token is an ended session (401), not a bad request.
+  assert.equal((await as("10.0.0.1").get("/api/v1/user/me", "not-a-token")).status, 401);
   assert.equal((await as("10.0.0.1").get("/api/v1/admin/users")).status, 401);
 });
 

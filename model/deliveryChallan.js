@@ -5,7 +5,8 @@ const { Schema } = mongoose;
 // Define the Line Item Schema
 const lineItemSchema = new Schema({
   line_item_id: { type: String, required: false },
-  item_id: { type: String, required: true },
+  // Free-text lines have no inventory item; only the name is required.
+  item_id: { type: String, default: "" },
   name: { type: String, required: true },
   description: { type: String },
   item_order: { type: Number },
@@ -148,6 +149,7 @@ const deliveryChallanSchema = new Schema({
   shipping_address: shippingAddressSchema,
   ewaybills: [{ type: String }],
   notes: { type: String },
+  subject_content: { type: String, default: "" },
   terms: { type: String },
   has_qty_returned: { type: Boolean },
   custom_fields: [{ type: Schema.Types.Mixed }],

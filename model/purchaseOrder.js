@@ -18,7 +18,10 @@ const LineItemSchema = new mongoose.Schema(
     amount: String,
     sku: String,
     itemName: String,
+    item_name: String, // what the item table and bills use
     account_id: String,
+    account_name: String,
+    gst_rate: { type: Number, default: 0 },
     quantity: Number,
     rate: Number,
     discount: Number,

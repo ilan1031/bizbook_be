@@ -7,25 +7,10 @@ const commonHelper = require("../helpers/commonHelpers");
 // Import the model this way:
 const EmailLog = require("../model/emailLog");
 
-// Configure nodemailer with Gmail credentials
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  debug: false,
-});
-
-// Verify connection configuration at startup (when email is set up)
-if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.NODE_ENV !== "test") {
-  transporter.verify((error) => {
-    if (error) console.error("SMTP Connection Error:", error.message);
-  });
-}
+// Mail goes through the configured SMTP server (EMAIL_HOST / EMAIL_PORT /
+// EMAIL_USER / EMAIL_PASS), see helpers/mailer.js.
+const { getTransporter } = require("../helpers/mailer");
+const transporter = { sendMail: (options) => getTransporter().sendMail(options) };
 
 class EmailController {
   formatEmailTemplate(orderData) {
@@ -154,7 +139,7 @@ class EmailController {
       console.error("Error sending email:", error);
       res.status(500).json({
         status: false,
-        message: "Failed to send email",
+        message: `The email couldn't be sent: ${error.message}`,
         error: error.message,
       });
     }

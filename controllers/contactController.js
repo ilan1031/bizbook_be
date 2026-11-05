@@ -6,6 +6,8 @@ const BillsCollection = mongoose.model("PO_bill");
 const UserCollection = mongoose.model("user");
 const queryHelper = require("../helpers/query");
 const commonHelper = require("../helpers/commonHelpers");
+const { ownedContact } = require("../helpers/tenantScope");
+const { plainText } = require("../helpers/sanitize");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const MESSAGES = require("../helpers/messageHelpers");
 const imagekit = require("../helpers/imageKit");
@@ -245,6 +247,8 @@ class ContactController {
       // contact (the middleware only lets it ask for that one), which
       // belongs to the business user rather than to the client.
       let contactQuery = res.locals.role === "client" ? { organization_id } : { admin_id, organization_id };
+      // A deleted customer / vendor is gone for everyone.
+      contactQuery.deleted_at = null;
 
       // Handle both ObjectId and string IDs
       if (mongoose.Types.ObjectId.isValid(contact_id)) {
@@ -269,11 +273,11 @@ class ContactController {
         contact_id: contact.contact_id,
       });
 
-      // Find organization
-      const organization = await OrganizationCollection.findOne({
-        organization_id,
-        admin_id,
-      });
+      // Find organization. For a portal sign-in it is the contact's own
+      // organisation (the middleware already pinned organization_id to it).
+      const organization = await OrganizationCollection.findOne(
+        res.locals.role === "client" ? { organization_id } : { organization_id, admin_id }
+      );
 
       // Calculate receivable/payable amount based on contact type
       let totalAmount = 0;
@@ -387,11 +391,12 @@ class ContactController {
             plan_name: organization.plan_name,
             portal_name: organization.portal_name,
             user_status: organization.user_status,
+            email: organization.email,
           }
         : null;
-      // Add admin email based on admin_id
+      // Add admin email based on admin_id (the business user, also for a portal sign-in)
       const admin = await UserCollection.findOne(
-        { _id: admin_id },
+        { _id: res.locals.role === "client" ? contact.admin_id : admin_id },
         { email: 1 }
       );
       contactData.admin_email = admin ? admin.email : null;
@@ -449,13 +454,37 @@ class ContactController {
         body.documents = req.file.filename;
       }
 
-      // Ensure addresses are defined
-      body.billing_address = body.billing_address || {};
-      body.shipping_address = body.shipping_address || {};
+      // Only a contact of the caller's organisation (the middleware checked
+      // that organization_id is theirs) can be changed, and never moved.
+      const organizationId = req.query.organization_id || body.organization_id;
+      if (!organizationId) {
+        return res.status(400).send({ status: false, message: "organization_id is required" });
+      }
+      const owned = await ContactCollection.findOne(
+        { contact_id: contactId, organization_id: { $in: [String(organizationId), Number(organizationId)] } },
+        { _id: 1, organization_id: 1 }
+      ).lean();
+      if (!owned || !(await ownedContact(contactId, adminId, { _id: 1 }))) {
+        return res.status(404).send({ status: false, message: "Contact not found" });
+      }
+      for (const f of ["_id", "contact_id", "organization_id"]) delete body[f];
+      body.organization_id = owned.organization_id;
+
+      // Comments are plain text (no HTML).
+      if (Array.isArray(body.comments)) {
+        body.comments = body.comments
+          .map((c) => ({ ...c, description: plainText(c?.description, 2000), commented_by: plainText(c?.commented_by, 200) }))
+          .filter((c) => c.description);
+      }
+
+      // Addresses are only changed when sent (a partial update such as a
+      // comment must not wipe them).
+      if (body.billing_address === null) body.billing_address = {};
+      if (body.shipping_address === null) body.shipping_address = {};
 
       // Update Contact
       const updated = await ContactCollection.findOneAndUpdate(
-        { contact_id: contactId },
+        { _id: owned._id },
         { ...body, admin_id: adminId },
         { new: true }
       );
@@ -473,7 +502,7 @@ class ContactController {
           if (person.contact_person_id) {
             // Update existing contact person
             await ContactPersonCollection.findOneAndUpdate(
-              { contact_person_id: person.contact_person_id },
+              { contact_person_id: person.contact_person_id, contact_id: contactId },
               {
                 ...person,
                 contact_id: contactId,
@@ -541,6 +570,47 @@ class ContactController {
           status: false,
           message: "Contact not found for this organization",
         });
+      }
+
+      // A customer with documents can't be deleted: the documents would point
+      // at a customer that no longer exists. Mark it inactive instead.
+      const orgIn = { $in: [String(organization_id), Number(organization_id)] };
+      const live = { organization_id: orgIn, customer_id: contact.contact_id, deleted_at: null };
+      const checks = [
+        ["invoices", require("../model/invoice"), live],
+        ["quotes", require("../model/quotes"), live],
+        ["sales orders", require("../model/salesOrder"), live],
+        ["delivery challans", require("../model/deliveryChallan"), live],
+        ["recurring invoices", require("../model/recurringInvoice"), live],
+        ["payments", require("../model/customerPayment"), live],
+      ];
+      for (const [label, Model, query] of checks) {
+        if (await Model.exists(query)) {
+          return res.status(ST_CODES.BAD_REQUEST).send({
+            status: false,
+            message: `${contact.contact_name || "This customer"} has ${label} and can't be deleted. Mark the customer as inactive instead.`,
+          });
+        }
+      }
+
+      // A vendor with unpaid bills, purchase orders or payments can't be
+      // deleted (its bills could no longer be paid); mark it inactive instead.
+      if (contact.contact_type === "Vendor") {
+        const usedIn = [];
+        const checks = [
+          ["unpaid bills", "PO_bill", { vendor_id: contact._id, status_type: { $nin: ["PAID", "VOID"] } }],
+          ["purchase orders", "Purchase_Order", { vendor_id: contact._id, deleted_at: null, status_type: { $nin: ["CLOSED", "CANCELED", "VOID"] } }],
+          ["payments", "Payment", { contact_id: contact._id, is_deleted: { $ne: true } }],
+        ];
+        for (const [label, model, where] of checks) {
+          if (mongoose.modelNames().includes(model) && (await mongoose.model(model).exists(where))) usedIn.push(label);
+        }
+        if (usedIn.length) {
+          return res.status(ST_CODES.BAD_REQUEST).send({
+            status: false,
+            message: `This vendor has ${usedIn.join(", ")}, so it can't be deleted. Mark it as inactive instead.`,
+          });
+        }
       }
 
       // Perform soft delete by setting deleted_at timestamp
@@ -1849,6 +1919,86 @@ class ContactController {
     }
   }
 
+  // Emails sent to a customer / vendor: sales emails (quotes, invoices,
+  // ...) to any of its addresses, and purchase-order emails logged against
+  // it. An empty list is a normal 200.
+  async getContactEmails(req, res) {
+    try {
+      const { contact_id, organization_id } = req.query;
+      const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+      const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+      if (!organization_id || !contact_id) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "organization_id and contact_id are required." });
+      }
+      const owner = await ownedContact(contact_id, res.locals.user_id, { email: 1, contact_persons: 1 });
+      if (!owner || String(owner.organization_id) !== String(organization_id)) {
+        return res.status(ST_CODES.NOT_FOUND).json({ status: false, message: "Contact not found." });
+      }
+      const persons = await ContactPersonCollection.find({ contact_id: owner.contact_id }, { email: 1 }).lean();
+      const addresses = [owner.email, ...(owner.contact_persons || []).map((p) => p.email), ...persons.map((p) => p.email)]
+        .filter((e) => typeof e === "string" && e.includes("@"))
+        .map((e) => e.trim().toLowerCase());
+      const unique = [...new Set(addresses)];
+      const esc = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const EmailLog = mongoose.models.EmailLog || require("../model/emailLog");
+      const POEmailLog = mongoose.models.POEmailLog || require("../model/poEmailModel");
+      const org = String(organization_id);
+      const [sales, purchase] = await Promise.all([
+        unique.length
+          ? EmailLog.find({ organization_id: org, $or: unique.map((e) => ({ to_email: new RegExp(`(^|[,;\\s])${esc(e)}($|[,;\\s])`, "i") })) }, { body: 0 })
+              .sort({ created_at: -1, _id: -1 })
+              .limit(page * limit)
+              .lean()
+          : [],
+        POEmailLog.find({ organization_id: org, contact_id: owner.contact_id }, { body: 0, html: 0 })
+          .sort({ created_at: -1, _id: -1 })
+          .limit(page * limit)
+          .lean(),
+      ]);
+      const all = [...sales, ...purchase].sort((a, b) => new Date(b.created_at || b.createdAt || 0) - new Date(a.created_at || a.createdAt || 0));
+      const logs = all.slice((page - 1) * limit, page * limit);
+      return res.status(ST_CODES.OK).json({ status: true, data: { logs, pagination: { page, limit, total: all.length } } });
+    } catch (error) {
+      console.error("getContactEmails Error:", error.message);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ status: false, message: "Unable to load emails. Please try again." });
+    }
+  }
+
+  // Adds one comment to a customer / vendor (POST /vendors/comments). The
+  // text is stored as plain text and the author is the signed-in user.
+  async addContactComment(req, res) {
+    try {
+      const { contact_id, organization_id } = req.query;
+      const admin_id = res.locals.user_id;
+      if (!organization_id || !contact_id) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "organization_id and contact_id are required." });
+      }
+      const description = plainText(req.body?.description, 2000);
+      if (!description) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "Enter a comment." });
+      }
+      const owner = await ownedContact(contact_id, admin_id, { _id: 1, deleted_at: 1 });
+      if (!owner || owner.deleted_at || String(owner.organization_id) !== String(organization_id)) {
+        return res.status(ST_CODES.NOT_FOUND).json({ status: false, message: `Contact not found for ID: ${contact_id}` });
+      }
+      const now = new Date();
+      const user = res.user || {};
+      const comment = {
+        comment_id: new mongoose.Types.ObjectId().toString(),
+        description,
+        commented_by_id: String(admin_id),
+        commented_by: plainText(user.name || user.username || user.companyName || user.email || "User", 200),
+        date: now.toISOString(),
+        date_formatted: now.toLocaleString("en-GB"),
+      };
+      await ContactCollection.updateOne({ _id: owner._id }, { $push: { comments: comment } });
+      return res.status(ST_CODES.CREATED).json({ status: true, message: "Comment added", data: comment });
+    } catch (error) {
+      console.error("addContactComment Error:", error.message);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ status: false, message: "Unable to add the comment. Please try again." });
+    }
+  }
+
   async makePrimary(req, res) {
     try {
       const { id } = req.params; // contact_person_id from URL
@@ -1864,9 +2014,19 @@ class ContactController {
         });
       }
 
+      // The customer must be one of the caller's, in that organisation, and
+      // the person must belong to that customer.
+      const owner = await ownedContact(contact_id, admin_id, { _id: 1 });
+      const person = owner && String(owner.organization_id) === String(organization_id)
+        ? await ContactPersonCollection.findOne({ contact_person_id: id, contact_id: owner.contact_id }).lean()
+        : null;
+      if (!person) {
+        return res.status(ST_CODES.NOT_FOUND).json({ status: false, message: "Contact person not found." });
+      }
+
       // Step 1: Find the current primary contact person for this contact
       const existingPrimary = await ContactPersonCollection.findOne({
-        contact_id: contact_id,
+        contact_id: owner.contact_id,
         is_primary_contact: true,
       });
 
@@ -1880,7 +2040,7 @@ class ContactController {
 
       // Step 3: Set the provided contact person as primary
       const updatedPrimary = await ContactPersonCollection.findOneAndUpdate(
-        { contact_person_id: id },
+        { contact_person_id: id, contact_id: owner.contact_id },
         { $set: { is_primary_contact: true } },
         { new: true }
       );
@@ -1899,7 +2059,7 @@ class ContactController {
         };
 
         await ContactCollection.findOneAndUpdate(
-          { contact_id: contact_id },
+          { contact_id: owner.contact_id, organization_id: owner.organization_id },
           { $set: contactPersonData }
         );
       }

@@ -35,6 +35,14 @@ services:
         sync: false
       - key: EMAIL_PASS
         sync: false
+      # Only for a mail server other than Gmail (Gmail needs just EMAIL_USER and
+      # EMAIL_PASS). Leave EMAIL_HOST unset to use Gmail.
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
       - key: IMAGEKIT_PUBLIC_KEY
         sync: false
       - key: IMAGEKIT_PRIVATE_KEY

@@ -19,13 +19,14 @@ router.delete("/invoices", authMiddleware, InvoiceController.deleteInvoice);
 // Generate a unique invoice ID
 router.get("/invoice-id", authMiddleware, InvoiceController.getUniqueId);
 // Ask AI for invoice-related queries
-router.post("/ask", authMiddleware, InvoiceController.askAI);
+router.post("/ask", authMiddleware, require("../controllers/assistantController").askAI);
 // Get invoice email details by invoice ID
 router.get("/invoice/:invoice_id/email", authMiddleware, InvoiceController.getInvoiceEmailDetails);
 // Change invoice status
 router.put("/invoices/status", authMiddleware, InvoiceController.updateInvoiceStatus);
 // Get invoice summary by customer ID
 router.get("/invoice/summary/list", authMiddleware, InvoiceController.getCustomerInvoiceSummary);
+router.get("/invoice/summary/income", authMiddleware, InvoiceController.getCustomerIncome);
 // Apply payment to invoice by customer and invoice ID
 router.put("/invoices/apply-invoice/payment", authMiddleware, InvoiceController.applyInvoice);
 

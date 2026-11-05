@@ -7,6 +7,7 @@ const JournalCollection = mongoose.model("Journal");
 const queryHelper = require("../helpers/query");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
+const { priceExpense, blankRefsToNull, PurchaseInputError } = require("../helpers/purchaseHelper");
 const userActivityHelper = require("../helpers/userActivityHelper");
 const moment = require("moment");
 
@@ -102,71 +103,37 @@ class RecurringExpenseController {
           "JL"
         );
 
-        // Calculate journal amount based on expense type
-        const journalAmt =
-          bData.type == "expense"
-            ? bData.tot_amount_with_tax
-            : bData.tot_amount;
-
-        // Create Journal Line Items based on expense type (following expense controller pattern)
-        let Journal_line_items_expense = [];
-
-        if (bData.type == "expense") {
-          Journal_line_items_expense = [
+        // The profile itself is only a template and has no journal. The
+        // first expense it creates posts a balanced journal of its own.
+        blankRefsToNull(bData, ["vendor_id", "customer_id"]);
+        const firstExpense = {
+          type: bData.type || "expense",
+          paid_through_account_id: bData.paid_through_account_id,
+          paid_through_account_name: bData.paid_through_account_name,
+          gst_treatment: bData.gst_treatment,
+          expense_tax_percent: bData.expense_tax_percent,
+          inclusive_exclusive: bData.inclusive_exclusive,
+          source_of_supply: bData.source_of_supply,
+          destination_of_supply: bData.destination_of_supply,
+          tot_amount: bData.tot_amount,
+          lineItems: [
             {
-              coa_account_id: bData?.paid_through_account_id,
-              coa_account_name:
-                bData?.paid_through_account_name || "Cash/Bank Account",
-              creditOrDebit: "Credit",
-              amount: bData.tot_amount_with_tax,
-              amount_formatted: formatCurrency(bData.tot_amount_with_tax),
+              line_item_id: "",
+              account_id: bData.account_id || bData.account_name || bData.expense_account || "AC_067",
+              account_name: bData.expense_account || bData.account_name || "Uncategorized",
+              description: bData.description,
+              amount: bData.amount || bData.tot_amount,
             },
-            // Add line items as debits
-            {
-              coa_account_id:
-                bData.account_id || (bData.expense_account ? "" : "AC_067"),
-              coa_account_name: bData.expense_account || "Uncategorized",
-              creditOrDebit: "Debit",
-              amount: bData.amount || bData.tot_amount || 0,
-              amount_formatted: formatCurrency(
-                bData.amount || bData.tot_amount || 0
-              ),
-            },
-          ];
+          ],
+        };
+        let expenseJournalLines;
+        try {
+          expenseJournalLines = priceExpense(firstExpense);
+        } catch (e) {
+          if (e instanceof PurchaseInputError) throw Object.assign(new Error(e.message), { badInput: true });
+          throw e;
         }
-
-        // Journal line items for mileage type
-        const Journal_line_items_mileage = [
-          {
-            coa_account_id: bData?.paid_through_account_id,
-            coa_account_name:
-              bData?.paid_through_account_name || "Cash/Bank Account",
-            creditOrDebit: "Credit",
-            amount: journalAmt,
-            amount_formatted: formatCurrency(journalAmt),
-          },
-          {
-            coa_account_id: "AC_051",
-            coa_account_name: "Travel Expense",
-            creditOrDebit: "Debit",
-            amount: journalAmt || 0,
-            amount_formatted: formatCurrency(journalAmt),
-          },
-        ];
-
-        // Add tax entry if exclusive and has tax
-        if (
-          bData.inclusive_exclusive === "exclusive" &&
-          bData.expense_tax_amount > 0
-        ) {
-          Journal_line_items_expense.push({
-            coa_account_id: "AC_011",
-            coa_account_name: "Input IGST",
-            creditOrDebit: "Debit",
-            amount: bData.expense_tax_amount,
-            amount_formatted: formatCurrency(bData.expense_tax_amount),
-          });
-        }
+        const journalAmt = firstExpense.tot_amount_with_tax;
 
         // Create journal data
         const journalData = {
@@ -179,12 +146,9 @@ class RecurringExpenseController {
           ),
           total_amount: journalAmt,
           total_amount_formatted: formatCurrency(journalAmt),
-          type: "Recurring Expense",
+          type: "Expense",
           vendor_name: bData?.vendor_Name || bData?.vendor_name || "",
-          line_items:
-            bData.type == "expense"
-              ? Journal_line_items_expense
-              : Journal_line_items_mileage,
+          line_items: expenseJournalLines,
         };
 
         console.log("The Journal Data for Recurring Expense:", journalData);
@@ -205,11 +169,11 @@ class RecurringExpenseController {
           form_status: 0,
           date: bData.start_date,
           invoice_number: bData.invoice_number,
-          tot_amount: bData.tot_amount,
-          tot_amount_with_tax: bData.tot_amount_with_tax,
+          tot_amount: firstExpense.tot_amount,
+          tot_amount_with_tax: firstExpense.tot_amount_with_tax,
           expense_type: bData.expense_type,
           inclusive_exclusive: bData.inclusive_exclusive,
-          base_amount: bData.base_amount,
+          base_amount: firstExpense.base_amount,
           destination_of_supply: bData.destination_of_supply,
           source_of_supply: bData.source_of_supply,
           hsn_code: bData.hsn_code,
@@ -218,15 +182,8 @@ class RecurringExpenseController {
           gst_no: bData.gst_no,
           reverse_charge: bData.reverse_charge,
           expense_tax_percent: bData.expense_tax_percent,
-          expense_tax_amount: bData.expense_tax_amount,
-          lineItems: [
-            {
-              line_item_id: "",
-              account_id: bData.account_name,
-              description: bData.description,
-              amount: bData.amount,
-            },
-          ],
+          expense_tax_amount: firstExpense.expense_tax_amount,
+          lineItems: firstExpense.lineItems,
           customer_id: bData.customer_id,
           currency_id: bData.currency_id,
           type: bData.type || "expense",
@@ -272,7 +229,6 @@ class RecurringExpenseController {
           unique_EX_id: expenseUniqueId,
           customer_id: bData.customer_id,
           recurring_expense_id: recurringExpenseUniqueId,
-          journal_id: journalUniqueId, // Link to journal entry
           item_list: [
             {
               expense_id: createExpense[0]._id,
@@ -373,6 +329,9 @@ class RecurringExpenseController {
         );
 
         // Handle specific error types
+        if (transactionError.badInput) {
+          return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: transactionError.message });
+        }
         if (transactionError.message === "Failed to create expense") {
           return res.status(ST_CODES.BAD_REQUEST).json({
             success: false,

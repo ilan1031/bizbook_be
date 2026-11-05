@@ -4,6 +4,33 @@ const ST_CODES = require("../helpers/statusCodeHelpers");
 const { POSTED_JOURNALS } = require("../helpers/accountingHelper");
 const MESSAGE = require("../helpers/messageHelpers");
 const JournalCollection = mongoose.model("Journal");
+const DEFAULT_ACCOUNTS = require("../helpers/chartOfAccounts.json");
+
+// Account types the reports know about, with their display names.
+const TYPE_LABELS = DEFAULT_ACCOUNTS.reduce((m, a) => {
+  if (a.account_type) m[a.account_type] = a.account_type_formatted;
+  return m;
+}, {});
+const MAX_ACCOUNT_NAME = 150;
+const nameKey = (v) => String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+const checkAccountName = (raw, accounts, exceptId) => {
+  const name = String(raw ?? "").trim().replace(/\s+/g, " ");
+  if (!name) return { error: "Account name is required" };
+  if (name.length > MAX_ACCOUNT_NAME) return { error: `Account name can be at most ${MAX_ACCOUNT_NAME} characters` };
+  const key = nameKey(name);
+  if ((accounts || []).some((a) => a.account_id !== exceptId && nameKey(a.account_name) === key)) {
+    return { error: "An account with this name already exists" };
+  }
+  return { name };
+};
+const hasTransactions = async (org_id, COA_ID) =>
+  Boolean(
+    await JournalCollection.exists({
+      organization_id: `${org_id}`,
+      "line_items.coa_account_id": `${COA_ID}`,
+    })
+  );
+
 class COA_Controller {
   async COA_list(req, res) {
     try {
@@ -214,10 +241,29 @@ class COA_Controller {
       let updateFields = req.body;
       const allowedFields = ["account_name","description", "account_code"];
       const sanitizedUpdateFields = Object.fromEntries(
-        Object.entries(updateFields).filter(([key]) =>
+        Object.entries(updateFields || {}).filter(([key]) =>
           allowedFields.includes(key)
         )
       );
+      const chart = await COA_collection.findOne(
+        { organization_id: org_id, admin_id: new mongoose.Types.ObjectId(admin_id) },
+        { chart_of_accounts: 1 }
+      ).lean();
+      const current = chart?.chart_of_accounts?.find((a) => a.account_id === `${COA_ID}`);
+      if (!current) {
+        return res.status(ST_CODES.NOT_FOUND).send({ status: false, message: "Account not found" });
+      }
+      if (sanitizedUpdateFields.account_name !== undefined) {
+        const checked = checkAccountName(sanitizedUpdateFields.account_name, chart.chart_of_accounts, current.account_id);
+        if (checked.error) return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: checked.error });
+        sanitizedUpdateFields.account_name = checked.name;
+      }
+      if (sanitizedUpdateFields.description !== undefined) {
+        sanitizedUpdateFields.description = String(sanitizedUpdateFields.description ?? "").slice(0, 500);
+      }
+      if (sanitizedUpdateFields.account_code !== undefined) {
+        sanitizedUpdateFields.account_code = String(sanitizedUpdateFields.account_code ?? "").trim().slice(0, 30);
+      }
       const result = await COA_collection.findOneAndUpdate(
         {
           organization_id: org_id,
@@ -255,7 +301,6 @@ class COA_Controller {
           },
         },
       ]);
-      console.log(getCOA,"getCOAgetCOAgetCOA");
       if (!getCOA.length) {
         return res.status(ST_CODES.OK).send({
           status: false,
@@ -370,18 +415,26 @@ class COA_Controller {
       }
 
       let coaData = getCOA_List.chart_of_accounts;
-      let lastAccId = coaData[coaData.length - 1].account_id;
-      let uniqueId = lastAccId.split("_")[1];
-      let nextUniqueNumber = Number(uniqueId) + 1;
-      let formattedNextId = String(nextUniqueNumber).padStart(3, "0");
+      const checked = checkAccountName(bData?.account_name, coaData);
+      if (checked.error) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: checked.error });
+      }
+      const accountType = String(bData?.account_type ?? "").trim();
+      const knownTypes = TYPE_LABELS;
+      if (!accountType || !knownTypes[accountType]) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "Choose a valid account type" });
+      }
+      // Next number after the highest existing one (ids are never reused).
+      const maxNumber = coaData.reduce((m, a) => Math.max(m, Number(String(a.account_id || "").split("_")[1]) || 0), 0);
+      let formattedNextId = String(maxNumber + 1).padStart(3, "0");
       let newAccountId = `AC_${formattedNextId}`;
       let newValue = {
         account_id: newAccountId,
-        account_name: bData.account_name,
-        account_code: bData.account_code,
-        account_type: bData.account_type,
-        account_type_formatted: bData.account_type_formatted,
-        description: bData.description,
+        account_name: checked.name,
+        account_code: String(bData.account_code ?? "").trim().slice(0, 30),
+        account_type: accountType,
+        account_type_formatted: knownTypes[accountType],
+        description: String(bData.description ?? "").slice(0, 500),
         is_user_created: true,
         is_system_account: false,
         is_active: true,
@@ -406,6 +459,7 @@ class COA_Controller {
       );
       return res.status(ST_CODES.OK).send({
         message: MESSAGE.UPDATED,
+        data: { account_id: newAccountId },
       });
     } catch (error) {
       console.error("add_COA error:", error);
@@ -421,10 +475,27 @@ class COA_Controller {
       let updateFields = req.body;
       const allowedFields = ["is_active"];
       const sanitizedUpdateFields = Object.fromEntries(
-        Object.entries(updateFields).filter(([key]) =>
+        Object.entries(updateFields || {}).filter(([key]) =>
           allowedFields.includes(key)
         )
       );
+      if (typeof sanitizedUpdateFields.is_active !== "boolean") {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "is_active must be true or false" });
+      }
+      const chart = await COA_collection.findOne(
+        { organization_id: org_id, admin_id: new mongoose.Types.ObjectId(admin_id) },
+        { chart_of_accounts: 1 }
+      ).lean();
+      const account = chart?.chart_of_accounts?.find((a) => a.account_id === `${COA_ID}`);
+      if (!account) {
+        return res.status(ST_CODES.NOT_FOUND).send({ status: false, message: "Account not found" });
+      }
+      if (sanitizedUpdateFields.is_active === false && account.is_system_account) {
+        return res.status(ST_CODES.BAD_REQUEST).send({
+          status: false,
+          message: "This is a system account used by BizBooks itself, so it can't be marked inactive.",
+        });
+      }
       const result = await COA_collection.findOneAndUpdate(
         {
           organization_id: org_id,
@@ -479,6 +550,45 @@ class COA_Controller {
       return res
         .status(ST_CODES.INTERNAL_SERVER_ERROR)
         .json({ message: MESSAGE.SOMETHING_WRONG });
+    }
+  }
+  // POST /COA/delete-coa?org_id=&COA_ID= - removes an account the user
+  // created, as long as nothing has been posted to it.
+  async deleteCOA(req, res) {
+    try {
+      const { org_id, COA_ID } = req.query;
+      const admin_id = res.locals.user_id;
+      if (!org_id || !COA_ID) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "org_id and COA_ID are required" });
+      }
+      const chart = await COA_collection.findOne(
+        { organization_id: org_id, admin_id: new mongoose.Types.ObjectId(admin_id) },
+        { chart_of_accounts: 1 }
+      ).lean();
+      const account = chart?.chart_of_accounts?.find((a) => a.account_id === `${COA_ID}`);
+      if (!account) {
+        return res.status(ST_CODES.NOT_FOUND).send({ status: false, message: "Account not found" });
+      }
+      if (account.is_system_account || account.is_user_created === false) {
+        return res.status(ST_CODES.BAD_REQUEST).send({
+          status: false,
+          message: "This is a default account used by BizBooks itself, so it can't be deleted.",
+        });
+      }
+      if (await hasTransactions(org_id, COA_ID)) {
+        return res.status(ST_CODES.BAD_REQUEST).send({
+          status: false,
+          message: "This account has transactions, so it can't be deleted. Mark it as inactive instead.",
+        });
+      }
+      await COA_collection.updateOne(
+        { _id: chart._id },
+        { $pull: { chart_of_accounts: { account_id: `${COA_ID}` } } }
+      );
+      return res.status(ST_CODES.OK).send({ status: true, message: "Account deleted" });
+    } catch (error) {
+      console.error("deleteCOA error:", error);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ status: false, message: MESSAGE.SOMETHING_WRONG });
     }
   }
   async getIndividual_COA_transaction(req, res) {
@@ -593,8 +703,11 @@ class COA_Controller {
                 {
                   $group: {
                     _id: null,
-                    total_amount: {
-                      $sum: "$amount",
+                    debit_total: {
+                      $sum: { $cond: [{ $eq: ["$creditOrDebit", "Debit"] }, "$amount", 0] },
+                    },
+                    credit_total: {
+                      $sum: { $cond: [{ $eq: ["$creditOrDebit", "Credit"] }, "$amount", 0] },
                     },
                   },
                 },
@@ -604,14 +717,8 @@ class COA_Controller {
           {
             $project: {
               transactions: 1,
-              total_amount: {
-                $ifNull: [
-                  {
-                    $arrayElemAt: ["$totals.total_amount", 0],
-                  },
-                  0,
-                ],
-              },
+              debit_total: { $ifNull: [{ $arrayElemAt: ["$totals.debit_total", 0] }, 0] },
+              credit_total: { $ifNull: [{ $arrayElemAt: ["$totals.credit_total", 0] }, 0] },
             },
           },
         ],
@@ -627,18 +734,24 @@ class COA_Controller {
           message: "There is no data on file...",
           transaction_history: [],
           total_amount: 0,
-          COA: {
-            account_type: "",
-            account_type_formatted: "",
-            description: "",
-          },
+          debit_total: 0,
+          credit_total: 0,
+          balance_type: "Dr",
+          COA: getCOA[0].chart_of_accounts,
         });
       }
+      // Closing balance: debits minus credits, shown as Dr or Cr.
+      const debitPaise = Math.round((getCOA_transaction[0].debit_total || 0) * 100);
+      const creditPaise = Math.round((getCOA_transaction[0].credit_total || 0) * 100);
+      const net = debitPaise - creditPaise;
       return res.status(ST_CODES.OK).send({
         status: true,
         message: MESSAGE.HISTORY_FETCHED,
         transaction_history: getCOA_transaction[0].transactions,
-        total_amount: getCOA_transaction[0].total_amount,
+        total_amount: Math.abs(net) / 100,
+        debit_total: debitPaise / 100,
+        credit_total: creditPaise / 100,
+        balance_type: net < 0 ? "Cr" : "Dr",
         COA: getCOA[0].chart_of_accounts,
       });
     } catch (error) {

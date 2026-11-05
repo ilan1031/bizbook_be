@@ -12,7 +12,14 @@ const SalesOrderCollection = require("../model/salesOrder");
 const InvoiceCollection = require("../model/invoice");
 const UserCollection = mongoose.model("user");
 const OrganizationCollection = require("../model/organizationSchema");
+const { validateSalesDocument } = require("../helpers/salesValidation");
+const { peekDocNumber, nextDocNumber } = require("../helpers/docNumber");
+const { plainText } = require("../helpers/sanitize");
+const docLocks = require("../helpers/docLocks");
+// Looked up when used: the Contact model is registered by the models loaded at start-up.
+const ContactCollection = { findOne: (...args) => mongoose.model("Contact").findOne(...args) };
 const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
+const stockHelper = require("../helpers/stockHelper");
 const { priceSalesDocument, loadTaxContext } = require("../helpers/gstHelper");
 
 // Fields priceSalesDocument sets.
@@ -67,6 +74,31 @@ const formatCurrency = (amount) => {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+};
+
+// ---- Customer-portal helpers ----------------------------------------------
+// The portal login's own customer and organisation (see userMiddleware).
+const portalScope = (res) =>
+  res.locals.role === "client" && res.locals.portal?.customer_id && res.locals.portal?.organization_id ? res.locals.portal : null;
+const portalOnly = (res) =>
+  res.status(403).json({ code: "FORBIDDEN", message: "This is only available to customer-portal users.", success: false });
+// Quotes a portal customer may see: their own, in their organisation, not drafts.
+const portalQuoteFilter = (portal) => ({
+  organization_id: portal.organization_id,
+  customer_id: portal.customer_id,
+  deleted_at: null,
+  status: { $nin: ["draft", "pending_approval", "approved"] },
+});
+const portalStatus = (q) => {
+  if (q.status === "sent") return { status: "open", status_formatted: "Open" };
+  if (q.status === "invoiced") return { status: "accepted", status_formatted: "Accepted" };
+  return { status: q.status || "", status_formatted: q.status_formatted || "" };
+};
+const quoteNumber = (q) => q.estimate_number || (q.quote_id ? `QT-${q.quote_id}` : "");
+const formatDay = (v) => {
+  if (!v) return "";
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleDateString("en-GB");
 };
 
 class EstimateController {
@@ -126,8 +158,12 @@ class EstimateController {
       if (!customer_id || !date || !line_items || !line_items.length) {
         return res.status(400).json({
           status: false,
-          message: "Missing required fields",
+          message: !customer_id ? "Select a customer for this quote." : !date ? "Enter the quote date." : "Add at least one item to the quote.",
         });
+      }
+      const invalid = validateSalesDocument(req.body, { label: "quote", dueField: "expiry_date", dueLabel: "Expiry date" });
+      if (invalid) {
+        return res.status(400).json({ status: false, message: invalid });
       }
 
       let quoteUniqueId = await commonHelper.generateUniqueId(
@@ -135,7 +171,7 @@ class EstimateController {
         "quote_id"
       );
 
-      const processedLineItems = line_items.map((item) => ({
+      const processedLineItems = req.body.line_items.map((item) => ({
         item_id: item.item_id || null,
         name: item.name,
         description: item.description || "",
@@ -147,6 +183,7 @@ class EstimateController {
         item_total: parseFloat(item.item_total) || 0,
         item_total_formatted: `₹${parseFloat(item.item_total).toFixed(2)}` || 0,
         unit: item.unit || "",
+        hsn_or_sac: item.hsn_or_sac || "",
       }));
 
       // Create system comment for quote creation
@@ -171,7 +208,9 @@ class EstimateController {
         organization_id,
         quote_id: quoteUniqueId,
         customer_id,
-        estimate_number,
+        estimate_number:
+          String(estimate_number || "").trim() ||
+          (await nextDocNumber(EstimateCollection, "estimate_number", organization_id, "QT")),
         customer_name,
         date,
         date_formatted,
@@ -710,10 +749,19 @@ class EstimateController {
         });
       }
 
+      const lockReason = docLocks.quoteStatusBlock(estimate, updateData.status);
+      if (lockReason) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: lockReason });
+      }
+
       // Re-price the quote as it will be after this edit.
       delete updateData.quote_id;
       delete updateData.organization_id;
       const merged = { ...estimate.toObject(), ...updateData };
+      const invalid = validateSalesDocument(merged, { label: "quote", dueField: "expiry_date", dueLabel: "Expiry date" });
+      if (invalid) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: invalid });
+      }
       priceSalesDocument(merged, await loadTaxContext(organization_id, merged));
       for (const field of PRICED_FIELDS) updateData[field] = merged[field];
 
@@ -768,6 +816,11 @@ class EstimateController {
           status: false,
           message: "Estimate not found for this organization",
         });
+      }
+
+      const lockReason = docLocks.quoteDeleteBlock(estimate);
+      if (lockReason) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: lockReason });
       }
 
       // Perform soft delete by setting deleted_at timestamp
@@ -876,6 +929,7 @@ class EstimateController {
       const invoicePayload = await createInvoiceData(req, invoiceData);
       const createdInvoice = await new InvoiceCollection(invoicePayload).save();
       await postInvoiceJournal(createdInvoice);
+      await stockHelper.syncInvoice(createdInvoice);
 
       const invoiceMongoId = createdInvoice.invoice_id;
 
@@ -1089,12 +1143,10 @@ class EstimateController {
   
   async getUniqueId(req, res) {
     try {
-      let estimateId = await commonHelper.generateUniqueId(
-        EstimateCollection,
-        "estimate_number",
-        6,
-        "QT"
-      );
+      const orgId = req.query.organization_id;
+      let estimateId = orgId
+        ? await peekDocNumber(EstimateCollection, "estimate_number", orgId, "QT")
+        : await commonHelper.generateUniqueId(EstimateCollection, "estimate_number", 6, "QT");
       res.status(ST_CODES.OK).send({
         status: true,
         message: "Estimate Id has been generated",
@@ -1464,7 +1516,9 @@ class EstimateController {
 
   async updateEstimateStatus(req, res) {
     try {
-      const { organization_id, quote_id } = req.query;
+      // PATCH /estimates/:quote_id/status passes the quote in the path; PUT /estimate/status in the query.
+      const organization_id = req.query.organization_id;
+      const quote_id = req.params?.quote_id || req.query.quote_id;
       const { status, status_formatted } = req.body;
       // const admin_id = res.locals.user_id;
 
@@ -1488,6 +1542,13 @@ class EstimateController {
           message:
             "Invalid status value. Must be one of: draft, sent, accepted, declined",
         });
+      }
+
+      // A quote converted to an invoice or sales order keeps its status.
+      const linked = await EstimateCollection.findOne({ quote_id, organization_id, deleted_at: null }, { status: 1, invoice_ids: 1, invoices: 1, salesorder_ids: 1, salesorders: 1 }).lean();
+      const lockReason = linked && docLocks.quoteStatusBlock(linked, status);
+      if (lockReason) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: lockReason });
       }
 
       // Find and update the sales order
@@ -1532,55 +1593,23 @@ class EstimateController {
     }
   }
 
+  // ---- Customer portal (portal tokens only) --------------------------------
+  // The customer and organisation always come from the portal login
+  // (res.locals.portal, set by the auth middleware), never from the request,
+  // and a portal user never sees draft quotes.
+
   //For Customer Portal get Quotes for particular Customer
   async getCustomerEstimates(req, res) {
     try {
-      let {
-        page = 1,
-        per_page = 10,
-        limit = 10,
-        filter = "",
-        organization_id,
-        customer_id,
-      } = req.query;
+      const portal = portalScope(res);
+      if (!portal) return portalOnly(res);
+      let { page = 1, per_page = 10, limit = 10, filter = "" } = req.query;
 
-      const admin_id = res.locals.user_id;
+      page = Math.max(parseInt(page, 10) || 1, 1);
+      limit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 200);
 
-      if (!admin_id || !organization_id || !customer_id) {
-        return res.status(400).json({
-          code: 1,
-          message:
-            "Missing required parameters: organization_id and admin_id are mandatory.",
-        });
-      }
-
-      // Convert types
-      page = parseInt(page, 10);
-      limit = parseInt(limit, 10);
-
-      // Base query
-      const query = {
-        organization_id: organization_id,
-        deleted_at: null,
-        customer_id: customer_id,
-      };
-
-      // Apply status-based filters
-      switch (filter) {
-        case "open":
-          query.status = "sent";
-          break;
-        case "all":
-          query.status = { $ne: "draft" };
-        case "":
-          // No additional filtering for 'All' or empty filter
-          break;
-        default:
-          // Handle unknown filter or ignore
-          break;
-      }
-
-      const sort = {};
+      const query = { ...portalQuoteFilter(portal) };
+      if (filter === "open") query.status = "sent";
 
       const projection = {
         _id: 1,
@@ -1605,78 +1634,38 @@ class EstimateController {
         expiry_date_formatted: 1,
       };
 
-      const results = await queryHelper.findData(
-        EstimateCollection,
-        query,
-        projection,
-        sort,
-        limit,
-        page
-      );
-
-      const estimates = results?.status ? results.msg : [];
-      const totalCount = await queryHelper.countDocuments(
-        EstimateCollection,
-        query
-      );
+      const [estimates, totalCount, contact] = await Promise.all([
+        EstimateCollection.find(query, projection).sort({ _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+        EstimateCollection.countDocuments(query),
+        ContactCollection.findOne({ contact_id: portal.customer_id, organization_id: portal.organization_id }, { contact_name: 1 }).lean(),
+      ]);
       const hasMorePage = page * limit < totalCount;
 
-      const transformedEstimates = await Promise.all(
-        estimates.map(async (estimate) => {
-          const estimateData = estimate._doc || estimate;
-          let customer_name = estimateData.customer_name || "";
-          let company_name = "";
-
-          if (estimateData.customer_id) {
-            try {
-              const contactResponse = await apiHandler.getContactInformation(
-                estimateData.customer_id,
-                organization_id,
-                req.headers.authorization
-              );
-              if (contactResponse?.data?.data) {
-                customer_name =
-                  contactResponse.data.data.contact_name || customer_name;
-                company_name = contactResponse.data.data.company_name || "";
-              }
-            } catch (error) {
-              console.error("Error fetching customer info:", error.message);
-            }
-          }
-          let status = estimateData.status,
-            status_formatted = estimateData.status_formatted;
-          if (estimateData.status === "sent") {
-            status = "open";
-            status_formatted = "Open";
-          } else if (estimateData.status === "invoiced") {
-            status = "accepted";
-            status_formatted = "Accepted";
-          }
-
-          return {
-            _id: estimateData._id,
-            quote_id: estimateData.quote_id || "",
-            customer_id: estimateData.customer_id || "",
-            customer_name,
-            status: status || "",
-            status_formatted: status_formatted || "",
-            estimate_number: estimateData.estimate_number || "",
-            reference_number: estimateData.reference_number || "",
-            date: estimateData.date || "",
-            date_formatted: estimateData.date_formatted || "",
-            currency_code: estimateData.currency_code || "",
-            total: estimateData.total || 0,
-            total_formatted: estimateData.total_formatted || "",
-            created_time: estimateData.created_time || "",
-            accepted_date: estimateData.accepted_date || "",
-            accepted_date_formatted: estimateData.accepted_date_formatted || "",
-            declined_date: estimateData.declined_date || "",
-            declined_date_formatted: estimateData.declined_date_formatted || "",
-            expiry_date: estimateData.expiry_date || "",
-            expiry_date_formatted: estimateData.expiry_date_formatted || "",
-          };
-        })
-      );
+      const transformedEstimates = estimates.map((estimateData) => {
+        const { status, status_formatted } = portalStatus(estimateData);
+        return {
+          _id: estimateData._id,
+          quote_id: estimateData.quote_id || "",
+          customer_id: estimateData.customer_id || "",
+          customer_name: contact?.contact_name || estimateData.customer_name || "",
+          status,
+          status_formatted,
+          estimate_number: quoteNumber(estimateData),
+          reference_number: estimateData.reference_number || "",
+          date: estimateData.date || "",
+          date_formatted: estimateData.date_formatted || formatDay(estimateData.date),
+          currency_code: estimateData.currency_code || "",
+          total: estimateData.total || 0,
+          total_formatted: estimateData.total_formatted || formatCurrency(estimateData.total),
+          created_time: estimateData.created_time || "",
+          accepted_date: estimateData.accepted_date || "",
+          accepted_date_formatted: estimateData.accepted_date_formatted || "",
+          declined_date: estimateData.declined_date || "",
+          declined_date_formatted: estimateData.declined_date_formatted || "",
+          expiry_date: estimateData.expiry_date || "",
+          expiry_date_formatted: estimateData.expiry_date_formatted || formatDay(estimateData.expiry_date),
+        };
+      });
 
       return res.status(200).json({
         code: 0,
@@ -1692,7 +1681,7 @@ class EstimateController {
         },
       });
     } catch (error) {
-      console.error("getQuotes Error:", error.message);
+      console.error("getCustomerEstimates Error:", error.message);
       return res.status(500).json({
         code: 1,
         message: "Internal Server Error: Unable to fetch quotes.",
@@ -1703,11 +1692,13 @@ class EstimateController {
   //For Customer Accept or Declined the quote
   async acceptOrDeclined(req, res) {
     try {
-      const { customer_id, quote_id, organization_id } = req.query;
+      const portal = portalScope(res);
+      if (!portal) return portalOnly(res);
+      const quote_id = req.query.quote_id || req.body?.quote_id;
       const { status } = req.params;
-      const { description } = req.body;
+      const description = plainText(req.body?.description, 2000);
 
-      if (!organization_id || !quote_id || !status || !customer_id) {
+      if (!quote_id || !status) {
         return res.status(ST_CODES.BAD_REQUEST).send({
           status: false,
           message: "Missing required parameters",
@@ -1727,28 +1718,31 @@ class EstimateController {
       if (lowerStatus === "declined" && !description) {
         return res.status(ST_CODES.BAD_REQUEST).send({
           status: false,
-          message: "Missing description when status is declined",
+          message: "Please tell us why you are declining the quote.",
         });
       }
 
-      const estimate = await EstimateCollection.findOne({
-        quote_id,
-        organization_id,
-        deleted_at: null,
-      });
+      const scope = { ...portalQuoteFilter(portal), quote_id };
+      const estimate = await EstimateCollection.findOne(scope);
 
       if (!estimate) {
         return res.status(ST_CODES.NOT_FOUND).send({
           status: false,
-          message: "Estimate not found or unauthorized access",
+          message: "Quote not found.",
         });
       }
 
-      if (estimate.status === "invoiced") {
-        return res.status(ST_CODES.NOT_FOUND).send({
+      if (!["sent", "accepted", "declined"].includes(estimate.status)) {
+        return res.status(ST_CODES.BAD_REQUEST).send({
           status: false,
-          message: "Invoiced Data should not be accept/decline the estimate",
+          message:
+            estimate.status === "invoiced"
+              ? "This quote has already been invoiced and can't be accepted or declined."
+              : `This quote is ${estimate.status_formatted || estimate.status} and can't be ${lowerStatus}.`,
         });
+      }
+      if (estimate.status === lowerStatus) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: `This quote is already ${lowerStatus}.` });
       }
 
       const now = new Date();
@@ -1769,43 +1763,18 @@ class EstimateController {
         updateFields.declined_date_formatted = formattedDate;
       }
 
-      const commentsToAdd = [];
-
-      // Add system comment using createComments
-      commentsToAdd.push(
-        createComments(
-          "Arul", // system user name
-          "", // no ID
-          "system", // system comment
-          quote_id,
-          `Quote ${lowerStatus}`,
-          "Updated", // operation_type
-          "", // transaction_id
-          "estimate" // transaction_type
-        )
-      );
+      const customerName = estimate.customer_name || "Customer";
+      const commentsToAdd = [
+        createComments(customerName, portal.customer_id, "system", quote_id, `Quote ${lowerStatus} by the customer`, "Updated", "", "estimate"),
+      ];
 
       // If declined, add client comment
       if (lowerStatus === "declined") {
-        const customerName = estimate.customer_name || "Customer";
-
-        commentsToAdd.push(
-          createComments(
-            customerName, // commented_by
-            customer_id, // commented_by_id
-            "client", // comment_type
-            quote_id,
-            description // user-provided description
-          )
-        );
+        commentsToAdd.push(createComments(customerName, portal.customer_id, "client", quote_id, description));
       }
 
       const updatedEstimate = await EstimateCollection.findOneAndUpdate(
-        {
-          quote_id,
-          organization_id,
-          deleted_at: null,
-        },
+        scope,
         {
           $set: updateFields,
           $push: { comments: { $each: commentsToAdd } },
@@ -1816,13 +1785,13 @@ class EstimateController {
       if (!updatedEstimate) {
         return res.status(ST_CODES.NOT_FOUND).send({
           status: false,
-          message: "Estimate not found or unauthorized access",
+          message: "Quote not found.",
         });
       }
 
       return res.status(ST_CODES.OK).send({
         status: true,
-        message: `Estimate status has been ${lowerStatus}`,
+        message: `Quote ${lowerStatus}.`,
         data: {
           quote_id: updatedEstimate.quote_id,
           status: updatedEstimate.status,
@@ -1838,66 +1807,42 @@ class EstimateController {
     }
   }
 
-  //For Customer/Admin Comments & History
+  //For Customer Comments on a quote (portal)
   async comments(req, res) {
     try {
-      const { customer_id, organization_id } = req.query;
+      const portal = portalScope(res);
+      if (!portal) return portalOnly(res);
       const { quote_id } = req.params;
-      const { description } = req.body;
+      const description = plainText(req.body?.description, 2000);
 
-      if (!organization_id || !quote_id || !customer_id) {
+      if (!quote_id) {
         return res.status(ST_CODES.BAD_REQUEST).send({
           status: false,
           message: "Missing required parameters",
         });
       }
+      if (!description) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "Enter a comment." });
+      }
 
-      // Fetch estimate to get customer name
-      const estimate = await EstimateCollection.findOne({
-        quote_id,
-        organization_id,
-        deleted_at: null,
-      });
+      const scope = { ...portalQuoteFilter(portal), quote_id };
+      const estimate = await EstimateCollection.findOne(scope, { customer_name: 1 }).lean();
 
       if (!estimate) {
         return res.status(ST_CODES.NOT_FOUND).send({
           status: false,
-          message: "Estimate not found or unauthorized access",
+          message: "Quote not found.",
         });
       }
 
-      const commented_by = estimate.customer_name || "Customer"; // fallback if missing
-      const commented_by_id = customer_id;
-      const id = quote_id;
-      const comment_type = "client";
+      const comment = createComments(estimate.customer_name || "Customer", portal.customer_id, "client", quote_id, description, "", "", "");
 
-      const comments = createComments(
-        commented_by,
-        commented_by_id,
-        comment_type,
-        id,
-        description,
-        "",
-        "",
-        ""
-      );
-
-      const updatedEstimateComment = await EstimateCollection.findOneAndUpdate(
-        {
-          quote_id,
-          organization_id,
-          deleted_at: null,
-        },
-        {
-          $push: { comments: comments },
-        },
-        { new: true }
-      );
+      const updatedEstimateComment = await EstimateCollection.findOneAndUpdate(scope, { $push: { comments: comment } }, { new: true });
 
       res.status(ST_CODES.OK).send({
         status: true,
         message: "Comment has been added",
-        data: updatedEstimateComment.comments,
+        data: (updatedEstimateComment?.comments || []).filter((c) => c.comment_type === "client"),
       });
     } catch (error) {
       console.error("comments Error:", error.message);
@@ -1910,29 +1855,21 @@ class EstimateController {
 
   async getCustomerEstimate(req, res) {
     try {
-      let { organization_id, customer_id } = req.query;
+      const portal = portalScope(res);
+      if (!portal) return portalOnly(res);
       const { quote_id } = req.params;
-      const admin_id = res.locals.user_id;
 
-      if (!admin_id || !organization_id || !customer_id || !quote_id) {
-        return res.status(400).json({
-          code: 1,
-          message:
-            "Missing required parameters: organization_id and admin_id are mandatory.",
-        });
+      if (!quote_id) {
+        return res.status(400).json({ code: 1, message: "Missing required parameter: quote_id." });
       }
 
-      const estimate = await EstimateCollection.findOne({
-        organization_id,
-        quote_id,
-        deleted_at: null,
-        customer_id,
-      }).lean();
+      const scope = { ...portalQuoteFilter(portal), quote_id };
+      const estimate = await EstimateCollection.findOne(scope).lean();
 
       if (!estimate) {
         return res.status(404).json({
           status: false,
-          message: "Estimate not found",
+          message: "Quote not found.",
         });
       }
 
@@ -1949,13 +1886,7 @@ class EstimateController {
       // Update only if not already viewed
       if (!estimate.is_viewed_by_client) {
         await EstimateCollection.updateOne(
-          {
-            organization_id,
-            quote_id,
-            deleted_at: null,
-            customer_id,
-            is_viewed_by_client: false,
-          },
+          { ...scope, is_viewed_by_client: { $ne: true } },
           {
             $set: {
               is_viewed_by_client: true,
@@ -1966,49 +1897,47 @@ class EstimateController {
         );
       }
 
-      const estimateData = estimate._doc || estimate;
-      let customer_name = estimateData.customer_name || "";
-      let company_name = "";
+      // The seller, the customer and the organisation's quote template, so
+      // the portal shows the same document the business prints.
+      const DocTemplate = mongoose.models.doc_template;
+      const [org, contact, template] = await Promise.all([
+        OrganizationCollection.findOne(
+          { organization_id: portal.organization_id },
+          { org_name: 1, first_street: 1, second_street: 1, city: 1, state: 1, zip: 1, country: 1, phone: 1, email: 1, gst_in: 1, logo: 1 }
+        ).lean(),
+        ContactCollection.findOne(
+          { contact_id: portal.customer_id, organization_id: portal.organization_id },
+          { contact_name: 1, company_name: 1, billing_address: 1, shipping_address: 1, gst_no: 1, phone: 1, mobile: 1 }
+        ).lean(),
+        DocTemplate ? DocTemplate.findOne({ organization_id: portal.organization_id, type: "quote" }, { settings: 1 }).lean() : null,
+      ]);
 
-      if (estimateData.customer_id) {
-        try {
-          const contactResponse = await apiHandler.getContactInformation(
-            estimateData.customer_id,
-            organization_id,
-            req.headers.authorization
-          );
-          if (contactResponse?.data?.data) {
-            customer_name =
-              contactResponse.data.data.contact_name || customer_name;
-            company_name = contactResponse.data.data.company_name || "";
-          }
-        } catch (error) {
-          console.error("Error fetching customer info:", error.message);
-        }
-      }
-
-      let status = estimateData.status;
-      let status_formatted = estimateData.status_formatted;
-
-      if (status === "sent") {
-        status = "open";
-        status_formatted = "Open";
-      } else if (status === "invoiced") {
-        status = "accepted";
-        status_formatted = "Accepted";
-      }
-
-      estimateData.customer_name = customer_name;
-      estimateData.status = status;
-      estimateData.status_formatted = status_formatted;
+      const { status, status_formatted } = portalStatus(estimate);
+      const estimateData = {
+        ...estimate,
+        estimate_number: quoteNumber(estimate),
+        date_formatted: estimate.date_formatted || formatDay(estimate.date),
+        expiry_date_formatted: estimate.expiry_date_formatted || formatDay(estimate.expiry_date),
+        customer_name: contact?.contact_name || estimate.customer_name || "",
+        status,
+        status_formatted,
+        invoices: estimate.invoices || [],
+        // Only the customer's own conversation, not internal history.
+        comments: (estimate.comments || []).filter((c) => c.comment_type === "client"),
+      };
+      delete estimateData.admin_id;
+      delete estimateData.created_by;
 
       return res.status(200).json({
         status: true,
         message: "Quote fetched successfully",
         data: estimateData,
+        organization: org || {},
+        customer: contact || {},
+        template: template?.settings || null,
       });
     } catch (error) {
-      console.error("getQuotes Error:", error.message);
+      console.error("getCustomerEstimate Error:", error.message);
       return res.status(500).json({
         code: 1,
         message: "Internal Server Error: Unable to fetch quotes.",

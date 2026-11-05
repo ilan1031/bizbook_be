@@ -1,5 +1,7 @@
 const InvoiceCollection = require("../model/invoice"); // Adjust path
+const { nextDocNumber, nextGlobalId } = require("./docNumber");
 const commonHelper = require("../helpers/commonHelpers"); // Your existing helper
+const stockHelper = require("./stockHelper");
 const mongoose = require("mongoose");
 const { postingStatusFor } = require("./accountingHelper");
 const { priceSalesDocument, loadTaxContext, invoiceJournalLines } = require("./gstHelper");
@@ -56,6 +58,8 @@ exports.postInvoiceJournal = async (invoice) => {
   });
   await InvoiceModel.updateOne({ _id: invoice._id }, { $set: { ...set, journal_id } });
   invoice.journal_id = journal_id;
+  // Stock already moved for this invoice: its cost goes into the new journal.
+  await stockHelper.applyStockCost("invoice", invoice._id, invoice.organization_id);
   return journal;
 };
 
@@ -70,20 +74,12 @@ exports.createInvoiceData = async (req, rawData) => {
   }
 
   // Invoice ID
-  bData.invoice_id = await commonHelper.generateUniqueId(
-    InvoiceCollection,
-    "invoice_id",
-    6
-  );
+  // Never reused, even after an invoice is deleted.
+  bData.invoice_id = await nextGlobalId(InvoiceCollection, "invoice_id", 6);
 
-  // Invoice number
+  // Invoice number: per organisation (same sequence as a new invoice).
   if (!bData.invoice_number) {
-    bData.invoice_number = await commonHelper.generateUniqueId(
-      InvoiceCollection,
-      "invoice_number",
-      6,
-      "INV"
-    );
+    bData.invoice_number = await nextDocNumber(InvoiceCollection, "invoice_number", organization_id, "INV");
   } else {
     const trimmed = bData.invoice_number.trim();
     if (!trimmed.startsWith("INV-")) {
@@ -98,8 +94,15 @@ exports.createInvoiceData = async (req, rawData) => {
   bData.admin_id = bData.admin_id || userId;
   bData.created_by_id = userId;
   bData.last_modified_by_id = userId;
+  // The person who signed in (a team member acts in the admin's books).
+  bData.created_by_actor_id = req.res?.locals?.actor_id || userId;
+  bData.created_by_actor_name = req.res?.locals?.actor_name || "";
+  bData.last_modified_by_actor_id = bData.created_by_actor_id;
+  bData.last_modified_by_actor_name = bData.created_by_actor_name;
   bData.status = bData.status || "draft";
   bData.status_formatted = bData.status_formatted || "Draft";
+  // Saved as sent (not draft): it is issued from the start.
+  if (String(bData.status).toLowerCase() !== "draft" && String(bData.status).toLowerCase() !== "void") bData.issued_at = new Date();
   bData.organization_id = organization_id;
 
   // Dates

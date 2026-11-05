@@ -47,6 +47,11 @@ router.get("/vendors", authMiddleware, ContactController.getFilteredVendors);
 // -------------------- Vendor Comments --------------------
 // Get comments for vendors
 router.get("/vendors/comments", authMiddleware, ContactController.getContactComments);
+// Add one comment to a customer / vendor
+router.post("/vendors/comments", authMiddleware, ContactController.addContactComment);
+router.post("/contact/comments", authMiddleware, ContactController.addContactComment);
+// Emails sent to a customer / vendor (Mails tab)
+router.get("/contacts/emails", authMiddleware, ContactController.getContactEmails);
 
 // -------------------- Contact Person Primary --------------------
 // Make a contact person primary

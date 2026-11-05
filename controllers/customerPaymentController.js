@@ -319,11 +319,13 @@ class CustomerPaymentController {
       }
 
       // Find payment record by payment_id
+      // Scoped to the organisation (the middleware already checked that the
+      // caller owns organization_id), so another business's payment is a 404.
       let paymentData = await CustomerPaymentCollection.findOne({
         payment_id: payment_id,
+        organization_id: String(organization_id),
         deleted_at: null,
       });
-      console.log(paymentData, "paymentData");
       if (!paymentData) {
         return res
           .status(ST_CODES.NOT_FOUND)
@@ -1389,11 +1391,13 @@ class CustomerPaymentController {
   // get invoice unique Id
   async getUniqueId(req, res) {
     try {
+      // Same generator (and prefix) the save uses, so the number shown in
+      // the form is the one the payment gets.
       let paymentNumber = await commonHelper.generateUniqueId(
         CustomerPaymentCollection,
-        "payment_number",
+        "payment_id",
         6,
-        "CP"
+        "PR"
       );
       res.status(ST_CODES.OK).send({
         status: true,
@@ -1629,6 +1633,7 @@ class CustomerPaymentController {
 
       Object.assign(bData, {
         payment_id: paymentId,
+        payment_number: paymentId,
         organization_id: String(organization_id),
         journal_id,
         created_by: res.locals.user_id,

@@ -2,15 +2,17 @@ const mongoose = require("mongoose");
 const UsersCollection = mongoose.model("user");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const { CATALOG, sanitizePermissions } = require("../helpers/rbac");
-const { isMailConfigured, sendMail } = require("../helpers/mailer");
+const { isMailConfigured, sendMail, getMailHealth, mailTarget } = require("../helpers/mailer");
 const { sendApprovedEmail } = require("../helpers/accountEmails");
 const { sanitizeLimits, usageFor } = require("../helpers/usageLimits");
+const { OTP_TTL_MS, ISSUE_WINDOW_MS, ISSUE_MAX, AUDIT_KEEP, newCode, hashOtp } = require("../helpers/signInCodes");
 
 const STATUSES = ["pending", "active", "inactive"];
 
-// Fields the admin screen shows; never the password or OTP hash.
+// Fields the admin screen shows; never the password or OTP hash (sign_in_code_log
+// has who issued or used a sign-in code, and when, but no code).
 const PUBLIC_FIELDS =
-  "email mobile company_name country state role status permissions limits ip_limit allowed_ips last_login_at approved_at createdAt";
+  "email mobile company_name country state role status permissions limits ip_limit allowed_ips last_login_at approved_at createdAt sign_in_code_log";
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(String(id));
 
@@ -43,7 +45,13 @@ class AdminController {
         data: users,
         counts: Object.fromEntries(counts.map((c) => [c._id || "pending", c.n])),
         catalog: CATALOG,
-        email: { configured: isMailConfigured(), from: isMailConfigured() ? process.env.EMAIL_USER : "" },
+        email: {
+          configured: isMailConfigured(),
+          from: isMailConfigured() ? process.env.EMAIL_USER : "",
+          target: mailTarget(),
+          // The last real send: { ok, error, checked_at }. null until mail is tried.
+          health: await getMailHealth(),
+        },
       });
     } catch (error) {
       console.log("admin listUsers error", error);
@@ -134,6 +142,71 @@ class AdminController {
     }
   }
 
+  // POST /admin/users/:id/sign-in-code: a one-time code for that user's next
+  // sign-in, shown once here. It is stored hashed, expires like an emailed code,
+  // works once, and is recorded (who issued it, and when). No email is sent.
+  async issueSignInCode(req, res) {
+    res.set("Cache-Control", "no-store");
+    try {
+      const { id } = req.params;
+      if (!isValidId(id)) return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "Invalid user id" });
+      const user = await UsersCollection.findById(id).select("email status role login_otp sign_in_code_log").lean();
+      if (!user) return res.status(ST_CODES.NOT_FOUND).json({ status: false, message: "User not found" });
+      if (user.status !== "active" && user.role !== "superadmin") {
+        return res.status(409).json({
+          status: false,
+          code: "NOT_ACTIVE",
+          message: "Approve this account before giving it a sign-in code.",
+        });
+      }
+
+      const now = new Date();
+      const issuedRecently = (user.sign_in_code_log || []).filter(
+        (e) => e.action === "issued" && now - new Date(e.at) < ISSUE_WINDOW_MS
+      ).length;
+      if (issuedRecently >= ISSUE_MAX) {
+        return res.status(429).json({
+          status: false,
+          code: "RATE_LIMITED",
+          message: "Too many sign-in codes for this account. Try again in a few minutes.",
+        });
+      }
+
+      const actorId = res.locals.actor_id;
+      const actorEmail = res.user?.email || "";
+      const code = newCode();
+      const expires_at = new Date(now.getTime() + OTP_TTL_MS);
+      // Replaces any code already pending (emailed or issued before).
+      await UsersCollection.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            login_otp: {
+              code_hash: hashOtp(code),
+              expires_at,
+              attempts: 0,
+              source: "admin",
+              issued_by: actorId,
+              issued_at: now,
+            },
+          },
+          $push: { sign_in_code_log: { $each: [{ action: "issued", at: now, by: actorId, by_email: actorEmail }], $slice: -AUDIT_KEEP } },
+        }
+      );
+      // The audit line names the account and the issuer, never the code.
+      console.log(`[audit] sign-in code issued for ${user.email} by ${actorEmail} at ${now.toISOString()}`);
+
+      res.status(ST_CODES.CREATED).json({
+        status: true,
+        data: { code, expires_at, email: user.email },
+        message: "Sign-in code created. Share it with the user now: it won't be shown again.",
+      });
+    } catch (error) {
+      console.log("admin issueSignInCode error", error.message);
+      res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ status: false, message: "Couldn't create a sign-in code" });
+    }
+  }
+
   // Sends a test email, so the superadmin can check the mailbox settings.
   async testEmail(req, res) {
     const to = String(req.body?.email || "").trim();
@@ -152,7 +225,7 @@ class AdminController {
         ? result.channel === "console"
           ? "Email isn't set up yet: the test was written to the server log"
           : `Test email sent to ${to}`
-        : result.error,
+        : `Couldn't send the test email through ${result.target || mailTarget()}: ${result.error}. Check EMAIL_HOST, EMAIL_PORT, EMAIL_USER and EMAIL_PASS.`,
     });
   }
 }

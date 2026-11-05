@@ -88,4 +88,7 @@ const ChartOfAccountSchema = new mongoose.Schema(
   }
 );
 
+// Every report loads an organisation's chart of accounts by org and admin.
+ChartOfAccountSchema.index({ organization_id: 1, admin_id: 1 });
+
 module.exports = mongoose.model("Chart_of_account", ChartOfAccountSchema);

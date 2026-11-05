@@ -51,12 +51,27 @@ const ItemSchema = new mongoose.Schema(
     can_be_sold: Boolean,
     can_be_purchased: Boolean,
     track_inventory: Boolean,
+    // Inventory: valuation ("average" by default, "fifo"), reorder level, and
+    // the balances the stock ledger keeps up to date (see helpers/stockHelper).
+    valuation_method: String,
+    // The Inventory Account picked on the item form, stored as chosen.
+    inventory_account_id: { type: String, default: "" },
+    inventory_account_name: { type: String, default: "" },
+    // The journal that books the opening stock (Dr Inventory Asset).
+    opening_journal_id: { type: String, default: "" },
+    reorder_level: { type: Number, default: 0 },
+    stock_qty: { type: Number, default: 0 },
+    stock_value: { type: Number, default: 0 },
+    avg_cost: { type: Number, default: 0 },
     item_type: String,
     item_type_formatted: String,
     product_type: String,
     product_type_formatted: String,
     is_taxable: Boolean,
     gst_rate: { type: Number, default: 0 }, // % charged on sales (CGST+SGST or IGST)
+    igst_rate: { type: Number, default: 0 }, // inter-state rate shown on the item form
+    preferred_vendor_id: String,
+    preferred_vendor_name: String,
     tax_exemption_id: String,
     tax_exemption_code: String,
     has_attachment: Boolean,

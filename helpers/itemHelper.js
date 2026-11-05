@@ -104,10 +104,15 @@ class ItemHelper {
     };
   }
 
-  async getItemDetails(itemId) {
+  // `scope` limits the lookup to the caller's own items:
+  // { admin_id, organization_id }.
+  async getItemDetails(itemId, scope = {}) {
+    const where = { item_id: itemId };
+    if (scope.admin_id) where.admin_id = scope.admin_id;
+    if (scope.organization_id) where.organization_id = String(scope.organization_id);
     const itemResult = await queryHelper.findData(
       Item,
-      { item_id: itemId },
+      where,
       {},
       {},
       0,
@@ -242,6 +247,9 @@ class ItemHelper {
       can_be_sold: rawItem.can_be_sold || false,
       can_be_purchased: rawItem.can_be_purchased || false,
       track_inventory: rawItem.track_inventory || false,
+      inventory_account_id: rawItem.inventory_account_id || "",
+      inventory_account_name: rawItem.inventory_account_name || "",
+      valuation_method: rawItem.valuation_method || "",
       item_type: rawItem.item_type || "goods",
       item_type_formatted:
         rawItem.item_type && typeof rawItem.item_type === "string"
@@ -282,11 +290,12 @@ class ItemHelper {
       const { 
         collections = [], // Array of collection types to fetch
         status = null,     // Status filter
-        limit = 100       // Default limit
+        limit = 100,       // Default limit
+        scope = {},        // { admin_id, organization_id } of the caller
       } = options;
 
       // Get item details
-      const itemResult = await this.getItemDetails(itemId);
+      const itemResult = await this.getItemDetails(itemId, scope);
       if (!itemResult.success) {
         return itemResult;
       }

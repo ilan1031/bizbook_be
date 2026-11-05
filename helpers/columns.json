@@ -579,7 +579,7 @@
       "is_editable": true,
       "is_default_select_column": true,
       "align": "",
-      "value": "due_date",
+      "value": "date",
       "key": "Date",
       "is_sortable": true,
       "is_header": true
@@ -1161,17 +1161,6 @@
       "align": "",
       "value": "due_amt",
       "key": "Balance Due",
-      "is_sortable": true,
-      "is_header": true
-    },
-    {
-      "default_filter_order": 9,
-      "is_mandatory": false,
-      "is_editable": true,
-      "is_default_select_column": true,
-      "align": "",
-      "value": "due_date",
-      "key": "Due Date",
       "is_sortable": true,
       "is_header": true
     }

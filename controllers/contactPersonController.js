@@ -4,6 +4,11 @@ const ContactCollection = mongoose.model("Contact");
 const queryHelper = require("../helpers/query");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
+const { ownedContact, ownedContactPerson } = require("../helpers/tenantScope");
+const OrganizationCollection = mongoose.model("Organization");
+
+const notFound = (res, what = "Contact person") =>
+  res.status(ST_CODES.NOT_FOUND).json({ success: false, status: false, message: `${what} not found.` });
 
 class ContactPersonController {
   async createcontactPerson(req, res) {
@@ -22,6 +27,11 @@ class ContactPersonController {
       }
 
       // Generate unique contactPerson ID
+      const owner = await ownedContact(contact_id, admin_id, { _id: 1 });
+      if (!owner || String(owner.organization_id) !== String(organization_id)) return notFound(res, "Customer");
+      // Ids and ownership are the server's, not the body's.
+      for (const f of ["contact_person_id", "admin_id", "contact_id", "organization_id", "_id"]) delete bData[f];
+
       let contactPersonUniqueId = await commonHelper.generateUniqueId(
         ContactPersonCollection,
         "contact_person_id",
@@ -30,9 +40,9 @@ class ContactPersonController {
       let modelData = {
         contact_person_id: contactPersonUniqueId,
         admin_id: admin_id,
+        ...bData, // Spread all other fields from req.body
         contact_id: contact_id,
         organization_id: organization_id,
-        ...bData, // Spread all other fields from req.body
       };
 
       let addcontactPerson = await queryHelper.insertData(
@@ -61,7 +71,8 @@ class ContactPersonController {
   async getcontactPersons(req, res) {
     try {
       const { page = 1, limit = 10 } = req.query;
-      const query = {};
+      const orgs = await OrganizationCollection.find({ admin_id: res.locals.user_id }, { organization_id: 1 }).lean();
+      const query = { organization_id: { $in: orgs.map((o) => String(o.organization_id)) } };
       let sort = { createdAt: -1 };
       const projection = {
         contact_person_id: 1,
@@ -200,6 +211,10 @@ class ContactPersonController {
         });
       }
 
+      // Only the caller's own customers / vendors.
+      const owned = await ownedContact(contact_id, res.locals.user_id, { contact_id: 1, first_name: 1, vendor_id: 1 });
+      if (!owned) return notFound(res, "Contact");
+
       let actualContactId = contact_id;
       let vendorDetails = null;
 
@@ -210,7 +225,6 @@ class ContactPersonController {
       if (isObjectId) {
 
         try {
-          console.log("gettingggg");
           
           // Get the contact details using the ObjectId, including vendor information
           const contactDetails = await ContactCollection.findOne(
@@ -223,7 +237,6 @@ class ContactPersonController {
             }
           );
 
-          console.log(contactDetails,"contactDetails")
 
           if (!contactDetails || !contactDetails.contact_id) {
             return res.status(ST_CODES.NOT_FOUND).json({
@@ -235,7 +248,6 @@ class ContactPersonController {
           // Use the contact_id from the contact details
           actualContactId = contactDetails.contact_id;
 
-          console.log(actualContactId,"actualContactId")
 
           // Store vendor details for later use in the response
           vendorDetails = {
@@ -288,13 +300,16 @@ class ContactPersonController {
         pageInt
       );
 
-      // Handle case when no results are found
-      if (
-        !results ||
-        !results.status ||
-        !results.msg ||
-        results.msg.length === 0
-      ) {
+      // A contact without contact persons has an empty list, not an error.
+      if (results && results.status && Array.isArray(results.msg) && results.msg.length === 0) {
+        return res.status(ST_CODES.OK).json({
+          success: true,
+          data: [],
+          pagination: { page: pageInt, limit: limitInt, total: 0 },
+          ...(vendorDetails ? { vendor_details: vendorDetails } : {}),
+        });
+      }
+      if (!results || !results.status || !results.msg) {
         return res.status(ST_CODES.NOT_FOUND).json({
           success: false,
           message: "No contact persons found for the given contact_id",
@@ -361,9 +376,14 @@ class ContactPersonController {
         });
       }
 
+      const existing = await ownedContactPerson(contact_person_id, res.locals.user_id);
+      if (!existing) return notFound(res);
+      // A contact person can't be moved to another customer or organisation.
+      for (const f of ["contact_person_id", "admin_id", "contact_id", "organization_id", "_id"]) delete updateData[f];
+
       let updatedcontactPerson = await ContactPersonCollection.findOneAndUpdate(
-        { contact_person_id: contact_person_id },
-        updateData,
+        { contact_person_id: contact_person_id, contact_id: existing.contact_id },
+        { $set: updateData },
         { new: true }
       );
 
@@ -397,8 +417,11 @@ class ContactPersonController {
         });
       }
 
+      const existing = await ownedContactPerson(contact_person_id, res.locals.user_id);
+      if (!existing) return notFound(res);
+
       let deletedcontactPerson = await ContactPersonCollection.findOneAndDelete(
-        { contact_person_id: contact_person_id }
+        { contact_person_id: contact_person_id, contact_id: existing.contact_id }
       );
 
       if (!deletedcontactPerson) {
@@ -431,11 +454,7 @@ class ContactPersonController {
       }
       
       // Find the contact person by ID
-      const contactPerson = await ContactPersonCollection.findOne(
-        { contact_person_id: contact_person_id }
-      );
-      
-      console.log(contactPerson, "-*-*-*-*");
+      const contactPerson = await ownedContactPerson(contact_person_id, res.locals.user_id);
       
       if (!contactPerson) {
         return res.status(ST_CODES.NOT_FOUND).json({

@@ -15,7 +15,11 @@ const OrganizationCollection = require("../model/organizationSchema");
 const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
 const userActivityHelper = require("../helpers/userActivityHelper");
 const { postingStatusFor, syncJournalPosting } = require("../helpers/accountingHelper");
+const stockHelper = require("../helpers/stockHelper");
+const docLocks = require("../helpers/docLocks");
 const { priceSalesDocument, loadTaxContext, invoiceJournalLines } = require("../helpers/gstHelper");
+const { validateSalesDocument } = require("../helpers/salesValidation");
+const { peekDocNumber, nextDocNumber, noteUsedNumber, nextGlobalId } = require("../helpers/docNumber");
 
 // Fields priceSalesDocument sets on an invoice.
 const PRICED_FIELDS = [
@@ -35,6 +39,27 @@ const formatCurrency = (amount) => {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+};
+
+// Why an invoice can't be deleted / voided: payments or credits applied.
+// Returns a message, or null when nothing is settled against it.
+const invoiceSettlementBlocker = async (invoice, orgId) => {
+  const paid = Number(invoice.payment_made || 0);
+  const credited = Number(invoice.credits_applied || 0);
+  const label = invoice.invoice_number || invoice.invoice_id;
+  if (paid > 0) return `Invoice ${label} has payments of ${formatCurrency(paid)} recorded against it.`;
+  if (credited > 0) return `Invoice ${label} has credits of ${formatCurrency(credited)} applied to it.`;
+  const payment = await PaymentCollection.findOne(
+    {
+      organization_id: { $in: [String(orgId), Number(orgId)] },
+      deleted_at: null,
+      "invoices.invoice_id": invoice.invoice_id,
+      "invoices.amount_applied": { $gt: 0 },
+    },
+    { payment_id: 1 }
+  ).lean();
+  if (payment) return `Invoice ${label} has payment ${payment.payment_id} recorded against it.`;
+  return null;
 };
 
 class InvoiceController {
@@ -58,28 +83,46 @@ class InvoiceController {
       invoiceData["organization_id"] = orgId;
       invoiceData["created_by_id"] = admin_id;
       invoiceData["last_modified_by_id"] = admin_id;
+      // The person who signed in (a team member, or the admin themselves).
+      invoiceData["created_by_actor_id"] = res.locals.actor_id || admin_id;
+      invoiceData["created_by_actor_name"] = res.locals.actor_name || "";
+      invoiceData["last_modified_by_actor_id"] = res.locals.actor_id || admin_id;
+      invoiceData["last_modified_by_actor_name"] = res.locals.actor_name || "";
 
       // Handle file upload
       if (req.file) {
         invoiceData["documents"] = req.file.filename;
+        invoiceData["document_name"] = String(req.file.originalname || "").slice(0, 200);
       }
 
-      // Generate unique Invoice ID
-      let invoiceUniqueId = await commonHelper.generateUniqueId(
-        InvoiceCollection,
-        "invoice_number",
-        7,
-        "INV"
-      );
-      invoiceData["invoice_number"] = invoiceUniqueId;
+      // Customer, at least one line, sane quantities/amounts, due date.
+      const invalid = validateSalesDocument(invoiceData, { label: "invoice", dueField: "due_date", dueLabel: "Due date" });
+      if (invalid) {
+        return res.status(400).json({ success: false, message: invalid });
+      }
 
-      // Generate unique invoice_id for internal reference
-      const invoiceId = await commonHelper.generateUniqueId(
-        InvoiceCollection,
-        "invoice_id",
-        6
-      );
-      invoiceData["invoice_id"] = invoiceId;
+      // Invoice number: the one shown in (or typed into) the form when it is
+      // free in this organisation, otherwise the next one for the org.
+      const typedNumber = String(invoiceData.invoice_number || "").trim();
+      if (typedNumber) {
+        if (typedNumber.length > 50) {
+          return res.status(400).json({ success: false, message: "Invoice number can be at most 50 characters." });
+        }
+        const taken = await InvoiceCollection.exists({
+          organization_id: { $in: [String(orgId), Number(orgId)] },
+          invoice_number: typedNumber,
+        });
+        if (taken) {
+          return res.status(409).json({ success: false, message: `Invoice number ${typedNumber} is already used. Choose another number.` });
+        }
+        invoiceData["invoice_number"] = typedNumber;
+        await noteUsedNumber("invoice_number", orgId, "INV", typedNumber);
+      } else {
+        invoiceData["invoice_number"] = await nextDocNumber(InvoiceCollection, "invoice_number", orgId, "INV");
+      }
+
+      // Internal invoice_id: never reused, even after an invoice is deleted.
+      invoiceData["invoice_id"] = await nextGlobalId(InvoiceCollection, "invoice_id", 6);
 
       // Set status defaults
       invoiceData["status"] = invoiceData.status || "draft";
@@ -89,6 +132,8 @@ class InvoiceController {
         invoiceData["status"] = "sent";
         invoiceData["status_formatted"] = "Sent";
       }
+      // Saved as sent (not draft): it is issued from the start.
+      if (!["draft", "void"].includes(String(invoiceData.status).toLowerCase())) invoiceData["issued_at"] = new Date();
 
       // Set dates
       const currentDate = new Date();
@@ -171,6 +216,11 @@ class InvoiceController {
       priceSalesDocument(invoiceData, await loadTaxContext(orgId, invoiceData));
       const total_receivable = invoiceData.total;
       const Journal_line_items = invoiceJournalLines(invoiceData);
+      // Selling more than is on hand: refused, or warned, per the organisation's setting.
+      const stockCheck = await stockHelper.checkInvoiceStock(orgId, { ...invoiceData, _id: undefined });
+      if (stockCheck.blocked) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: stockCheck.blocked });
+      }
 
       // Calculate balance
       const paymentMade = Number(invoiceData.payment_made || 0);
@@ -230,11 +280,14 @@ class InvoiceController {
 
       console.log("The Data saved for the Invoice", invoiceData);
 
+      if (createInvoice.status) await stockHelper.syncInvoice(createInvoice.msg);
+
       return res.status(ST_CODES.CREATED).json({
         success: true,
         message: "Invoice created successfully.",
         data: createInvoice.msg,
         journalData: savedJournal,
+        stock_warnings: stockCheck.warnings,
       });
     } catch (error) {
       console.log("createInvoice error", error);
@@ -574,6 +627,8 @@ class InvoiceController {
           message: "Invoice not found or unauthorized access",
         });
       }
+      // The form's Subject is stored as subject_content; also expose it as subject.
+      invoice.subject = invoice.subject_content || "";
 
       // Calculate due_days and update status if needed
       const today = new Date();
@@ -713,6 +768,9 @@ class InvoiceController {
       let documents = updateData.documents;
       if (req.file) {
         documents = req.file.filename;
+        updateData["document_name"] = String(req.file.originalname || "").slice(0, 200);
+      } else if (documents === "") {
+        updateData["document_name"] = "";
       }
       updateData["documents"] = documents;
 
@@ -747,10 +805,19 @@ class InvoiceController {
         });
       }
 
+      // An issued invoice can't be saved back as draft, and a void one can't be reopened by an edit.
+      const editLock = docLocks.invoiceStatusBlock(invoice, updateData.status);
+      if (editLock) {
+        return res.status(400).json({ success: false, message: editLock });
+      }
+      if (updateData.status !== undefined) Object.assign(updateData, docLocks.invoiceIssuedStamp(invoice, updateData.status));
+
       // Add admin_id and organization_id to update data
       updateData["admin_id"] = admin_id;
       updateData["organization_id"] = organization_id;
       updateData["last_modified_by_id"] = admin_id;
+      updateData["last_modified_by_actor_id"] = res.locals.actor_id || admin_id;
+      updateData["last_modified_by_actor_name"] = res.locals.actor_name || "";
       updateData["updated_at"] = new Date();
 
       // Currency formatting function
@@ -769,6 +836,11 @@ class InvoiceController {
 
       // Re-price the invoice as it will be after this edit.
       const merged = { ...invoice.toObject(), ...updateData };
+      const invalid = validateSalesDocument(merged, { label: "invoice", dueField: "due_date", dueLabel: "Due date" });
+      if (invalid) {
+        return res.status(400).json({ success: false, message: invalid });
+      }
+      if (updateData.line_items !== undefined) updateData.line_items = merged.line_items;
       (merged.line_items || []).forEach((item) => {
         if (!item.line_item_id) item.line_item_id = Math.random().toString(36).substring(2, 15);
       });
@@ -783,6 +855,10 @@ class InvoiceController {
       updateData["balance_formatted"] = formatCurrency(balance);
 
       const Journal_line_items = invoiceJournalLines(merged);
+      const stockCheck = await stockHelper.checkInvoiceStock(organization_id, merged);
+      if (stockCheck.blocked) {
+        return res.status(400).json({ success: false, message: stockCheck.blocked });
+      }
 
       // ✅ Prepare journal update data (keeping same journal_id)
       const updatedJournal = {
@@ -843,6 +919,7 @@ class InvoiceController {
           message: "Failed to update invoice",
         });
       }
+      await stockHelper.syncInvoice(updatedInvoice);
       // Invoices converted before journals were posted for them get one now.
       if (!invoice.journal_id) await postInvoiceJournal(updatedInvoice);
 
@@ -863,6 +940,7 @@ class InvoiceController {
       return res.status(200).json({
         success: true,
         message: "Invoice updated successfully",
+        stock_warnings: stockCheck.warnings,
         data: updatedInvoice,
         journalData: updateJournal,
       });
@@ -909,6 +987,13 @@ class InvoiceController {
         });
       }
 
+      // An invoice with payments or credits applied can't be deleted: the
+      // payment would be left pointing at nothing.
+      const blocker = await invoiceSettlementBlocker(findInvoice, org_id);
+      if (blocker) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: `${blocker} Delete or refund the payment first.` });
+      }
+
       // Get journal_id from the found invoice
       const journal_id = findInvoice.journal_id;
 
@@ -926,6 +1011,8 @@ class InvoiceController {
         organization_id: org_id,
       });
 
+      // The invoice's stock goes back to what it was before it was saved.
+      await stockHelper.clearSource(org_id, "invoice", String(findInvoice._id));
       // Delete the journal entry using the journal_id from invoice
       const deleteJournal = await JournalCollection.findOneAndDelete({
         journal_id: journal_id,
@@ -1120,12 +1207,12 @@ class InvoiceController {
   // 📌 get invoice unique Id
   async getUniqueId(req, res) {
     try {
-      let invoiceId = await commonHelper.generateUniqueId(
-        InvoiceCollection,
-        "invoice_number",
-        6,
-        "INV"
-      );
+      // The number the next invoice of this organisation will get (the
+      // same per-org sequence createInvoice uses).
+      const orgId = req.query.organization_id || req.query.org_id;
+      let invoiceId = orgId
+        ? await peekDocNumber(InvoiceCollection, "invoice_number", orgId, "INV")
+        : await commonHelper.generateUniqueId(InvoiceCollection, "invoice_number", 6, "INV");
       res.status(ST_CODES.OK).send({
         status: true,
         message: "Invoice Id has been generated",
@@ -1424,7 +1511,39 @@ class InvoiceController {
         });
       }
 
-      // Find and update the sales order
+      // Once an invoice has been sent (or paid) it can't go back to draft, and a void one can't be reopened.
+      const lockedInvoice = await InvoiceCollection.findOne({ invoice_id, organization_id, deleted_at: null }).lean();
+      const lockReason = lockedInvoice && docLocks.invoiceStatusBlock(lockedInvoice, status);
+      if (lockReason) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: lockReason });
+      }
+
+      // Voiding (or turning back into a draft) an invoice that has been
+      // paid or credited would leave the payment applied to nothing.
+      if (["void", "draft"].includes(status)) {
+        const current = await InvoiceCollection.findOne({ invoice_id, organization_id, deleted_at: null }).lean();
+        if (!current) {
+          return res.status(ST_CODES.NOT_FOUND).send({ status: false, message: "Invoice not found or unauthorized access" });
+        }
+        const blocker = await invoiceSettlementBlocker(current, organization_id);
+        if (blocker) {
+          return res.status(ST_CODES.BAD_REQUEST).send({
+            status: false,
+            message: `${blocker} It can't be marked as ${status_formatted || status}. Delete or refund the payment first.`,
+          });
+        }
+      }
+
+      // Moving an invoice out of draft sells its stock: check it first.
+      const beforeStatus = await InvoiceCollection.findOne({ invoice_id, organization_id, deleted_at: null }).lean();
+      const stockCheck = beforeStatus
+        ? await stockHelper.checkInvoiceStock(organization_id, { ...beforeStatus, status })
+        : { blocked: null, warnings: [] };
+      if (stockCheck.blocked) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: stockCheck.blocked });
+      }
+
+      // Find and update the invoice
       const updatedInvoice = await InvoiceCollection.findOneAndUpdate(
         {
           invoice_id: invoice_id,
@@ -1437,6 +1556,7 @@ class InvoiceController {
             status: status,
             status_formatted: status_formatted,
             status_updated_at: new Date(),
+            ...(lockedInvoice ? docLocks.invoiceIssuedStamp(lockedInvoice, status) : {}),
           },
         },
         { new: true }
@@ -1449,6 +1569,7 @@ class InvoiceController {
         });
       }
       await syncJournalPosting(updatedInvoice.journal_id, organization_id, status);
+      await stockHelper.syncInvoice(updatedInvoice);
 
       res.status(ST_CODES.OK).send({
         status: true,
@@ -1464,6 +1585,46 @@ class InvoiceController {
         status: false,
         message: "Something went wrong while updating sales order status",
       });
+    }
+  }
+
+  // Income from a customer per month (invoice totals by invoice date, drafts
+  // and void invoices left out) for the last `months` months, oldest first.
+  async getCustomerIncome(req, res) {
+    try {
+      const { organization_id, customer_id } = req.query;
+      const months = Math.min(Math.max(parseInt(req.query.months, 10) || 6, 1), 24);
+      if (!organization_id || !customer_id) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "organization_id and customer_id are required" });
+      }
+      const now = new Date();
+      const buckets = [];
+      for (let i = months - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        buckets.push({ key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, name: d.toLocaleString("en-US", { month: "short" }), value: 0 });
+      }
+      const from = `${buckets[0].key}-01`;
+      const invoices = await InvoiceCollection.find(
+        {
+          organization_id: { $in: [String(organization_id), Number(organization_id)] },
+          customer_id: String(customer_id),
+          deleted_at: null,
+          status: { $nin: ["draft", "void"] },
+        },
+        { date: 1, total: 1 }
+      ).lean();
+      for (const inv of invoices) {
+        const d = new Date(inv.date);
+        if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) < from) continue;
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        const b = buckets.find((x) => x.key === key);
+        if (b) b.value = Math.round((b.value + Number(inv.total || 0)) * 100) / 100;
+      }
+      const total = Math.round(buckets.reduce((sum, b) => sum + b.value, 0) * 100) / 100;
+      return res.status(ST_CODES.OK).json({ status: true, data: { months: buckets, total, total_formatted: formatCurrency(total) } });
+    } catch (err) {
+      console.error("getCustomerIncome error", err);
+      return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ status: false, message: "Something went wrong" });
     }
   }
 

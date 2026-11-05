@@ -6,6 +6,8 @@ const BillsCollection = mongoose.model("PO_bill");
 const ItemCollection = mongoose.model("Item");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
+const { nextDocNumber } = require("../helpers/docNumber");
+const stockHelper = require("../helpers/stockHelper");
 const path = require("path");
 const fs = require("fs");
 const csv = require("csv-parser");
@@ -187,7 +189,13 @@ class ImportFilesController {
         collectionName = ExpenseCollection;
       }
 
-      const filteredKeys = keys.filter((key) => !restrictedKeys.includes(key));
+      if (!Array.isArray(keys)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: "Importing this kind of record isn't available yet.",
+        });
+      }
+      const filteredKeys = keys.filter((key) => !(restrictedKeys || []).includes(key));
       console.log("filteredKeys-------", filteredKeys);
       if (filteredKeys.length > 0) {
         return res.status(ST_CODES.OK).json({
@@ -275,13 +283,8 @@ class ImportFilesController {
 
         // console.log(vendor, "vendor");
         // console.log(item, "item");
-        // Step 3: Generate unique bill number
-        let billUniqueId = await commonHelper.generateUniqueId(
-          BillsCollection,
-          "estimate_number",
-          7,
-          "BL"
-        );
+        // Step 3: Next bill number for this organisation (same as invoices)
+        let billUniqueId = await nextDocNumber(BillsCollection, "bill_number", org_id, "BL");
         // return;
         // Step 4: Build Bill Document
         const billDoc = new BillsCollection({
@@ -329,11 +332,16 @@ class ImportFilesController {
         });
 
         await billDoc.save();
+        // Stock in for the imported bill's goods, same as a saved bill.
+        await stockHelper.syncBill(billDoc);
       }
 
       return res.status(200).send({ message: "Bills uploaded successfully" });
     } catch (error) {
       console.log("sendCollecetionKeys error", error);
+      if (error && error.code === 11000) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ message: "Duplicate bill: this bill number already exists" });
+      }
       return res
         .status(ST_CODES.INTERNAL_SERVER_ERROR)
         .send({ message: "Something went wrong" });

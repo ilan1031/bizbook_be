@@ -19,13 +19,98 @@ const formatCurrency = (amount) => {
   })}`;
 };
 
+const userActivityHelper = require("../helpers/userActivityHelper");
+const toPaise = (v) => Math.round(Number(v || 0) * 100);
+const fromPaise = (p) => Math.round(p) / 100;
+
+class PaymentInputError extends Error {}
+
+// A bill's status from what's still due on it.
+const billStatusFromDue = (bill, duePaise) => {
+  if (duePaise <= 0) return { status: 3, status_type: "PAID" };
+  if (duePaise >= toPaise(bill.total)) return { status: 0, status_type: "OPEN" };
+  return { status: 0, status_type: "PARTIALLY PAID" };
+};
+
+// [{ bill_id, amount_applied }] from the request, positive amounts only.
+const readApplications = (bills) =>
+  (Array.isArray(bills) ? bills : Object.values(bills || {}))
+    .map((b) => ({ ...b, amount_applied: fromPaise(toPaise(b?.amount_applied)) }))
+    .filter((b) => b && b.bill_id && b.amount_applied !== 0);
+
+// Applies (sign 1) or takes back (sign -1) a payment's amounts on its bills,
+// inside the caller's transaction. Applying checks every bill belongs to the
+// organisation and vendor, can be paid, and has that much still due.
+const applyToBills = async (session, { admin_id, organization_id, contact_id, applications, sign }) => {
+  const saved = [];
+  for (const app of applications) {
+    if (!mongoose.isValidObjectId(app.bill_id)) throw new PaymentInputError("A selected bill couldn't be found.");
+    const amountPaise = toPaise(app.amount_applied);
+    if (sign > 0 && !(amountPaise > 0)) throw new PaymentInputError("Amounts applied to bills must be greater than zero.");
+    const bill = await BillsCollection.findOne(
+      { _id: app.bill_id, organization_id: Number(organization_id), admin_id },
+      null,
+      { session }
+    );
+    if (!bill) {
+      if (sign < 0) continue; // the bill was deleted; nothing to take back
+      throw new PaymentInputError("A selected bill couldn't be found.");
+    }
+    if (sign > 0) {
+      if (contact_id && String(bill.vendor_id) !== String(contact_id)) {
+        throw new PaymentInputError(`Bill ${bill.bill_number} belongs to another vendor.`);
+      }
+      if (["DRAFT", "VOID"].includes(bill.status_type)) {
+        throw new PaymentInputError(`Bill ${bill.bill_number} is ${bill.status_type.toLowerCase()} and can't be paid.`);
+      }
+    }
+    const duePaise = toPaise(bill.due_amt ?? bill.total);
+    if (sign > 0 && amountPaise > duePaise) {
+      throw new PaymentInputError(`Bill ${bill.bill_number} has only ₹${fromPaise(duePaise).toFixed(2)} due; you can't apply ₹${fromPaise(amountPaise).toFixed(2)}.`);
+    }
+    const newDue = duePaise - sign * amountPaise;
+    bill.payment_made = fromPaise(Math.max(0, toPaise(bill.payment_made) + sign * amountPaise));
+    bill.due_amt = fromPaise(newDue);
+    bill.balance = bill.due_amt;
+    Object.assign(bill, billStatusFromDue(bill, newDue));
+    await bill.save({ session });
+    saved.push({
+      bill_id: bill._id,
+      billNumber: bill.bill_number,
+      amount_applied: fromPaise(amountPaise),
+      total_payment_amount: bill.total,
+    });
+  }
+  return saved;
+};
+
+const paymentJournalLines = (p) => {
+  const debit =
+    p.payment_type === "VendorAdvance"
+      ? { coa_account_id: p.deposite_to_id, coa_account_name: p.deposite_to }
+      : { coa_account_id: "AC_032", coa_account_name: "Accounts Payable" };
+  const amount = fromPaise(toPaise(p.amount));
+  return [
+    { coa_account_id: p.paid_through_account_id, coa_account_name: p.paid_through_account_name, creditOrDebit: "Credit", amount, amount_formatted: formatCurrency(amount) },
+    { ...debit, creditOrDebit: "Debit", amount, amount_formatted: formatCurrency(amount) },
+  ];
+};
+
+const badPayment = (res, e) => {
+  if (e instanceof PaymentInputError) {
+    res.status(ST_CODES.BAD_REQUEST).json({ success: false, status: false, message: e.message });
+    return true;
+  }
+  return false;
+};
+
 class PaymentController {
   async createPayment(req, res) {
+    const session = await mongoose.startSession();
     try {
-      let bData = req.body;
-      const admin_id = res.locals.user_id; // This should be an ObjectId from the user session
-      const { organization_id, filter = "" } = req.query;
-      // console.log(req.body, "payment data");
+      let bData = { ...req.body };
+      const admin_id = res.locals.user_id;
+      const { organization_id } = req.query;
       if (req.file) {
         bData["documents"] = req.file.filename;
       }
@@ -35,39 +120,66 @@ class PaymentController {
           message: "Missing required field: organization_id is mandatory.",
         });
       }
-
-      if (!bData.contact_id) {
+      if (!bData.contact_id || !mongoose.isValidObjectId(bData.contact_id)) {
         return res.status(ST_CODES.BAD_REQUEST).json({
           success: false,
-          message: "Missing required field: contact_id is mandatory.",
+          message: "Choose the vendor you paid.",
+        });
+      }
+      const amountPaise = toPaise(bData.amount);
+      if (!(amountPaise > 0)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "Enter a payment amount greater than zero." });
+      }
+      if (!bData.paid_through_account_id) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "Choose the account the payment was made from." });
+      }
+      if (!bData.date || isNaN(new Date(bData.date))) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "Enter a valid payment date." });
+      }
+      const vendor = await VendorCollection.findOne({ _id: bData.contact_id, organization_id: String(organization_id) }, { _id: 1 }).lean();
+      if (!vendor) {
+        return res.status(ST_CODES.NOT_FOUND).json({ success: false, message: "Vendor not found in this organization." });
+      }
+      if (!["BillPayment", "VendorAdvance"].includes(bData.payment_type)) bData.payment_type = "BillPayment";
+      const applications = bData.payment_type === "BillPayment" ? readApplications(bData.bills) : [];
+      const appliedPaise = applications.reduce((s, a) => s + toPaise(a.amount_applied), 0);
+      if (appliedPaise > amountPaise) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: `₹${fromPaise(appliedPaise).toFixed(2)} is applied to bills but the payment is only ₹${fromPaise(amountPaise).toFixed(2)}.`,
         });
       }
 
-      // Generate unique payment ID
       let paymentUniqueId = await commonHelper.generateUniqueId(
         PaymentCollection,
         "unique_PM_id",
         5,
         "PM"
       );
-      if (bData.admin_id) {
-        delete bData.admin_id;
-      }
-
       let journalUniqueId = await commonHelper.generateUniqueId(
         JournalCollection,
         "journal_id",
         5,
         "JL"
       );
+      // The payment number the form showed is kept when it's still free;
+      // otherwise (missing or already used) the server's own number is used.
+      let payment_id = String(bData.payment_id || "").trim();
+      if (!payment_id || (await PaymentCollection.exists({ organization_id: String(organization_id), payment_id }))) {
+        payment_id = paymentUniqueId;
+      }
+      for (const f of ["admin_id", "_id", "status", "status_type", "status_formatted", "journal_id", "unique_PM_id", "is_deleted"]) delete bData[f];
 
-      // Fields from the request first; the server's own fields win.
+      // Fields from the request first; the server's own fields win. A
+      // payment is money that has left the account, so it is PAID.
       let modelData = {
-        // Set initial status as DRAFT
-        status: 1,
-        status_type: "DRAFT",
-        status_formatted: "Draft",
         ...bData,
+        amount: fromPaise(amountPaise),
+        bills: [],
+        status: 2,
+        status_type: "PAID",
+        status_formatted: "Paid",
+        payment_id,
         unique_PM_id: paymentUniqueId,
         journal_id: journalUniqueId,
         admin_id: admin_id, // Using the admin_id from server session
@@ -75,61 +187,11 @@ class PaymentController {
         status_updated_at: new Date(),
       };
       if (modelData.is_advance_payment === undefined) {
-        modelData.is_advance_payment = true; // Default for vendor advances
+        modelData.is_advance_payment = bData.payment_type === "VendorAdvance";
       }
-
-      // Ensure date is valid
       if (modelData.date && typeof modelData.date === "string") {
         modelData.date = new Date(modelData.date);
       }
-      if (modelData.payment_type == "VendorAdvance") {
-        // An advance adds to the vendor's unused credit.
-        let vendorData = await VendorCollection.findOneAndUpdate(
-          {
-            _id: bData.contact_id,
-            organization_id: String(organization_id),
-          },
-          {
-            $inc: {
-              unused_credits_receivable_amount: Number(bData.amount || 0),
-            },
-          }
-        );
-      }
-
-      const Journal_line_items_payment = [
-        {
-          coa_account_id: bData?.paid_through_account_id,
-          coa_account_name: bData?.paid_through_account_name,
-          creditOrDebit: "Credit",
-          amount: bData.amount,
-          amount_formatted: formatCurrency(bData.amount),
-        },
-        {
-          coa_account_id: "AC_032",
-          coa_account_name: "Accounts Payable",
-          creditOrDebit: "Debit",
-          amount: bData.amount || 0,
-          amount_formatted: formatCurrency(bData.amount),
-        },
-      ];
-
-      const Journal_line_items_advance = [
-        {
-          coa_account_id: bData?.paid_through_account_id,
-          coa_account_name: bData?.paid_through_account_name,
-          creditOrDebit: "Credit",
-          amount: bData.amount,
-          amount_formatted: formatCurrency(bData.amount),
-        },
-        {
-          coa_account_id: bData?.deposite_to_id,
-          coa_account_name: bData.deposite_to,
-          creditOrDebit: "Debit",
-          amount: bData.amount || 0,
-          amount_formatted: formatCurrency(bData.amount),
-        },
-      ];
 
       const journalData = {
         organization_id: organization_id,
@@ -137,43 +199,53 @@ class PaymentController {
         journal_id: journalUniqueId,
         journal_date: bData.date,
         journal_date_formatted: commonHelper.formatDateString(bData.date),
-        total_amount: bData.amount,
-        total_amount_formatted: formatCurrency(bData.amount),
-        type:
-          bData.payment_type == "BillPayment"
-            ? "Payments Made"
-            : "Vendor Payment",
+        total_amount: modelData.amount,
+        total_amount_formatted: formatCurrency(modelData.amount),
+        type: bData.payment_type == "BillPayment" ? "Payments Made" : "Vendor Payment",
         vendor_name: bData?.contact_id,
-        line_items:
-          bData.payment_type == "BillPayment"
-            ? Journal_line_items_payment
-            : Journal_line_items_advance,
+        line_items: paymentJournalLines(modelData),
       };
 
-      const savedJournal = await JournalCollection.create(journalData);
-
-      let addPayment = await queryHelper.insertData(
-        PaymentCollection,
-        modelData
-      );
-      if (addPayment.status) {
-        res.status(ST_CODES.OK).send({
-          status: addPayment.status,
-          data: addPayment.msg,
-          message: "Payment created successfully...",
+      // The payment, its journal and the bills it pays are saved together
+      // or not at all.
+      let created;
+      try {
+        await session.withTransaction(async () => {
+          modelData.bills = await applyToBills(session, {
+            admin_id,
+            organization_id,
+            contact_id: bData.contact_id,
+            applications,
+            sign: 1,
+          });
+          if (modelData.payment_type == "VendorAdvance") {
+            // An advance adds to the vendor's unused credit.
+            await VendorCollection.updateOne(
+              { _id: bData.contact_id, organization_id: String(organization_id) },
+              { $inc: { unused_credits_receivable_amount: modelData.amount } },
+              { session }
+            );
+          }
+          await JournalCollection.create([journalData], { session });
+          [created] = await PaymentCollection.create([modelData], { session });
         });
-      } else {
-        res.status(ST_CODES.BAD_REQUEST).send({
-          status: addPayment.status,
-          message: addPayment.msg,
-        });
+      } catch (e) {
+        if (badPayment(res, e)) return;
+        throw e;
       }
+      res.status(ST_CODES.OK).send({
+        status: true,
+        data: created,
+        message: "Payment created successfully...",
+      });
     } catch (error) {
-      // console.error("createPayment Error:", error.message);
+      console.error("createPayment Error:", error.message);
       res.status(ST_CODES.INTERNAL_SERVER_ERROR).send({
         status: false,
         message: error.message || "Something went wrong",
       });
+    } finally {
+      await session.endSession();
     }
   }
 
@@ -326,18 +398,8 @@ class PaymentController {
           // Add the payment amount back to the due_amt
           const newDueAmt = currentDueAmt + amountAppliedToBill;
 
-          // Determine new status based on the new payment_made amount
-          let newStatus, newStatusType;
-          if (newPaymentMade <= 0) {
-            newStatus = 0;
-            newStatusType = "OPEN";
-          } else if (newPaymentMade < currentTotal) {
-            newStatus = 1;
-            newStatusType = "PARTIALLY PAID";
-          } else {
-            newStatus = 3;
-            newStatusType = "PAID";
-          }
+          // Determine the new status from what's now due
+          const { status: newStatus, status_type: newStatusType } = billStatusFromDue(bill, toPaise(newDueAmt));
 
           // Update the bill with new values using _id (within transaction)
           const updateResult = await BillsCollection.findOneAndUpdate(
@@ -1404,7 +1466,8 @@ class PaymentController {
 
       // Prepare Email Details Object
       const emailDetails = {
-        from_email: organization.email || "",
+        // The organisation's address, else the address the app sends from.
+        from_email: organization.email || process.env.EMAIL_FROM || process.env.EMAIL_USER || "",
         subject: `Payment Receipt: ${payment.payment_id} from ${
           organization.organization_name || ""
         }`,
@@ -1529,14 +1592,12 @@ class PaymentController {
     }
   }
   async updatePayment(req, res) {
+    const session = await mongoose.startSession();
     try {
-      // Get both parameters from query instead of params
       const { organization_id, payment_id } = req.query;
-
-      const updateData = req.body;
+      const updateData = { ...req.body };
       const admin_id = res.locals.user_id;
 
-      // Validate required fields
       if (!payment_id || !organization_id) {
         return res.status(ST_CODES.BAD_REQUEST).json({
           success: false,
@@ -1545,13 +1606,12 @@ class PaymentController {
         });
       }
 
-      // Find existing payment to ensure it exists and get current data
       const existingPayment = await PaymentCollection.findOne({
         payment_id: payment_id,
         organization_id: organization_id,
-        is_deleted: { $ne: true }, // Check that it's not already deleted
+        admin_id,
+        is_deleted: { $ne: true },
       });
-
       if (!existingPayment) {
         return res.status(ST_CODES.NOT_FOUND).json({
           success: false,
@@ -1559,182 +1619,106 @@ class PaymentController {
         });
       }
 
-      // Handle file uploads if present
-      if (req.files && req.files.length > 0) {
-        // Validate file types for all uploaded files
-        const allowedTypes = [
-          "pdf",
-          "jpg",
-          "jpeg",
-          "png",
-          "doc",
-          "docx",
-          "csv",
-          "xls",
-          "xlsx",
-        ];
-        const invalidFiles = [];
-
-        for (const file of req.files) {
-          const fileExtension = file.filename.split(".").pop().toLowerCase();
-          if (!allowedTypes.includes(fileExtension)) {
-            invalidFiles.push(file.originalname);
-          }
-        }
-
-        if (invalidFiles.length > 0) {
-          return res.status(ST_CODES.BAD_REQUEST).json({
-            success: false,
-            message: `Invalid file types for: ${invalidFiles.join(
-              ", "
-            )}. Allowed types: ${allowedTypes.join(", ")}`,
-          });
-        }
-
-        // Handle documents - merge with existing documents if any
-        const newDocuments = req.files.map((file) => file.filename);
-        const existingDocuments = existingPayment.documents || [];
-
-        // Combine existing and new documents
-        updateData.documents = [...existingDocuments, ...newDocuments];
+      if (req.file) {
+        updateData.documents = req.file.filename;
       }
 
-      // Remove fields that shouldn't be updated
-      const restrictedFields = [
-        "admin_id",
-        "organization_id",
-        "is_deleted",
-        "deleted_at",
-        "created_at",
-      ];
-      restrictedFields.forEach((field) => {
-        if (updateData[field] !== undefined) {
-          delete updateData[field];
-        }
-      });
-
-      // Add updated_by and updated_at fields
+      // Fields an edit can't change. The payment type, number, journal and
+      // status stay as they are; the bills are re-applied below.
+      for (const field of ["_id", "admin_id", "organization_id", "is_deleted", "deleted_at", "created_at", "payment_id",
+        "unique_PM_id", "journal_id", "payment_type", "status", "status_type", "status_formatted", "createdAt", "updatedAt", "__v"]) {
+        delete updateData[field];
+      }
       updateData.updated_by = admin_id;
       updateData.updated_at = new Date();
-
-      // Handle date conversion if needed
       if (updateData.date && typeof updateData.date === "string") {
         updateData.date = new Date(updateData.date);
       }
 
-      // Check if amount or payment type has changed - if so, update journal
-      const shouldUpdateJournal = 
-        updateData.amount !== undefined || 
-        updateData.payment_type !== undefined ||
-        updateData.paid_through_account_id !== undefined ||
-        updateData.deposite_to_id !== undefined ||
-        updateData.contact_id !== undefined;
-
-      if (shouldUpdateJournal && existingPayment.journal_id) {
-        // Use updated values or fall back to existing values
-        const finalAmount = updateData.amount !== undefined ? updateData.amount : existingPayment.amount;
-        const finalPaymentType = updateData.payment_type !== undefined ? updateData.payment_type : existingPayment.payment_type;
-        const finalPaidThroughAccountId = updateData.paid_through_account_id !== undefined ? updateData.paid_through_account_id : existingPayment.paid_through_account_id;
-        const finalPaidThroughAccountName = updateData.paid_through_account_name !== undefined ? updateData.paid_through_account_name : existingPayment.paid_through_account_name;
-        const finalDepositeToId = updateData.deposite_to_id !== undefined ? updateData.deposite_to_id : existingPayment.deposite_to_id;
-        const finalDepositeTo = updateData.deposite_to !== undefined ? updateData.deposite_to : existingPayment.deposite_to;
-        const finalContactId = updateData.contact_id !== undefined ? updateData.contact_id : existingPayment.contact_id;
-
-        // Recalculate journal line items based on payment type
-        const Journal_line_items_payment = [
-          {
-            coa_account_id: finalPaidThroughAccountId,
-            coa_account_name: finalPaidThroughAccountName,
-            creditOrDebit: "Credit",
-            amount: finalAmount,
-            amount_formatted: formatCurrency(finalAmount),
-          },
-          {
-            coa_account_id: "AC_032",
-            coa_account_name: "Accounts Payable",
-            creditOrDebit: "Debit",
-            amount: finalAmount || 0,
-            amount_formatted: formatCurrency(finalAmount),
-          },
-        ];
-
-        const Journal_line_items_advance = [
-          {
-            coa_account_id: finalPaidThroughAccountId,
-            coa_account_name: finalPaidThroughAccountName,
-            creditOrDebit: "Credit",
-            amount: finalAmount,
-            amount_formatted: formatCurrency(finalAmount),
-          },
-          {
-            coa_account_id: finalDepositeToId,
-            coa_account_name: finalDepositeTo,
-            creditOrDebit: "Debit",
-            amount: finalAmount || 0,
-            amount_formatted: formatCurrency(finalAmount),
-          },
-        ];
-
-        // Prepare journal update data
-        const updatedJournal = {
-          journal_date: updateData.date || existingPayment.date,
-          journal_date_formatted: commonHelper.formatDateString(updateData.date || existingPayment.date),
-          total_amount: finalAmount,
-          total_amount_formatted: formatCurrency(finalAmount),
-          type: finalPaymentType === "BillPayment" ? "Payments Made" : "Vendor Payment",
-          vendor_name: finalContactId,
-          line_items: finalPaymentType === "BillPayment" ? Journal_line_items_payment : Journal_line_items_advance,
-          updated_at: new Date(),
-        };
-
-        // Update journal entry
-        const updateJournal = await JournalCollection.findOneAndUpdate(
-          { journal_id: existingPayment.journal_id },
-          { $set: updatedJournal },
-          { new: true, runValidators: true }
-        );
-
-        if (!updateJournal) {
-          return res.status(ST_CODES.BAD_REQUEST).json({
-            success: false,
-            message: "Failed to update associated journal entry.",
-          });
-        }
+      const final = { ...existingPayment.toObject(), ...updateData };
+      const amountPaise = toPaise(final.amount);
+      if (!(amountPaise > 0)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "Enter a payment amount greater than zero." });
+      }
+      updateData.amount = fromPaise(amountPaise);
+      if (updateData.contact_id && String(updateData.contact_id) !== String(existingPayment.contact_id)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "A payment's vendor can't be changed. Delete it and record a new one." });
       }
 
-      // Handle vendor credit updates for VendorAdvance payments
-      if (updateData.payment_type === "VendorAdvance" || 
-          (existingPayment.payment_type === "VendorAdvance" && updateData.amount !== undefined)) {
-        
-        const finalAmount = updateData.amount !== undefined ? updateData.amount : existingPayment.amount;
-        const finalContactId = updateData.contact_id !== undefined ? updateData.contact_id : existingPayment.contact_id;
-
-        // Update vendor unused credits
-        await VendorCollection.findOneAndUpdate(
-          { _id: finalContactId },
-          { $set: { unused_credits_receivable_amount: finalAmount } }
-        );
-      }
-
-      // Update the payment
-      const updateResult = await PaymentCollection.findOneAndUpdate(
-        { payment_id: payment_id, organization_id: organization_id },
-        { $set: updateData },
-        { new: true } // Return the updated document
-      );
-
-      if (updateResult) {
-        res.status(ST_CODES.OK).json({
-          success: true,
-          data: updateResult,
-          message: "Payment and associated journal updated successfully.",
-        });
-      } else {
-        res.status(ST_CODES.BAD_REQUEST).json({
+      // When the bills are sent, they replace the old applications: the old
+      // amounts are taken back first, then the new ones applied, so saving
+      // an unchanged payment leaves every bill as it was.
+      const oldApplications = (existingPayment.bills || []).map((b) => ({ bill_id: String(b.bill_id), amount_applied: b.amount_applied }));
+      const replaceBills = existingPayment.payment_type !== "VendorAdvance" && updateData.bills !== undefined;
+      const newApplications = replaceBills ? readApplications(updateData.bills) : oldApplications;
+      delete updateData.bills;
+      const appliedPaise = newApplications.reduce((s, a) => s + toPaise(a.amount_applied), 0);
+      if (appliedPaise > amountPaise) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
           success: false,
-          message: "Failed to update payment.",
+          message: `₹${fromPaise(appliedPaise).toFixed(2)} is applied to bills but the payment is only ₹${fromPaise(amountPaise).toFixed(2)}.`,
         });
       }
+
+      let updateResult;
+      try {
+        await session.withTransaction(async () => {
+          if (replaceBills) {
+            await applyToBills(session, { admin_id, organization_id, applications: oldApplications, sign: -1 });
+            updateData.bills = await applyToBills(session, {
+              admin_id,
+              organization_id,
+              contact_id: existingPayment.contact_id,
+              applications: newApplications,
+              sign: 1,
+            });
+          }
+
+          if (existingPayment.journal_id) {
+            const merged = { ...final, amount: updateData.amount };
+            await JournalCollection.findOneAndUpdate(
+              { journal_id: existingPayment.journal_id, organization_id: String(organization_id) },
+              {
+                $set: {
+                  journal_date: merged.date,
+                  journal_date_formatted: commonHelper.formatDateString(merged.date),
+                  total_amount: merged.amount,
+                  total_amount_formatted: formatCurrency(merged.amount),
+                  line_items: paymentJournalLines(merged),
+                },
+              },
+              { session, runValidators: true }
+            );
+          }
+
+          // An advance's unused credit moves by the change in amount.
+          if (existingPayment.payment_type === "VendorAdvance") {
+            const diff = fromPaise(amountPaise - toPaise(existingPayment.amount));
+            if (diff) {
+              await VendorCollection.updateOne(
+                { _id: existingPayment.contact_id, organization_id: String(organization_id) },
+                { $inc: { unused_credits_receivable_amount: diff } },
+                { session }
+              );
+            }
+          }
+
+          updateResult = await PaymentCollection.findOneAndUpdate(
+            { payment_id: payment_id, organization_id: organization_id, admin_id },
+            { $set: updateData },
+            { new: true, session }
+          );
+        });
+      } catch (e) {
+        if (badPayment(res, e)) return;
+        throw e;
+      }
+
+      res.status(ST_CODES.OK).json({
+        success: true,
+        data: updateResult,
+        message: "Payment and associated journal updated successfully.",
+      });
     } catch (error) {
       console.error("updatePayment Error:", error.message);
       res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
@@ -1742,6 +1726,8 @@ class PaymentController {
         message:
           error.message || "Something went wrong while updating payment.",
       });
+    } finally {
+      await session.endSession();
     }
   }
   // 📌 Update Payment Status (Single method for all status changes)

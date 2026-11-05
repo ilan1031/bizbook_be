@@ -11,6 +11,16 @@ const {
 } = require("../helpers/accountingHelper");
 
 const MANUAL_JOURNAL_TYPE = "Manual Journal";
+// Largest amount on one line: ₹1,000 crore.
+const MAX_LINE_AMOUNT = 1e10;
+// A real calendar date (2026-02-31 is refused, not rolled over).
+const strictDate = (v) => {
+  const m = String(v ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(Date.UTC(y, mo - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d ? date : null;
+};
 
 class ManualJournalController {
   // List manual journal entries for an organisation, newest first.
@@ -81,7 +91,7 @@ class ManualJournalController {
           .status(ST_CODES.BAD_REQUEST)
           .json({ status: false, message: "Organization ID is required" });
       }
-      if (!journal_date || !dayjs(journal_date).isValid()) {
+      if (!journal_date || !strictDate(journal_date)) {
         return res
           .status(ST_CODES.BAD_REQUEST)
           .json({ status: false, message: "A valid journal date is required" });
@@ -127,6 +137,12 @@ class ManualJournalController {
             message: `Line ${lineNo}: amount must be greater than zero`,
           });
         }
+        if (amount > MAX_LINE_AMOUNT) {
+          return res.status(ST_CODES.BAD_REQUEST).json({
+            status: false,
+            message: `Line ${lineNo}: amount can't be more than ${formatCurrency(MAX_LINE_AMOUNT)}`,
+          });
+        }
         if (Math.abs(paise - amount * 100) > 1e-6) {
           return res.status(ST_CODES.BAD_REQUEST).json({
             status: false,
@@ -144,6 +160,15 @@ class ManualJournalController {
           creditOrDebit: line.creditOrDebit,
           amount: fromPaise(paise),
           amount_formatted: formatCurrency(fromPaise(paise)),
+        });
+      }
+
+      const debitAccounts = new Set(lines.filter((l) => l.creditOrDebit === "Debit").map((l) => l.coa_account_id));
+      const both = lines.find((l) => l.creditOrDebit === "Credit" && debitAccounts.has(l.coa_account_id));
+      if (both) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          status: false,
+          message: `${both.coa_account_name} is on both the debit and the credit side. Use different accounts.`,
         });
       }
 

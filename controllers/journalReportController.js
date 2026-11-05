@@ -4,6 +4,19 @@ const ST_CODES = require("../helpers/statusCodeHelpers");
 const { POSTED_JOURNALS } = require("../helpers/accountingHelper");
 const dayjs = require("dayjs");
 
+// "DD-MM-YYYY" (what the report screen sends) or "YYYY-MM-DD"; null when
+// it isn't a real date.
+const parseReportDate = (v) => {
+  const s = String(v ?? "").trim();
+  let m = s.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  let y, mo, d;
+  if (m) [d, mo, y] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  else if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/))) [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  else return null;
+  const date = dayjs(new Date(y, mo - 1, d));
+  return date.year() === y && date.month() === mo - 1 && date.date() === d ? date : null;
+};
+
 class journalController {
   async getAllJournal(req, res) {
     try {
@@ -43,8 +56,19 @@ class journalController {
           });
       }
 
-      const fromDate = dayjs(from, "DD-MM-YYYY").startOf("day").toDate();
-      const toDate = dayjs(to, "DD-MM-YYYY").endOf("day").toDate();
+      const fromDay = parseReportDate(from);
+      const toDay = parseReportDate(to);
+      if (!fromDay || !toDay) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          status: false,
+          message: "Dates must be valid and in DD-MM-YYYY (or YYYY-MM-DD) format",
+        });
+      }
+      if (fromDay.isAfter(toDay)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: "The start date must be on or before the end date" });
+      }
+      const fromDate = fromDay.startOf("day").toDate();
+      const toDate = toDay.endOf("day").toDate();
 
       const query = {
         organization_id: organization_id,
@@ -83,7 +107,6 @@ class journalController {
       return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
         status: false,
         message: "Failed to retrieve journal data",
-        error: error.message,
       });
     }
   }

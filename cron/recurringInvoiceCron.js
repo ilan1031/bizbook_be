@@ -4,6 +4,7 @@ const InvoiceCollection = require("../model/invoice");
 const commonHelper = require("../helpers/commonHelpers");
 const queryHelper = require("../helpers/query");
 const { postInvoiceJournal } = require("../helpers/invoiceHelper");
+const stockHelper = require("../helpers/stockHelper");
 const emailHelper = require("../helpers/emailHelper");
 
 const processRecurringInvoices = async () => {
@@ -359,6 +360,7 @@ const processRecurringInvoices = async () => {
           );
           // Each generated invoice is a sale: post its journal.
           await postInvoiceJournal(createdInvoice.msg);
+          await stockHelper.syncInvoice(createdInvoice.msg);
 
           console.log(`Successfully created invoice: ${invoiceNumber}`);
 

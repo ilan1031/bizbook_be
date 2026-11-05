@@ -63,7 +63,7 @@ const BillSchema = new mongoose.Schema(
   {
     billNumber: String,
     orderNumber: String,
-    bill_number: { type: String, unique: true, required: true, index: true },
+    bill_number: { type: String, required: true },
     admin_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "user",
@@ -122,5 +122,7 @@ const BillSchema = new mongoose.Schema(
   }
 );
 
+// Bill numbers are per organisation (each organisation counts its own).
+BillSchema.index({ organization_id: 1, bill_number: 1 }, { unique: true });
 const Bill = mongoose.model("PO_bill", BillSchema);
 module.exports = Bill;

@@ -19,6 +19,10 @@ const { sendLoginCode } = require("../helpers/accountEmails");
     console.log(`Sent test code 123456 to ${to}. Check the inbox (and spam folder).`);
     process.exit(0);
   }
-  console.log(result.ok ? "Only written to this log: set EMAIL_USER / EMAIL_PASS to send for real." : `Not sent: ${result.error}`);
+  console.log(
+    result.ok
+      ? "Only written to this log: set EMAIL_USER / EMAIL_PASS to send for real."
+      : `Not sent via ${result.target}: ${result.error}\nCheck EMAIL_HOST, EMAIL_PORT, EMAIL_USER and EMAIL_PASS.`
+  );
   process.exit(1);
 })();

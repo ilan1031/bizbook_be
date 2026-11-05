@@ -10,6 +10,8 @@ const constants = require("../config/constant");
 const SalesOrderCollection = require("../model/salesOrder");
 const Organization = require("../model/organizationSchema");
 const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
+const stockHelper = require("../helpers/stockHelper");
+const docLocks = require("../helpers/docLocks");
 const InvoiceCollection = require("../model/invoice");
 
 class DeliveryChallanController {
@@ -537,6 +539,12 @@ class DeliveryChallanController {
         });
       }
 
+      // A challan converted to an invoice can't go back to draft or be marked not invoiced.
+      const editLock = docLocks.challanStatusBlock(deliveryChallan, updateData);
+      if (editLock) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: editLock });
+      }
+
       // Perform the update
       let updatedDeliveryChallan = await DeliveryChallan.findOneAndUpdate(
         { deliverychallan_id, organization_id },
@@ -595,6 +603,11 @@ class DeliveryChallanController {
           code: 1,
           message: "Delivery Challan not found for this organization",
         });
+      }
+
+      const deleteLock = docLocks.challanDeleteBlock(deliveryChallan);
+      if (deleteLock) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: deleteLock });
       }
 
       // Perform soft delete by setting deleted_at timestamp
@@ -733,6 +746,15 @@ class DeliveryChallanController {
         updateObj.invoiced_status_formatted = "Not Invoiced";
       }
 
+      const current = await DeliveryChallan.findOne(
+        { deliverychallan_id, organization_id, deleted_at: null },
+        { status: 1, invoices: 1, invoiced_status: 1 }
+      ).lean();
+      const lockReason = current && docLocks.challanStatusBlock(current, { status, invoiced_status });
+      if (lockReason) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: lockReason });
+      }
+
       // Update delivery challan
       const updatedChallan = await DeliveryChallan.findOneAndUpdate(
         {
@@ -830,6 +852,7 @@ class DeliveryChallanController {
       const invoicePayload = await createInvoiceData(req, invoiceData);
       const createdInvoice = await new InvoiceCollection(invoicePayload).save();
       await postInvoiceJournal(createdInvoice);
+      await stockHelper.syncInvoice(createdInvoice);
       if (!createdInvoice || !createdInvoice._id) {
         console.error("Invalid invoice response:", createInvoiceResponse.data);
         return res.status(500).send({

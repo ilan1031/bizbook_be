@@ -33,7 +33,7 @@ class PortalPasswordController {
         expiresIn: "30m",
       });
       const link = `${portalBase()}/portal/reset-password?token=${encodeURIComponent(token)}`;
-      await module.exports.sendMail({
+      const sent = await module.exports.sendMail({
         to: client.email,
         subject: "Reset your customer portal password",
         text: `Use this link within 30 minutes to choose a new password:\n${link}\n\nIf you didn't ask for this, ignore this email.`,
@@ -44,6 +44,9 @@ class PortalPasswordController {
 <p style="color:#666;font-size:13px">If you didn't ask for this, ignore this email.</p>`
         ),
       });
+      // The reply stays generic (no account hints), but a failed send must not
+      // vanish silently: it is logged and shows as "Email failing" in Users & Access.
+      if (!sent.ok) console.error(`[portal reset] reset email not sent via ${sent.target}: ${sent.error}`);
       return res.status(ST_CODES.OK).json(generic);
     } catch (error) {
       console.error("portal forgotPassword error:", error);

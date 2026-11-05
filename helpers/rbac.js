@@ -37,6 +37,10 @@ const PAGES = [
   { key: "recurringBills", label: "Recurring Bills", group: "Purchase", routes: ["/purchase/recurringbills"] },
   { key: "vendorCredits", label: "Vendor Credits", group: "Purchase", routes: ["/purchase/vendorcredits"] },
 
+  // Stock on hand and its history (view only); adjustments post stock and a journal.
+  { key: "inventory", label: "Stock Summary", group: "Inventory", routes: ["/inventory"], actions: VIEW_ONLY },
+  { key: "inventoryAdjustments", label: "Inventory Adjustments", group: "Inventory", routes: ["/inventory/adjustments"] },
+
   { key: "timesheets", label: "Timesheets", group: "Time Tracking", routes: ["/time/timesheets"], planned: true },
   { key: "projects", label: "Projects", group: "Time Tracking", routes: ["/time/projects"], planned: true },
 
@@ -46,6 +50,7 @@ const PAGES = [
   { key: "profitAndLoss", label: "Profit and Loss", group: "Reports", routes: ["/reports/profitandloss"], actions: VIEW_ONLY },
   { key: "balanceSheet", label: "Balance Sheet", group: "Reports", routes: ["/reports/balancesheet"], actions: VIEW_ONLY },
   { key: "journalReport", label: "Journal Report", group: "Reports", routes: ["/reports/journalreport"], actions: VIEW_ONLY },
+  { key: "inventoryValuation", label: "Inventory Valuation", group: "Reports", routes: ["/reports/inventoryvaluation"], actions: VIEW_ONLY },
 
   // Features: switched on per user like pages. apiOnly ones have no screen
   // of their own (they're buttons, menus or behaviour inside other screens).
@@ -61,6 +66,9 @@ const PAGES = [
   { key: "notifications", label: "Notifications", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
   { key: "bulkActions", label: "Bulk Actions on lists", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
   { key: "exportData", label: "Export & Print", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
+  // The org admin may invite and manage a team (Settings > Users & Roles).
+  // Team members never have this (helpers/teamAccess.js). Limit: per org.
+  { key: "teamUsers", label: "Team users", group: "Features", routes: [], apiOnly: true, actions: VIEW_ONLY },
   { key: "documents", label: "Documents", group: "Other", routes: ["/documents"], planned: true },
   { key: "payroll", label: "Payroll", group: "Other", routes: ["/payroll"], planned: true },
   { key: "configure", label: "Configure Features", group: "Other", routes: ["/configure"], planned: true },
@@ -86,6 +94,7 @@ const FEATURE_RULES = [
   { re: /^\/api\/v1\/user\/notifications$/, feature: "notifications", action: "view" },
   { re: /^\/api\/v1\/(sales|purchase|common)\/export$/, feature: "exportData", action: "view" },
   { re: /^\/api\/v1\/org\/templates(\/|$)/, methods: ["PUT", "POST", "PATCH", "DELETE"], feature: "templates", action: "edit" },
+  { re: /^\/api\/v1\/team(\/|$)/, feature: "teamUsers", action: "view" },
 ];
 
 // Backend API rules, checked in order; the first match wins.
@@ -97,8 +106,17 @@ const API_RULES = [
   { re: /^\/api\/v1\/(user|client)\//, open: true },
   { re: /^\/api\/v1\/(verify-token|verifyEmail)$/, open: true },
   { re: /^\/api\/v1\/(org|organization)(\/|$)/, open: true },
+  // Team management: the feature gate above decides who may use it.
+  { re: /^\/api\/v1\/team(\/|$)/, open: true },
 
   { re: /^\/api\/v1\/kpi\//, pages: ["home"] },
+  // Stock: the settings are read by anyone with a page, changed with the items page;
+  // the valuation report and adjustments have their own pages.
+  { re: /^\/api\/v1\/inventory\/settings$/, pages: ["items"], sharedRead: true },
+  { re: /^\/api\/v1\/inventory\/valuation$/, pages: ["inventoryValuation"] },
+  { re: /^\/api\/v1\/inventory\/adjustments(\/|$)/, pages: ["inventoryAdjustments"] },
+  { re: /^\/api\/v1\/inventory\/lookups$/, pages: ["inventoryAdjustments", "inventory"], sharedRead: true },
+  { re: /^\/api\/v1\/inventory(\/|$)/, pages: ["inventory"] },
   // Lookups that document forms need for their dropdowns (customers,
   // vendors, items, employees...) are readable by anyone with at least one
   // page (sharedRead); changing them still needs the page itself.
@@ -116,6 +134,7 @@ const API_RULES = [
   { re: /^\/api\/v1\/import\/customers$/, pages: ["customers"], action: "create" },
   { re: /^\/api\/v1\/import\/vendors$/, pages: ["vendors"], action: "create" },
   { re: /^\/api\/v1\/import\/items$/, pages: ["items"], action: "create" },
+  { re: /^\/api\/v1\/import\/accounts$/, pages: ["chartOfAccounts"], action: "create" },
   { re: /^\/api\/v1\/ask$/, pages: ["assistant"], action: "view" },
   { re: /^\/api\/v1\/(invoices|invoice-id|invoice)(\/|$)/, pages: ["invoices"] },
   { re: /^\/api\/v1\/(salesorders|sales-order)(\/|$)|^\/api\/v1\/sales\/unique-id$/, pages: ["salesOrders"] },
@@ -142,11 +161,36 @@ const API_RULES = [
   { re: /^\/api\/v1\/manual-journals(\/|$)/, pages: ["journalEntries"] },
   // A document's own journal entry is shown on its detail page.
   { re: /^\/api\/v1\/get-individual-journal$/, pages: ["journalReport", "journalEntries"], action: "view", sharedRead: true },
-  { re: /^\/api\/v1\/get-journal$/, pages: ["journalReport", "journalEntries"], action: "view" },
+  { re: /^\/api\/v1\/get-journal$/, pages: ["journalReport"], action: "view" },
   { re: /^\/api\/v1\/reports\/profit-loss\//, pages: ["profitAndLoss"], action: "view" },
   { re: /^\/api\/v1\/reports\/balance-sheet$/, pages: ["balanceSheet"], action: "view" },
 
   { re: /^\/api\/v1\/email\/(invite-portal|verify-invite)$/, pages: ["customerPortal"], action: "create" },
+  // Emailing a document: only users who can create or edit sales/purchase
+  // documents (helpers/emailGuard.js also fixes the sender and checks the
+  // recipients). Other email routes (logs) stay shared below.
+  {
+    re: /^\/api\/v1\/email\/(send|po-email\/send|po-email\/resend\/[^/]+)$/,
+    pages: ["quotes", "salesOrders", "deliveryChallans", "invoices", "paymentsReceived", "recurringInvoices", "creditNotes",
+      "purchaseOrders", "bills", "paymentMade", "recurringBills", "vendorCredits", "expenses", "recurringExpenses"],
+    anyAction: ["create", "edit"],
+  },
+  // Tax rates are the organisation's settings. Reading them is open to anyone
+  // with a page (the TDS/TCS modal on invoices and bills); adding or removing
+  // a rate needs the settings permission (templates: edit).
+  { re: /^\/api\/v1\/tax\/(tds|tcs)\/details$/, shared: true },
+  { re: /^\/api\/v1\/tax\/(tds|tcs)\/(create|delete\/[^/]+)$/, pages: ["templates"], action: "edit" },
+  // A customer's tax exemption belongs to the customer record.
+  { re: /^\/api\/v1\/taxes$/, pages: ["customers"], sharedRead: true },
+  // Column layouts are shared by everyone in the organisation: reading is open,
+  // changing one needs edit on a list page.
+  {
+    re: /^\/api\/v1\/columns$/,
+    pages: ["customers", "vendors", "quotes", "salesOrders", "deliveryChallans", "invoices", "paymentsReceived",
+      "recurringInvoices", "creditNotes", "purchaseOrders", "bills", "expenses", "recurringExpenses", "paymentMade",
+      "recurringBills", "vendorCredits", "items", "chartOfAccounts", "journalEntries"],
+    sharedRead: true,
+  },
   { re: /^\/api\/v1\/(taxes|tax|columns|email|common|import\/get-column)(\/|$)/, shared: true },
 ];
 
@@ -178,7 +222,7 @@ const cleanPath = (rawPath) => rawPath.split("?")[0].replace(/\/+$/, "") || "/";
 const classifyRequest = (method, rawPath) => {
   const path = cleanPath(rawPath);
   const rule = API_RULES.find((r) => r.re.test(path));
-  if (!rule || !rule.pages) return null;
+  if (!rule || !rule.pages || rule.anyAction) return null;
   return { page: rule.pages[0], action: rule.action || actionFor(method, path) };
 };
 
@@ -195,6 +239,10 @@ const checkApiAccess = (user, method, rawPath) => {
   if (!rule) return "This action isn't available to your account";
   if (rule.open) return null;
   if (rule.shared) return hasAnyPage(user) ? null : "No pages have been assigned to your account";
+  if (rule.anyAction) {
+    if (rule.pages.some((page) => rule.anyAction.some((a) => hasAction(user, page, a)))) return null;
+    return "You don't have permission to email documents";
+  }
   const action = rule.action || actionFor(method, path);
   if (rule.pages.some((page) => hasAction(user, page, action))) return null;
   if (rule.sharedRead && action === "view" && hasAnyPage(user)) return null;

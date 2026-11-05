@@ -210,7 +210,13 @@ class ImportFilesController {
         // collectionName = ExpenseCollection;
       }
 
-      const filteredKeys = keys.filter((key) => !restrictedKeys.includes(key));
+      if (!Array.isArray(keys)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: "Importing this kind of record isn't available yet.",
+        });
+      }
+      const filteredKeys = keys.filter((key) => !(restrictedKeys || []).includes(key));
       //   console.log("filteredKeys-------", filteredKeys);
       if (filteredKeys.length > 0) {
         return res.status(ST_CODES.OK).json({

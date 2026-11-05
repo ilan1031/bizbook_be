@@ -14,6 +14,8 @@ const InvoiceCollection = require("../model/invoice");
 const commonHelper = require("../helpers/commonHelpers");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const { toPaise, fromPaise, postingStatusFor } = require("../helpers/accountingHelper");
+const { priceSalesDocument, loadTaxContext } = require("../helpers/gstHelper");
+const stockHelper = require("../helpers/stockHelper");
 
 const JournalCollection = () => mongoose.model("Journal");
 const BillCollection = () => mongoose.model("PO_bill");
@@ -27,6 +29,8 @@ const orgIds = (org) => [String(org), Number(org)].filter((v) => v !== "" && !Nu
 const KINDS = {
   sales: {
     Model: CreditNote,
+    // Stock movements: goods returned come back in (see stockHelper.syncCredit).
+    stockSource: "credit_note",
     prefix: "CN",
     label: "Credit note",
     documentLabel: "invoice",
@@ -40,6 +44,7 @@ const KINDS = {
   },
   purchase: {
     Model: VendorCredit,
+    stockSource: "vendor_credit",
     prefix: "VC",
     label: "Vendor credit",
     documentLabel: "bill",
@@ -166,6 +171,11 @@ const buildLines = (kind, rawLines, accounts) => {
     const accountId = raw.account_id || kind.defaultLineAccount.id;
     const account = accounts.get(accountId);
     if (!account || account.is_active === false) return { error: `Line ${n}: choose a valid account.` };
+    let gstRate = 0;
+    if (kind === KINDS.sales && raw.gst_rate !== undefined && raw.gst_rate !== null && raw.gst_rate !== "") {
+      gstRate = Number(raw.gst_rate);
+      if (!Number.isFinite(gstRate) || gstRate < 0 || gstRate > 100) return { error: `Line ${n}: GST rate must be between 0 and 100%.` };
+    }
     const amount = toPaise(quantity * rate);
     total += amount;
     lines.push({
@@ -177,10 +187,49 @@ const buildLines = (kind, rawLines, accounts) => {
       amount: fromPaise(amount),
       account_id: account.account_id,
       account_name: account.account_name,
+      hsn_or_sac: String(raw.hsn_or_sac || "").slice(0, 20),
+      gst_rate: gstRate,
+      taxable_amount: fromPaise(amount),
     });
   }
   if (total <= 0) return { error: "The total must be more than 0." };
   return { lines, total: fromPaise(total) };
+};
+
+// A credit note reverses the GST of what it credits: CGST + SGST within the
+// seller's state, IGST otherwise (same rules as the invoice). Returns the
+// fields to store on the credit. Vendor credits carry no GST here.
+const priceCredit = async (kind, organization_id, contact, built, placeOfSupply) => {
+  if (kind !== KINDS.sales) {
+    return { line_items: built.lines, sub_total: built.total, total: built.total, gst_total: 0, cgst_total: 0, sgst_total: 0, igst_total: 0, supply_type: "" };
+  }
+  const doc = {
+    customer_id: contact.contact_id,
+    place_of_supply: placeOfSupply || contact.place_of_contact || "",
+    gst_treatment: contact.gst_treatment || "",
+    line_items: built.lines.map((l) => ({ ...l })),
+  };
+  priceSalesDocument(doc, await loadTaxContext(organization_id, doc));
+  const lines = built.lines.map((l, i) => ({
+    ...l,
+    gst_rate: doc.line_items[i].gst_rate,
+    taxable_amount: doc.line_items[i].taxable_amount,
+    gst_amount: doc.line_items[i].gst_amount,
+    cgst_amount: doc.line_items[i].cgst_amount,
+    sgst_amount: doc.line_items[i].sgst_amount,
+    igst_amount: doc.line_items[i].igst_amount,
+  }));
+  return {
+    line_items: lines,
+    place_of_supply: doc.place_of_supply,
+    supply_type: doc.supply_type,
+    sub_total: doc.sub_total,
+    gst_total: doc.gst_total,
+    cgst_total: doc.cgst_total,
+    sgst_total: doc.sgst_total,
+    igst_total: doc.igst_total,
+    total: fromPaise(toPaise(doc.sub_total) + toPaise(doc.gst_total)),
+  };
 };
 
 const raiseJournalLines = (kind, credit) => {
@@ -197,6 +246,16 @@ const raiseJournalLines = (kind, credit) => {
     amount: fromPaise(paise),
     amount_formatted: money(fromPaise(paise)),
   }));
+  // Output GST reversed by a credit note.
+  for (const [id, name, value] of [
+    ["AC_029", "Output CGST", credit.cgst_total],
+    ["AC_030", "Output SGST", credit.sgst_total],
+    ["AC_028", "Output IGST", credit.igst_total],
+  ]) {
+    if (toPaise(value) > 0) {
+      lines.push({ coa_account_id: id, coa_account_name: name, creditOrDebit: kind.lineSide, amount: fromPaise(toPaise(value)), amount_formatted: money(value) });
+    }
+  }
   lines.push({
     coa_account_id: kind.controlAccount.id,
     coa_account_name: kind.controlAccount.name,
@@ -256,7 +315,7 @@ const makeController = (kind) => {
           ItemCollection()
             .find(
               { organization_id, deleted_at: null, status: { $ne: "inactive" } },
-              { item_id: 1, name: 1, rate: 1, purchase_rate: 1, description: 1 }
+              { item_id: 1, name: 1, rate: 1, purchase_rate: 1, description: 1, gst_rate: 1, hsn_or_sac: 1, intra_state_tax_rate: 1 }
             )
             .sort({ name: 1 })
             .lean(),
@@ -276,6 +335,7 @@ const makeController = (kind) => {
               name: i.name,
               rate: kind === KINDS.sales ? i.rate : i.purchase_rate ?? i.rate,
               description: i.description || "",
+              ...(kind === KINDS.sales ? { gst_rate: Number(i.gst_rate) || 0, hsn_or_sac: i.hsn_or_sac || "" } : {}),
             })),
             accounts: [...accounts.values()]
               .filter((a) => a.is_active !== false)
@@ -336,6 +396,7 @@ const makeController = (kind) => {
         const built = buildLines(kind, body.line_items, accounts);
         if (built.error) return bad(res, built.error);
         const status = body.status === "draft" ? "draft" : "open";
+        const priced = await priceCredit(kind, organization_id, contact, built, body.place_of_supply);
 
         const credit_number = await commonHelper.generateUniqueId(kind.Model, "credit_number", 5, kind.prefix);
         const journal_id = await newJournalId();
@@ -348,9 +409,9 @@ const makeController = (kind) => {
           date: new Date(body.date),
           reference_number: String(body.reference_number || "").slice(0, 100),
           notes: String(body.notes || "").slice(0, 2000),
-          line_items: built.lines,
-          total: built.total,
-          balance: built.total,
+          document_id: String(body.document_id || "").slice(0, 50),
+          ...priced,
+          balance: priced.total,
           status,
           journal_id,
         });
@@ -368,6 +429,7 @@ const makeController = (kind) => {
           );
           await credit.save({ session });
         });
+        await stockHelper.syncCredit(credit, kind.stockSource);
         return res.status(ST_CODES.CREATED).json({ status: true, message: `${kind.label} created`, data: credit });
       } catch (error) {
         console.error(`${kind.label} create error:`, error);
@@ -389,6 +451,7 @@ const makeController = (kind) => {
         if (Number.isNaN(date.getTime())) return bad(res, "Pick a valid date.");
         const built = buildLines(kind, body.line_items, await accountsOf(credit.organization_id));
         if (built.error) return bad(res, built.error);
+        const priced = await priceCredit(kind, credit.organization_id, contact, built, body.place_of_supply ?? credit.place_of_supply);
 
         Object.assign(credit, {
           contact_id: body.contact_id || credit.contact_id,
@@ -396,9 +459,8 @@ const makeController = (kind) => {
           date,
           reference_number: String(body.reference_number ?? credit.reference_number).slice(0, 100),
           notes: String(body.notes ?? credit.notes).slice(0, 2000),
-          line_items: built.lines,
-          total: built.total,
-          balance: built.total,
+          ...priced,
+          balance: priced.total,
         });
         if (body.status === "open" || body.status === "draft") credit.status = body.status;
         await mongoose.connection.transaction(async (session) => {
@@ -415,6 +477,7 @@ const makeController = (kind) => {
           );
           await credit.save({ session });
         });
+        await stockHelper.syncCredit(credit, kind.stockSource);
         return res.status(ST_CODES.OK).json({ status: true, message: `${kind.label} updated`, data: credit });
       } catch (error) {
         console.error(`${kind.label} update error:`, error);
@@ -440,6 +503,7 @@ const makeController = (kind) => {
           );
           await credit.save({ session });
         });
+        await stockHelper.syncCredit(credit, kind.stockSource);
         return res.status(ST_CODES.OK).json({ status: true, message: `${kind.label} marked ${status}`, data: credit });
       } catch (error) {
         console.error(`${kind.label} status error:`, error);
@@ -456,6 +520,7 @@ const makeController = (kind) => {
           await JournalCollection().deleteOne({ journal_id: credit.journal_id, organization_id: credit.organization_id }, { session });
           await kind.Model.deleteOne({ _id: credit._id }, { session });
         });
+        await stockHelper.clearSource(credit.organization_id, kind.stockSource, String(credit._id));
         return res.status(ST_CODES.OK).json({ status: true, message: `${kind.label} deleted` });
       } catch (error) {
         console.error(`${kind.label} delete error:`, error);

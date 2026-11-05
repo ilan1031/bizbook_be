@@ -43,6 +43,9 @@ const JournalSchema = new mongoose.Schema(
         },
         amount: { type: Number },
         amount_formatted: { type: String },
+        // Cost of the stock a sale, credit note or vendor credit moved. Rewritten
+        // from the stock ledger on every stock change (helpers/stockHelper).
+        stock_line: { type: Boolean, default: false },
 
         // "customer_id": "string",
         // "line_id": "460000000038005",
@@ -111,5 +114,9 @@ JournalSchema.pre(
     }
   }
 );
+
+// Every report and ledger reads journals by org, admin and date; without this index
+// each one scans the whole collection.
+JournalSchema.index({ organization_id: 1, admin_id: 1, journal_date: 1 });
 
 module.exports = mongoose.model("Journal", JournalSchema);

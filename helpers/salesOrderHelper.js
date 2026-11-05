@@ -41,6 +41,9 @@ exports.createSalesData = async (req, rawData) => {
   // User info and default status
   bData.created_by_id = userId;
   bData.last_modified_by_id = userId;
+  // The person who signed in (a team member acts in the admin's books).
+  bData.created_by_actor_id = req.res?.locals?.actor_id || userId;
+  bData.created_by_actor_name = req.res?.locals?.actor_name || "";
   bData.status = bData.status || "draft";
   bData.status_formatted = bData.status_formatted || "Draft";
   bData.organization_id = organization_id;

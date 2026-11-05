@@ -6,5 +6,7 @@ const authMiddleware = require("../middleware/userMiddleware");
 
 // Get profit and loss report (bill & invoice)
 router.get("/reports/profit-loss/bill-invoice", authMiddleware, ProfitLossController.getProfitLossReport);
+// The same figures per calendar month, in one call (the home page income card)
+router.get("/reports/profit-loss/bill-invoice/monthly", authMiddleware, ProfitLossController.getProfitLossMonthly);
 
 module.exports = router;

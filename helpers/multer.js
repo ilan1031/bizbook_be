@@ -71,6 +71,7 @@ const allowedUploadTypes = {
   "application/vnd.ms-excel": [".xls"],
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
   "text/csv": [".csv"],
+  "text/plain": [".txt"],
 };
 
 const fileFilter = (req, file, cb) => {
@@ -80,12 +81,10 @@ const fileFilter = (req, file, cb) => {
   if (allowedExtensions && allowedExtensions.includes(ext)) {
     cb(null, true);
   } else {
-    cb(
-      new Error(
-        "Invalid file type. Only JPG, PNG, PDF, Excel, and CSV are allowed."
-      ),
-      false
-    );
+    // A wrong file type is the user's input, so it is a 400 with this message.
+    const err = new Error("Invalid file type. Only JPG, PNG, PDF, Excel, CSV and text files are allowed.");
+    err.status = 400;
+    cb(err, false);
   }
 };
 

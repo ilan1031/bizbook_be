@@ -28,13 +28,14 @@
 const express = require("express");
 const router = express.Router();
 const emailController = require("../controllers/poEmailController");
+const { guardDocumentEmail } = require("../helpers/emailGuard");
 const authMiddleware = require("../middleware/userMiddleware");
 
 // Apply authentication middleware to all routes
 
 
 // Send PO email
-router.post("/po-email/send", authMiddleware, emailController.sendEmail);
+router.post("/po-email/send", authMiddleware, guardDocumentEmail, emailController.sendEmail);
 // Get PO email logs for an organization
 router.get("/po-email/logs", authMiddleware, emailController.getEmailLogs);
 // Get PO email log details by ID

@@ -9,6 +9,9 @@ const MESSAGES = require("../helpers/messageHelpers");
 const commonHelper = require("../helpers/commonHelpers");
 const userActivityHelper = require("../helpers/userActivityHelper");
 const { postingStatusFor, syncJournalPosting } = require("../helpers/accountingHelper");
+const { priceBill, billJournalLines, PurchaseInputError, toPaise, fromPaise } = require("../helpers/purchaseHelper");
+const stockHelper = require("../helpers/stockHelper");
+const docLocks = require("../helpers/docLocks");
 const JournalCollection = mongoose.model("Journal");
 
 function createComments(
@@ -52,44 +55,41 @@ function createComments(
 const billMoney = (amount) =>
   `₹${Number(amount || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-// Journal lines for a bill: each item debits its expense account, tax and
-// adjustments follow, and the amount owed is credited to Accounts Payable.
-// GST is input credit (debit); TDS withheld from the vendor is a liability
-// (credit TDS Payable) and reduces what the vendor is paid.
-const buildBillJournal = (bData) => {
-  const sub_total = Number(bData.sub_total || bData.total || 0);
-  const discount = Number(bData.discount_amount || 0);
-  const adjustment = Number(bData.adjustment || 0);
-  const tax_percentage = Number(bData.tax_percentage || 0);
-  const tax_type = bData.tax_type; // "TDS" or "GST"
-  const tax_amount = (tax_percentage / 100) * (sub_total - discount);
-  const total_payable =
-    sub_total - discount + (tax_type === "GST" ? tax_amount : -tax_amount) + adjustment;
+// Prices a bill on the server (see priceBill) and returns its journal lines.
+// The vendor's place of supply and the organisation's state decide whether
+// GST is CGST + SGST or IGST. Throws PurchaseInputError for bad input.
+const priceBillWithJournal = async (bData, orgId) => {
+  let vendorState = bData.source_of_supply;
+  if (!vendorState && mongoose.isValidObjectId(bData.vendor_id)) {
+    const v = await VendorCollection.findOne({ _id: bData.vendor_id }, { place_of_contact: 1 }).lean();
+    vendorState = v?.place_of_contact;
+  }
+  const org = await OrgCollection.findOne({ organization_id: orgId }, { state: 1, gst_in: 1 }).lean();
+  const orgState = bData.destination_of_supply || org?.gst_in || org?.state;
+  const priced = priceBill(bData, { vendorState, orgState });
+  // Goods that track inventory debit Inventory Asset (services and untracked items keep their account).
+  const codes = [...new Set((bData.items || []).map((it) => String(it?.item_id || "")).filter(Boolean))];
+  const stockItems = codes.length
+    ? await mongoose.model("Item").find({ organization_id: String(orgId), item_id: { $in: codes }, track_inventory: true }, { item_id: 1, item_type: 1 }).lean()
+    : [];
+  const trackedIds = new Set(stockItems.filter((i) => (i.item_type || "goods") !== "service").map((i) => String(i.item_id)));
+  const lines = billJournalLines(bData, priced, trackedIds);
+  return { lines, total_payable: bData.total };
+};
 
-  const line = (coa_account_id, coa_account_name, creditOrDebit, amount) => ({
-    coa_account_id,
-    coa_account_name,
-    creditOrDebit,
-    amount,
-    amount_formatted: billMoney(amount),
-  });
-  const lines = [];
-  const items = Array.isArray(bData.items) ? bData.items.filter((i) => Number(i.amount || 0)) : [];
-  if (items.length) {
-    for (const item of items) {
-      lines.push(line(item.account_id || "AC_078", item.account_name || "Cost of Goods Sold", "Debit", Number(item.amount)));
-    }
-  } else {
-    lines.push(line("AC_078", "Cost of Goods Sold", "Debit", sub_total));
+const badBillInput = (res, e) => {
+  if (e instanceof PurchaseInputError) {
+    res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: e.message });
+    return true;
   }
-  if (tax_type === "GST" && tax_amount > 0) lines.push(line("AC_010", "Input Tax Credits", "Debit", tax_amount));
-  else if (tax_type === "TDS" && tax_amount > 0) lines.push(line("AC_022", "TDS Payable", "Credit", tax_amount));
-  if (discount !== 0) lines.push(line("AC_075", "Purchase Discounts", "Credit", Math.abs(discount)));
-  if (adjustment !== 0) {
-    lines.push(line("AC_065", "Other Expenses", adjustment > 0 ? "Debit" : "Credit", Math.abs(adjustment)));
-  }
-  lines.push(line("AC_032", "Accounts Payable", "Credit", total_payable));
-  return { lines, total_payable };
+  return false;
+};
+
+// Status of a saved (not draft/void) bill from what's been paid against it.
+const paymentStatus = (totalPaise, paidPaise) => {
+  if (paidPaise <= 0) return { status: 0, status_type: "OPEN" };
+  if (paidPaise >= totalPaise) return { status: 3, status_type: "PAID" };
+  return { status: 0, status_type: "PARTIALLY PAID" };
 };
 
 // Fields a client may not change on a bill.
@@ -173,6 +173,39 @@ class billsController {
       // Convert numeric status to string before storing
       bData.status_type = statusMap[bData.status];
 
+      for (const field of BILL_PROTECTED_FIELDS) delete bData[field];
+      if (!bData.vendor_id || !mongoose.isValidObjectId(bData.vendor_id)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "Choose a vendor for the bill." });
+      }
+      if (!bData.billDate || isNaN(new Date(bData.billDate))) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "Enter a valid bill date." });
+      }
+      if (bData.dueDate && new Date(bData.dueDate) < new Date(bData.billDate)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "The due date can't be before the bill date." });
+      }
+      const linkedPoIds = (Array.isArray(bData.purchase_orders) ? bData.purchase_orders : [])
+        .map((po) => po?.po_ref_id || po?._id || po)
+        .filter((id) => mongoose.isValidObjectId(id));
+      if (linkedPoIds.length) {
+        const closed = await PurchaseOrderCollection.findOne(
+          { _id: { $in: linkedPoIds }, status_type: { $in: ["CANCELED", "CANCEL", "VOID"] } },
+          { purchase_number: 1, status_type: 1 }
+        ).lean();
+        if (closed) {
+          return res.status(ST_CODES.BAD_REQUEST).json({
+            success: false,
+            message: `Purchase order ${closed.purchase_number} is ${String(closed.status_type).toLowerCase()} and can't be billed.`,
+          });
+        }
+      }
+      let Journal_line_items, total_payable;
+      try {
+        ({ lines: Journal_line_items, total_payable } = await priceBillWithJournal(bData, orgId));
+      } catch (e) {
+        if (badBillInput(res, e)) return;
+        throw e;
+      }
+
       await session.startTransaction();
 
       try {
@@ -199,8 +232,6 @@ class billsController {
           });
         }
         bData["organization_id"] = orgData.organization_id;
-
-        const { lines: Journal_line_items, total_payable } = buildBillJournal(bData);
 
         // Generate unique Journal ID (standardized with lowercase 'journal_id')
         let journalUniqueId = await commonHelper.generateUniqueId(
@@ -278,13 +309,23 @@ class billsController {
         const poIds = (Array.isArray(bData.purchase_orders) ? bData.purchase_orders : [])
           .map((po) => po?.po_ref_id || po?._id || po)
           .filter((id) => mongoose.isValidObjectId(id));
+        // Purchase orders keep their organisation in org_id.
         let purchaseOrderUpdate = await PurchaseOrderCollection.updateMany(
           {
             _id: { $in: poIds },
-            organization_id: orgId,
-            billed_status: { $ne: "Billed" },
+            org_id: orgId,
+            admin_id,
+            billed_status: { $nin: ["Billed", "billed"] },
           },
-          { $set: { billed_status: "Billed" } },
+          {
+            $set: {
+              billed_status: "Billed",
+              billed_status_formatted: "Billed",
+              status: 1,
+              status_type: "CLOSED",
+            },
+            $push: { bills: { bill_ref_id: billId } },
+          },
           { session }
         );
 
@@ -292,6 +333,8 @@ class billsController {
 
         // If everything is successful, commit the transaction
         await session.commitTransaction();
+        // Stock in for the bill's goods (no-op for draft bills).
+        await stockHelper.syncBill(createBill[0]);
 
         return res.status(ST_CODES.CREATED).json({
           success: true,
@@ -559,6 +602,7 @@ class billsController {
       // We need to query without directly using it as an ObjectId
       let billData = await BillsCollection.findOne({
         admin_id: res.locals.user_id,
+        organization_id: org_id,
         bill_number: bill_id,
       })
         .populate("vendor_id")
@@ -655,6 +699,41 @@ class billsController {
       const statusMap = { 0: "OPEN", 1: "DRAFT", 2: "VOID", 3: "PAID" };
       if (bData.status !== undefined && statusMap[bData.status]) bData.status_type = statusMap[bData.status];
       if (bData.dueDate) bData.due_date = bData.dueDate;
+      // A recorded or paid bill can't go back to draft, and a void one can't be reopened.
+      const billLock = docLocks.billStatusBlock(findBill, bData.status_type || findBill.status_type);
+      if (billLock) return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: billLock });
+      const billDate = bData.billDate || findBill.billDate;
+      const dueDate = bData.due_date || findBill.due_date;
+      if (billDate && dueDate && new Date(dueDate) < new Date(billDate)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "The due date can't be before the bill date." });
+      }
+
+      // Re-price from the saved bill plus the changes, then keep what's
+      // still due in step with the new total and what's been paid.
+      const merged = { ...findBill.toObject(), ...bData };
+      let repriced;
+      try {
+        repriced = await priceBillWithJournal(merged, org_id);
+      } catch (e) {
+        if (badBillInput(res, e)) return;
+        throw e;
+      }
+      for (const f of ["items", "sub_total", "subtotal", "discount_amount", "tax_amount", "taxAmount", "tax_type",
+        "supply_type", "gst_total", "cgst_total", "sgst_total", "igst_total", "adjustment", "total", "total_formatted"]) {
+        bData[f] = merged[f];
+      }
+      const totalPaise = toPaise(merged.total);
+      const paidPaise = toPaise(findBill.payment_made) + toPaise(findBill.vendor_credits_applied);
+      if (totalPaise < paidPaise) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: `₹${fromPaise(paidPaise).toFixed(2)} has already been paid on this bill, so its total can't be less than that.`,
+        });
+      }
+      bData.due_amt = fromPaise(totalPaise - paidPaise);
+      bData.balance = bData.due_amt;
+      const newType = bData.status_type || findBill.status_type;
+      if (!["DRAFT", "VOID"].includes(newType)) Object.assign(bData, paymentStatus(totalPaise, paidPaise));
       await userActivityHelper(
         res.locals.user_id,
         org_id,
@@ -677,7 +756,7 @@ class billsController {
 
       // Re-post the bill's journal from the saved bill.
       if (updatedBill && updatedBill.journal_id) {
-        const { lines, total_payable } = buildBillJournal(updatedBill.toObject());
+        const { lines, total_payable } = repriced;
         await JournalCollection.findOneAndUpdate(
           { journal_id: updatedBill.journal_id, organization_id: String(org_id) },
           {
@@ -693,6 +772,9 @@ class billsController {
           }
         );
       }
+
+      // Stock follows the bill: its old lines are reversed, the new ones applied.
+      if (updatedBill) await stockHelper.syncBill(updatedBill);
 
       // If bill is found and updated, return the updated document
       if (updatedBill) {
@@ -755,9 +837,16 @@ class billsController {
           });
       }
 
-      // Check if journal exists before deletion
+      if (Number(billToDelete.payment_made || 0) > 0 || Number(billToDelete.vendor_credits_applied || 0) > 0) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          message: "Payments or vendor credits are applied to this bill. Delete them first, then delete the bill.",
+        });
+      }
+
+      // Only this bill's own journal goes with it.
       const journalToDelete = await JournalCollection.findOne({
-        journal_id: journal_id,
+        journal_id: billToDelete.journal_id || journal_id,
+        organization_id: String(org_id),
       });
 
       if (!journalToDelete) {
@@ -775,8 +864,11 @@ class billsController {
 
       // Delete journal entry
       const deleteJournal = await JournalCollection.findOneAndDelete({
-        journal_id: journal_id,
+        journal_id: journalToDelete.journal_id,
+        organization_id: String(org_id),
       });
+
+      await stockHelper.clearSource(org_id, "bill", String(deleteBill._id));
 
       // Log user activity (fix typo: "ny" -> "by")
       await userActivityHelper(
@@ -861,6 +953,7 @@ class billsController {
           }
         );
         await syncJournalPosting(findBill.journal_id, org_id, "VOID");
+        await stockHelper.syncBill(await BillsCollection.findById(findBill._id).lean());
         return res.status(ST_CODES.OK).json({
           success: true,
           message: "Bill status updated successfully",
@@ -868,7 +961,7 @@ class billsController {
       }
 
       return res.status(ST_CODES.BAD_REQUEST).json({
-        success: true,
+        success: false,
         message: "Invalid bill status cannot be updated.",
       });
     } catch (error) {
@@ -893,6 +986,10 @@ class billsController {
           success: false,
           message: "Bill not found",
         });
+      }
+      const draftLock = docLocks.billStatusBlock(findBill, "DRAFT");
+      if (draftLock) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: draftLock });
       }
       const commented_by_id = res.locals.user_id || ""; // from request context
       const commented_by = res.user?.company_name || "System";
@@ -925,6 +1022,7 @@ class billsController {
           }
         );
         await syncJournalPosting(findBill.journal_id, org_id, "DRAFT");
+        await stockHelper.syncBill(await BillsCollection.findById(findBill._id).lean());
         return res.status(ST_CODES.OK).json({
           success: true,
           message: "Bill status updated successfully",
@@ -992,6 +1090,7 @@ class billsController {
           }
         );
         await syncJournalPosting(findBill.journal_id, org_id, "OPEN");
+        await stockHelper.syncBill(await BillsCollection.findById(findBill._id).lean());
         return res.status(ST_CODES.OK).json({
           success: true,
           message: "Bill status updated successfully",
@@ -1002,6 +1101,7 @@ class billsController {
           { $set: { status: 3, status_type: "PAID" }, $push: { comments: comment } }
         );
         await syncJournalPosting(findBill.journal_id, org_id, "PAID");
+        await stockHelper.syncBill(await BillsCollection.findById(findBill._id).lean());
         return res.status(ST_CODES.OK).json({
           success: true,
           message: "Bill status updated successfully",
@@ -1060,7 +1160,7 @@ class billsController {
 
   async getVendorBillSummary(req, res) {
     try {
-      const { vendor_id, org_id } = req.query;
+      const { vendor_id, org_id, payment_id } = req.query;
       const admin_id = res.locals.user_id;
 
       if (!vendor_id || !org_id) {
@@ -1070,10 +1170,24 @@ class billsController {
         });
       }
 
+      // Bills that can still be paid: not paid, draft or void. When editing
+      // a payment, its own bills are included too, with what it applied.
+      const PaymentCollection = mongoose.model("Payment");
+      const payment = payment_id
+        ? await PaymentCollection.findOne({ payment_id, organization_id: String(org_id), admin_id, is_deleted: { $ne: true } }).lean()
+        : null;
+      const appliedHere = new Map((payment?.bills || []).map((b) => [String(b.bill_id), Number(b.amount_applied || 0)]));
       const vendorQuery = {
         admin_id,
         organization_id: org_id,
-        status: { $ne: 3 },
+        $and: [
+          {
+            $or: [
+              { status: { $nin: [1, 2, 3] }, status_type: { $nin: ["DRAFT", "VOID", "PAID"] } },
+              { _id: { $in: [...appliedHere.keys()].filter((id) => mongoose.isValidObjectId(id)) } },
+            ],
+          },
+        ],
       };
       // Handle both string and ObjectId formats for vendor_id
       if (mongoose.Types.ObjectId.isValid(vendor_id)) {
@@ -1097,6 +1211,7 @@ class billsController {
           total: bill.total,
           due_amt: bill.due_amt,
           id: bill._id,
+          applied_in_payment: appliedHere.get(String(bill._id)) || 0,
         };
       });
 

@@ -7,6 +7,7 @@
 // to the server log instead ("console"), so local sign-in still works.
 // Never throws: returns { ok, channel?, error? }.
 const nodemailer = require("nodemailer");
+const mongoose = require("mongoose");
 
 let transporter = null;
 
@@ -15,16 +16,50 @@ const isProduction = () => process.env.NODE_ENV === "production";
 // Whether messages can go anywhere at all (a real mailbox, or the log locally).
 const canSendMail = () => isMailConfigured() || !isProduction();
 
+// Give up on a mail server that doesn't answer in seconds, not nodemailer's
+// default 2 minutes: a sign-in must not hang that long while mail is down.
+const TIMEOUTS = { connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000 };
+
+// Where mail goes, without credentials: "smtp.example.com:587", or Gmail.
+const mailTarget = () =>
+  process.env.EMAIL_HOST
+    ? `${process.env.EMAIL_HOST}:${Number(process.env.EMAIL_PORT || 465)}`
+    : "smtp.gmail.com:465 (EMAIL_HOST not set)";
+
 const getTransporter = () => {
   if (!transporter) {
     const port = Number(process.env.EMAIL_PORT || 465);
+    const auth = { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS };
     transporter = nodemailer.createTransport(
       process.env.EMAIL_HOST
-        ? { host: process.env.EMAIL_HOST, port, secure: port === 465, auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } }
-        : { service: "gmail", auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS } }
+        ? { host: process.env.EMAIL_HOST, port, secure: port === 465, auth, ...TIMEOUTS }
+        : { service: "gmail", auth, ...TIMEOUTS }
     );
   }
   return transporter;
+};
+
+// The result of the last real send, kept in Mongo (one document) so the
+// superadmin's Users & Access page can show whether mail is working.
+const HEALTH_DOC = "account";
+const recordMailHealth = (fields) => {
+  try {
+    if (mongoose.connection.readyState !== 1) return;
+    mongoose.connection.db
+      .collection("mail_status")
+      .updateOne({ _id: HEALTH_DOC }, { $set: { ...fields, checked_at: new Date() } }, { upsert: true })
+      .catch(() => {});
+  } catch (_) {
+    // Bookkeeping must never break a send.
+  }
+};
+const getMailHealth = async () => {
+  try {
+    if (mongoose.connection.readyState !== 1) return null;
+    return await mongoose.connection.db.collection("mail_status").findOne({ _id: HEALTH_DOC }, { projection: { _id: 0 } });
+  } catch (_) {
+    return null;
+  }
 };
 
 // fromName shows as the sender's name (the address stays EMAIL_USER, or
@@ -36,6 +71,7 @@ const sendMail = async ({ to, subject, text, html, fromName, replyTo }) => {
     console.log(`[EMAIL:console] to ${to}: ${subject}\n${text}`);
     return { ok: true, channel: "console" };
   }
+  const target = mailTarget();
   try {
     await getTransporter().sendMail({
       from: process.env.EMAIL_FROM || `${String(fromName || "BizBooks").replace(/[<>"]/g, "")} <${process.env.EMAIL_USER}>`,
@@ -45,10 +81,12 @@ const sendMail = async ({ to, subject, text, html, fromName, replyTo }) => {
       text,
       html,
     });
-    return { ok: true, channel: "email" };
+    recordMailHealth({ ok: true, target, error: "" });
+    return { ok: true, channel: "email", target };
   } catch (err) {
-    console.error("[mail] send failed:", err.message);
-    return { ok: false, error: err.message };
+    console.error(`[mail] send failed via ${target}:`, err.message);
+    recordMailHealth({ ok: false, target, error: err.message });
+    return { ok: false, error: err.message, target };
   }
 };
 
@@ -67,4 +105,4 @@ const layout = (title, bodyHtml) => `<!doctype html><html><body style="margin:0;
 <tr><td style="padding:24px"><h1 style="font-size:18px;margin:0 0 12px">${escapeHtml(title)}</h1>${bodyHtml}</td></tr>
 </table></td></tr></table></body></html>`;
 
-module.exports = { isMailConfigured, canSendMail, sendMail, appUrl, escapeHtml, layout };
+module.exports = { isMailConfigured, canSendMail, sendMail, appUrl, escapeHtml, layout, getTransporter, getMailHealth, mailTarget };

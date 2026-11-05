@@ -13,6 +13,7 @@ const commonHelper = require("../helpers/commonHelpers");
 const { ObjectId } = require("mongodb");
 const apiHandler = require("../handler/api-handler");
 const logUserActivity = require("../helpers/userActivityHelper");
+const docLocks = require("../helpers/docLocks");
 const uploadDir = path.resolve(__dirname, "../../uploads/general");
 const MESSAGES = require("../helpers/messageHelpers");
 
@@ -660,6 +661,13 @@ class purchaseOrderController {
       poData["tax_category"] = poData.taxCategory;
       poData["tds_tcs"] = poData.tdsOrTcs;
       poData["tax_amount"] = poData.taxAmount;
+      // A billed purchase order keeps its status when it is edited.
+      if (poData.status !== undefined) {
+        const billedPO = await PurchaseOrderCollection.findOne({ admin_id: res.locals.user_id, org_id, purchase_number: po_id }, { status: 1, bills: 1, billed_status: 1 }).lean();
+        if (billedPO && Number(poData.status) !== Number(billedPO.status) && docLocks.poBilled(billedPO)) {
+          return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: "This purchase order has been converted to a bill, so its status can't be changed." });
+        }
+      }
       poData["status_type"] = poData.status == 0 ? "ISSUED" : "CLOSED";
 
       if (poData.status === 0) {
@@ -727,6 +735,10 @@ class purchaseOrderController {
 
       const user_id = res.locals.user_id;
 
+      const billed = await PurchaseOrderCollection.findOne({ admin_id: user_id, org_id, purchase_number: po_id }, { bills: 1, billed_status: 1 }).lean();
+      const deleteLock = billed && docLocks.poDeleteBlock(billed);
+      if (deleteLock) return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: deleteLock });
+
       // Perform soft delete by updating 'deleted_at' timestamp
       const deletedPO = await PurchaseOrderCollection.findOneAndUpdate(
         {
@@ -769,9 +781,10 @@ class purchaseOrderController {
     try {
       const { org_id, po_id, status } = req.query;
 
+      // Purchase orders keep their organisation in org_id.
       const findPO = await PurchaseOrderCollection.findOne({
         admin_id: res.locals.user_id,
-        organization_id: org_id,
+        org_id: org_id,
         purchase_number: po_id,
       });
 
@@ -782,7 +795,9 @@ class purchaseOrderController {
         });
       }
 
-      if (findPO.status === 0 && status === "void") {
+      const voidLock = docLocks.poStatusBlock(findPO, "voided");
+      if (voidLock) return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: voidLock });
+      if (String(findPO.status) === "0" && status === "void") {
         await PurchaseOrderCollection.updateOne(
           { _id: findPO._id },
           { $set: { status: 2, status_type: "VOID" } }
@@ -808,9 +823,10 @@ class purchaseOrderController {
     try {
       const { org_id, po_id, status } = req.query;
 
+      // Purchase orders keep their organisation in org_id.
       const findPO = await PurchaseOrderCollection.findOne({
         admin_id: res.locals.user_id,
-        organization_id: org_id,
+        org_id: org_id,
         purchase_number: po_id,
       });
       if (!findPO) {
@@ -819,7 +835,9 @@ class purchaseOrderController {
           message: "Purchase Order not found",
         });
       }
-      if ((findPO.status === 2 || findPO.status === 4) && status === "draft") {
+      const draftLock = docLocks.poStatusBlock(findPO, "moved back to draft");
+      if (draftLock) return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: draftLock });
+      if (["2", "4"].includes(String(findPO.status)) && status === "draft") {
         await PurchaseOrderCollection.updateOne(
           { _id: findPO._id },
           { $set: { status: 1, status_type: "DRAFT" } }
@@ -845,9 +863,10 @@ class purchaseOrderController {
     try {
       const { org_id, po_id, status } = req.query;
 
+      // Purchase orders keep their organisation in org_id.
       const findPO = await PurchaseOrderCollection.findOne({
         admin_id: res.locals.user_id,
-        organization_id: org_id,
+        org_id: org_id,
         purchase_number: po_id,
       });
       if (!findPO) {
@@ -856,7 +875,7 @@ class purchaseOrderController {
           message: "Purchase Order not found",
         });
       }
-      if (findPO.status === 1 && status === "open") {
+      if (String(findPO.status) === "1" && status === "open") {
         await PurchaseOrderCollection.updateOne(
           { _id: findPO._id },
           { $set: { status: 0, status_type: "OPEN" } }
@@ -865,7 +884,7 @@ class purchaseOrderController {
           success: true,
           message: "Purchase Order status updated successfully",
         });
-      } else if (findPO.status === 1 && status === "issued") {
+      } else if (String(findPO.status) === "1" && status === "issued") {
         await PurchaseOrderCollection.updateOne(
           { _id: findPO._id },
           { $set: { status: 3, status_type: "ISSUED" } }
@@ -874,7 +893,7 @@ class purchaseOrderController {
           success: true,
           message: "Purchase Order status updated successfully",
         });
-      } else if (findPO.status === 1 && status === "cancel") {
+      } else if (String(findPO.status) === "1" && status === "cancel") {
         await PurchaseOrderCollection.updateOne(
           { _id: findPO._id },
           { $set: { status: 4, status_type: "CANCEL" } }
@@ -1107,10 +1126,12 @@ class purchaseOrderController {
         .send({ message: "Something went wrong" });
     }
   }
+  // Converts a purchase order to a bill. The bill is created like any other
+  // (priced on the server, with its journal); createBills then marks the
+  // purchase order billed and closed.
   async updatePurchaseOrderToBill(req, res) {
     try {
       let { org_id, po_id } = req.query;
-      let bData = req.body;
       let getPurchaseOrder = await PurchaseOrderCollection.findOne({
         admin_id: res.locals.user_id,
         org_id: org_id,
@@ -1118,54 +1139,23 @@ class purchaseOrderController {
       });
       if (!getPurchaseOrder) {
         return res.status(ST_CODES.NOT_FOUND).json({
-          success: true,
+          success: false,
           message: "Purchase order not found",
         });
       }
-      let billUniqueId = await commonHelper.generateUniqueId(
-        BillsCollection,
-        "bill_number",
-        7,
-        "BL"
-      );
-      if (req.file) {
-        bData["documents"] = req.file.filename;
+      if (["CANCELED", "CANCEL", "VOID", "CLOSED"].includes(getPurchaseOrder.status_type)) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          success: false,
+          message: `A ${String(getPurchaseOrder.status_type).toLowerCase()} purchase order can't be converted to a bill.`,
+        });
       }
-      // Assign additional fields
-      bData["bill_number"] = billUniqueId;
-      bData["admin_id"] = res.locals.user_id;
-      bData["purchase_orders"] = [{ po_ref_id: getPurchaseOrder._id }];
-      bData["due_amt"] = bData.total;
-      // console.log("bData", req.file, bData);
-      // // return;
-      let newBills = new BillsCollection(bData);
-      await newBills.save(); // Save the new bill
-      await logUserActivity(
-        res.locals.user_id,
-        org_id,
-        bData.vendor_id,
-        `Purchase order converted to Bill ${billUniqueId}`,
-        "Purchase order to bill converstion",
-        getPurchaseOrder._id,
-        "purchase_order"
-      );
-      // Update the purchase order with the new bill ID
-      await PurchaseOrderCollection.findOneAndUpdate(
-        {
-          admin_id: res.locals.user_id,
-          org_id: org_id,
-          purchase_number: po_id,
-        },
-        {
-          $set: { status: 1, status_type: "CLOSED" },
-          $push: { bills: { bill_ref_id: newBills._id } },
-        }
-      );
-      return res.status(ST_CODES.OK).json({
-        success: true,
-        message: "Purchase order updated with new bill",
-        data: newBills,
-      });
+      req.body = {
+        vendor_id: getPurchaseOrder.vendor_id,
+        status: 0,
+        ...req.body,
+        purchase_orders: [{ po_ref_id: getPurchaseOrder._id }],
+      };
+      return require("./billsController").createBills(req, res);
     } catch (error) {
       console.log("updatePurchaseOrderToBill error", error);
       return res
@@ -1425,6 +1415,7 @@ class purchaseOrderController {
         case 2: // Void
           updateFields.order_status = "void";
           updateFields.order_status_formatted = "Void";
+          updateFields.status_type = "VOID";
           break;
 
         case 3: // Paid
@@ -1435,6 +1426,8 @@ class purchaseOrderController {
         case 4: // Canceled
           updateFields.order_status = "canceled";
           updateFields.order_status_formatted = "Canceled";
+          // The list and the view read status_type.
+          updateFields.status_type = "CANCELED";
           break;
 
         case 6: // Received
@@ -1455,6 +1448,7 @@ class purchaseOrderController {
         case 9: // Re-open
           updateFields.order_status = "issued";
           updateFields.order_status_formatted = "Issued";
+          updateFields.status_type = "ISSUED";
           break;
 
         default:
@@ -1463,6 +1457,12 @@ class purchaseOrderController {
             message: "Invalid status code",
           });
       }
+
+      // A purchase order converted to a bill keeps its status (no draft, void, cancel or reopen).
+      const billedPO = await PurchaseOrderCollection.findOne({ purchase_number: po_id, org_id, deleted_at: null }, { bills: 1, billed_status: 1 }).lean();
+      const statusVerb = { 0: "reopened", 1: "moved back to draft", 2: "voided", 4: "cancelled", 5: "reopened", 9: "reopened" }[status];
+      const statusLock = billedPO && statusVerb && docLocks.poStatusBlock(billedPO, statusVerb);
+      if (statusLock) return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: statusLock });
 
       // Perform the update
       const updatedOrder = await PurchaseOrderCollection.findOneAndUpdate(

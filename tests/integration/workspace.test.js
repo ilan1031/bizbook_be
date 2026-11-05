@@ -209,8 +209,15 @@ test("password change checks the current password and the rules", async () => {
   assert.match(wrong.body.message, /incorrect/);
   const weak = await asUser("post", "/api/v1/user/change-password", { current_password: USER.password, new_password: "weak" });
   assert.equal(weak.status, 400);
+  await new Promise((r) => setTimeout(r, 1100)); // token times have 1-second resolution
   const ok = await asUser("post", "/api/v1/user/change-password", { current_password: USER.password, new_password: "Better@5678" });
   assert.equal(ok.status, 200, ok.text);
+  // Sessions from before the change are ended; this one carries on with the new token.
+  const oldToken = userToken;
+  assert.ok(ok.body.token, "a fresh token is returned");
+  userToken = ok.body.token;
+  assert.equal((await call("get", "/api/v1/user/me", { token: oldToken, ip: USER_IP })).status, 401, "old session ended");
+  assert.equal((await asUser("get", "/api/v1/user/me")).status, 200, "new session works");
   assert.equal((await login({ email: USER.email, password: USER.password }, USER_IP)).status, 400, "old password no longer works");
   assert.equal((await login({ email: USER.email, password: "Better@5678" }, USER_IP)).status, 200);
 });
@@ -456,7 +463,7 @@ test("portal invite: emails the customer; accepting needs the link and tells who
     assert.match(sent[1].subject, /Kumar Traders accepted your customer portal invitation/);
 
     const n = await asSa("get", `/api/v1/user/notifications?organization_id=${org}`);
-    assert.ok(n.body.data.some((i) => i.id === `portal-accepted-${person.contact_person_id}`), "shown in notifications");
+    assert.ok(n.body.data.some((i) => i.id === `${org}:portal-accepted-${person.contact_person_id}`), "shown in notifications");
 
     // Once accepted, "Resend Portal Link" emails the sign-in link, no new invitation.
     const again = await asSa("post", "/api/v1/email/invite-portal", { contactId: customer.contact_id, organizationId: org });

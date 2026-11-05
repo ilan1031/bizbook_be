@@ -19,6 +19,8 @@ router.get("/get-coa-types", authMiddleware, COA_Controllers.getCOA_types);
 router.post("/add-coa", authMiddleware, COA_Controllers.add_COA);
 // Update status of a Chart of Account
 router.post("/update-coa-status", authMiddleware, COA_Controllers.updateStatus);
+// Delete an account the user created (refused for system accounts and accounts with transactions)
+router.post("/delete-coa", authMiddleware, COA_Controllers.deleteCOA);
 // Get individual COA transaction details
 router.get("/get-coa-transaction",authMiddleware,COA_Controllers.getIndividual_COA_transaction);
 

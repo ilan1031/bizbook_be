@@ -39,6 +39,10 @@ const LineItemSchema = new mongoose.Schema({
   item_total: Number,
   unit: String,
   details: String,
+  // GST on the line (input tax credit), worked out by the server.
+  gst_rate: { type: Number, default: 0 },
+  gst_amount: { type: Number, default: 0 },
+  hsn_or_sac: String,
 });
 
 const CommentSchema = new mongoose.Schema(
@@ -73,7 +77,7 @@ const BillSchema = new mongoose.Schema(
   {
     billNumber: String,
     orderNumber: String,
-    bill_number: { type: String, unique: true, required: true, index: true },
+    bill_number: { type: String, required: true },
     admin_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "user",
@@ -118,6 +122,13 @@ const BillSchema = new mongoose.Schema(
     tax_percentage: Number,
     tax_amount: Number,
     vendor_credits_applied: { type: Number, default: 0 },
+    // "%" (discount_percent of the sub total) or "amount" (discount_amount).
+    discount_type: { type: String, default: "%" },
+    supply_type: { type: String, default: "" }, // "intra" | "inter"
+    gst_total: { type: Number, default: 0 },
+    cgst_total: { type: Number, default: 0 },
+    sgst_total: { type: Number, default: 0 },
+    igst_total: { type: Number, default: 0 },
     taxAmount: Number,
     adjustment: Number,
     payment_made: { type: Number, default: 0 },
@@ -151,5 +162,7 @@ const BillSchema = new mongoose.Schema(
   }
 );
 
+// Bill numbers are per organisation (each organisation counts its own).
+BillSchema.index({ organization_id: 1, bill_number: 1 }, { unique: true });
 const Bill = mongoose.model("PO_bill", BillSchema);
 module.exports = Bill;

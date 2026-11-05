@@ -12,7 +12,10 @@ const MESSAGES = require("../config/messages");
 const { createSalesData } = require("../helpers/salesOrderHelper");
 const InvoiceCollection = require("../model/invoice");
 const { createInvoiceData, postInvoiceJournal } = require("../helpers/invoiceHelper");
+const stockHelper = require("../helpers/stockHelper");
 const { priceSalesDocument, loadTaxContext } = require("../helpers/gstHelper");
+const { validateSalesDocument } = require("../helpers/salesValidation");
+const docLocks = require("../helpers/docLocks");
 
 // Fields priceSalesDocument sets.
 const PRICED_FIELDS = [
@@ -24,6 +27,8 @@ const PRICED_FIELDS = [
 class SalesOrderController {
   async createSalesOrder(req,res){
     try{
+      const invalid = validateSalesDocument(req.body, { label: "sales order", dueField: "shipment_date", dueLabel: "Expected shipment date" });
+      if (invalid) return res.status(400).json({ status: false, message: invalid });
       const salesData = await createSalesData(req,req.body);
       // Totals (discount, GST by place of supply, TDS/TCS) from the lines.
       priceSalesDocument(salesData, await loadTaxContext(req.query.organization_id, salesData));
@@ -444,10 +449,17 @@ class SalesOrderController {
         });
       }
 
+      // A sales order already converted to an invoice keeps its status.
+      const editLock = docLocks.salesOrderStatusBlock(salesOrder, updateData);
+      if (editLock) return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: editLock });
+
       // Re-price the order as it will be after this edit.
       delete updateData.salesorder_id;
       delete updateData.organization_id;
       const merged = { ...salesOrder.toObject(), ...updateData };
+      const invalid = validateSalesDocument(merged, { label: "sales order", dueField: "shipment_date", dueLabel: "Expected shipment date" });
+      if (invalid) return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: invalid });
+      if (updateData.line_items !== undefined) updateData.line_items = merged.line_items;
       priceSalesDocument(merged, await loadTaxContext(organization_id, merged));
       for (const field of PRICED_FIELDS) updateData[field] = merged[field];
 
@@ -502,6 +514,9 @@ class SalesOrderController {
           message: "Sales Order not found for this organization",
         });
       }
+
+      const deleteLock = docLocks.salesOrderDeleteBlock(salesOrder);
+      if (deleteLock) return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: deleteLock });
 
       // Perform soft delete by setting deleted_at timestamp
       salesOrder.deleted_at = new Date();
@@ -587,6 +602,7 @@ class SalesOrderController {
       const invoicePayload = await createInvoiceData(req, invoiceData);
       const createdInvoice = await new InvoiceCollection(invoicePayload).save();
       await postInvoiceJournal(createdInvoice);
+      await stockHelper.syncInvoice(createdInvoice);
       console.log(createdInvoice, "createdInvoice-response");
       if (!createdInvoice || !createdInvoice._id) {
         console.error("Invalid invoice response:", createInvoiceResponse.data);
@@ -700,6 +716,11 @@ class SalesOrderController {
             "Invalid status value. Must be one of: draft, sent, accepted, declined, expired",
         });
       }
+
+      // Converted to an invoice: it stays invoiced (no draft, no reopen, no void).
+      const current = await SalesOrderCollection.findOne({ salesorder_id, organization_id, deleted_at: null }, { invoice_ids: 1, invoices: 1, invoiced_status: 1, order_status: 1 }).lean();
+      const lockReason = current && docLocks.salesOrderStatusBlock(current, { status, invoiced_status, order_status });
+      if (lockReason) return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: lockReason });
 
       // Find and update the sales order
       const updatedSalesOrder = await SalesOrderCollection.findOneAndUpdate(

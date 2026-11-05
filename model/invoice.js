@@ -145,6 +145,8 @@ const InvoiceSchema = new Schema({
   currency_name_formatted: { type: String },
   status: { type: String },
   status_formatted: { type: String },
+  // First time the invoice left draft (sent, paid...). Once set, it can't go back to draft.
+  issued_at: { type: Date, default: null },
   unprocessed_payment_amount: { type: Number, default: 0 },
   unprocessed_payment_amount_formatted: { type: String, default: "" },
   custom_fields: [{ type: Object }],
@@ -257,6 +259,7 @@ const InvoiceSchema = new Schema({
   contact_persons_associated: [ContactPersonSchema],
   attachment_name: { type: String, default: "" },
   documents: { type: String, default: "" },
+  document_name: { type: String, default: "" }, // the attachment's original file name
   computation_type: { type: String, default: "basic" },
   tds_summary: [{ type: Object }],
   debit_notes: [{ type: Object }],
@@ -328,6 +331,12 @@ const InvoiceSchema = new Schema({
   created_by_id: { type: String },
   created_by_name: { type: String },
   last_modified_by_id: { type: String },
+  // The person who actually made the change. created_by_id / admin_id stay the
+  // organisation's admin (a team member works in the admin's books).
+  created_by_actor_id: { type: String },
+  created_by_actor_name: { type: String },
+  last_modified_by_actor_id: { type: String },
+  last_modified_by_actor_name: { type: String },
   page_width: { type: String, default: "" },
   page_height: { type: String, default: "" },
   orientation: { type: String, default: "portrait" },

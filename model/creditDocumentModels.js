@@ -14,6 +14,14 @@ const LineSchema = new mongoose.Schema(
     amount: { type: Number, default: 0 },
     account_id: { type: String, required: true },
     account_name: { type: String, default: "" },
+    // GST (credit notes; vendor credits leave these at 0)
+    hsn_or_sac: { type: String, default: "" },
+    gst_rate: { type: Number, default: 0 },
+    taxable_amount: { type: Number, default: 0 },
+    gst_amount: { type: Number, default: 0 },
+    cgst_amount: { type: Number, default: 0 },
+    sgst_amount: { type: Number, default: 0 },
+    igst_amount: { type: Number, default: 0 },
   },
   { _id: false }
 );
@@ -52,6 +60,16 @@ const CreditSchema = new mongoose.Schema(
     reference_number: { type: String, default: "" },
     notes: { type: String, default: "" },
     line_items: { type: [LineSchema], default: [] },
+    // Taxable value and the GST reversed (credit notes).
+    place_of_supply: { type: String, default: "" },
+    supply_type: { type: String, default: "" },
+    sub_total: { type: Number, default: 0 },
+    gst_total: { type: Number, default: 0 },
+    cgst_total: { type: Number, default: 0 },
+    sgst_total: { type: Number, default: 0 },
+    igst_total: { type: Number, default: 0 },
+    // The invoice / bill this credit was raised against (optional).
+    document_id: { type: String, default: "" },
     total: { type: Number, default: 0 },
     balance: { type: Number, default: 0 },
     // draft -> open -> closed (fully used); void cancels an unused credit.

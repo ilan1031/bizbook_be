@@ -209,6 +209,7 @@ const salesOrderSchema = new mongoose.Schema({
   },
   is_test_order: Boolean,
   notes: String,
+  subject_content: { type: String, default: "" },
   terms: String,
   payment_terms: Number,
   payment_terms_label: String,
@@ -226,6 +227,9 @@ const salesOrderSchema = new mongoose.Schema({
   last_modified_time: String,
   last_modified_time_formatted: String,
   created_by_id: String,
+  // The person who created it (a team member, or the admin themselves).
+  created_by_actor_id: String,
+  created_by_actor_name: String,
   created_date: String,
   created_date_formatted: String,
   last_modified_by_id: String,

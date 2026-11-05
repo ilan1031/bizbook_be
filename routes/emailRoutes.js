@@ -2,10 +2,11 @@ const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middleware/userMiddleware");
 const emailController = require("../controllers/emailController");
+const { guardDocumentEmail } = require("../helpers/emailGuard");
 
 
 // Send an email
-router.post("/send", authMiddleware, emailController.sendEmail.bind(emailController));
+router.post("/send", authMiddleware, guardDocumentEmail, emailController.sendEmail.bind(emailController));
 
 // Get all email logs
 router.get("/logs", authMiddleware, emailController.getEmailLogs);

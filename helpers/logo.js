@@ -1,6 +1,8 @@
 // Logos are stored inline as image data URLs (organisation logo, and the
 // older per-template logo). Anything else, or anything too big, is refused.
-const MAX_LOGO = 400 * 1024; // data URL characters, about 300 KB of image
+// Data URL characters: a 300 KB (300 * 1024 bytes) image in base64, plus the
+// "data:image/...;base64," prefix. Matches the 300 KB check on the screens.
+const MAX_LOGO = Math.ceil((300 * 1024) / 3) * 4 + 40;
 
 const LOGO_ERROR = "The logo must be a PNG, JPG, SVG or WebP image under about 300 KB";
 

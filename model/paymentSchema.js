@@ -26,6 +26,10 @@ const PaymentSchema = new mongoose.Schema(
     reference_number: { type: String },
     amount: { type: Number },
     paid_through_account_id: { type: String },
+    paid_through_account_name: { type: String },
+    // Vendor advances: the account the advance is held in.
+    deposite_to_id: { type: String },
+    deposite_to: { type: String },
     gst_treatment: { type: String },
     source_of_supply: { type: String },
     destination_of_supply: { type: String },

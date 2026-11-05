@@ -5,6 +5,7 @@ const queryHelper = require("../helpers/query");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
 const itemHelper = require("../helpers/itemHelper");
+const stockHelper = require("../helpers/stockHelper");
 
 // Helper function to create comment (outside class)
 const createComment = async (
@@ -48,6 +49,16 @@ const createComment = async (
     sentiment: "none",
   };
 };
+// Prices must be numbers of zero or more.
+const badPrice = (data) => {
+  for (const [field, label] of [["rate", "Selling price"], ["purchase_rate", "Cost price"]]) {
+    const v = data[field];
+    if (v === undefined || v === null || v === "") continue;
+    if (!Number.isFinite(Number(v)) || Number(v) < 0) return `${label} must be a number of zero or more.`;
+  }
+  return null;
+};
+
 class itemController {
   async createItem(req, res) {
     try {
@@ -69,6 +80,10 @@ class itemController {
           success: false,
           message: "Request body is empty.",
         });
+      }
+      const priceError = badPrice(bData) || stockHelper.stockFieldError(bData);
+      if (priceError) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ success: false, message: priceError });
       }
 
       // Generate unique Item ID
@@ -96,6 +111,9 @@ class itemController {
 
       // Handle response
       if (addItem.status) {
+        // Opening stock becomes the item's first stock movement.
+        const created = await Item.findOne({ item_id: itemUniqueId, organization_id: String(organization_id) });
+        if (created && created.track_inventory) await stockHelper.refreshItem(created);
         return res.status(ST_CODES.CREATED).json({
           success: true,
           message: "Item created successfully",
@@ -150,6 +168,14 @@ class itemController {
         organization_id: organization_id,
         deleted_at: null,
       };
+
+      // Load one item by its id (item code or Mongo _id), still scoped to the
+      // caller's organisation. Without this the item page only saw the newest 10.
+      if (req.query.item_id) {
+        const wanted = String(req.query.item_id);
+        query.$or = [{ item_id: wanted }];
+        if (mongoose.isValidObjectId(wanted)) query.$or.push({ _id: wanted });
+      }
 
       // Apply filters
       switch (filter) {
@@ -346,10 +372,11 @@ class itemController {
 
       console.log("Organization ID:", organization_id);
 
-      // Build query object
+      // Build query object (inactive items aren't offered on new documents)
       const query = {
         organization_id: organization_id,
         admin_id: admin_id,
+        status: { $ne: "inactive" },
       };
 
       // Add admin_id to query if available
@@ -372,6 +399,7 @@ class itemController {
           gst_rate: 1,
           is_taxable: 1,
           hsn_or_sac: 1,
+          unit: 1, // copied onto sales lines with the HSN/SAC
         }
       ).lean();
 
@@ -425,6 +453,8 @@ class itemController {
         collections: collectionsArray,
         status: status || null,
         limit: limit ? parseInt(limit) : 100,
+        // Only the caller's own items, in the organisation they're working in.
+        scope: { admin_id: res.locals.user_id, organization_id: req.query.organization_id || req.query.org_id },
       };
 
       // Get complete item data using helper with filters
@@ -480,6 +510,10 @@ class itemController {
           status: false,
           message: "Update data is required",
         });
+      }
+      const priceError = badPrice(updateData) || stockHelper.stockFieldError(updateData);
+      if (priceError) {
+        return res.status(ST_CODES.BAD_REQUEST).json({ status: false, message: priceError });
       }
 
       // Check if item exists
@@ -556,6 +590,8 @@ class itemController {
       );
 
       if (updateResult.status) {
+        const saved = await Item.findOne({ item_id: id, admin_id: admin_id });
+        if (saved && saved.track_inventory) await stockHelper.refreshItem(saved);
         // Then add the comment using $push
         await Item.updateOne(
           { item_id: id, admin_id: admin_id },
@@ -617,7 +653,44 @@ class itemController {
         });
       }
 
-      // Delete the item directly using item_id
+      const item = await Item.findOne({ item_id: id, admin_id: admin_id }).lean();
+      if (!item) {
+        return res.status(ST_CODES.NOT_FOUND).json({
+          status: false,
+          message: "Item not found or you don't have permission to delete this item",
+        });
+      }
+      // An item that's on a bill, purchase order or sales document can't be
+      // deleted; mark it inactive instead.
+      // Document lines store the item's code (item.item_id) as a String, so the
+      // code and the ObjectId string are both checked. Errors propagate (500)
+      // instead of being read as "not in use".
+      const refs = [item.item_id, String(item._id)].filter(Boolean);
+      const usedIn = [];
+      const checks = [
+        ["bills", "PO_bill", "items.item_id"],
+        ["purchase orders", "Purchase_Order", "items.item_id"],
+        ["recurring bills", "recurringBill", "line_items.item_id"],
+        ["invoices", "Invoice", "line_items.item_id"],
+        ["quotes", "Estimate", "line_items.item_id"],
+        ["sales orders", "SalesOrder", "line_items.item_id"],
+        ["delivery challans", "DeliveryChallan", "line_items.item_id"],
+        ["recurring invoices", "RecurringInvoice", "line_items.item_id"],
+        ["credit notes", "Credit_note", "line_items.item_id"],
+        ["vendor credits", "Vendor_credit", "line_items.item_id"],
+      ];
+      // Item ids are unique across organisations, so the references alone decide it.
+      for (const [label, name, path] of checks) {
+        if (!mongoose.modelNames().includes(name)) continue;
+        if (await mongoose.model(name).exists({ [path]: { $in: refs } })) usedIn.push(label);
+      }
+      if (usedIn.length) {
+        return res.status(ST_CODES.BAD_REQUEST).json({
+          status: false,
+          message: `This item is in use on ${usedIn.join(", ")}, so it can't be deleted. Mark it as inactive instead.`,
+        });
+      }
+
       const deleteResult = await Item.findOneAndDelete({
         item_id: id,
         admin_id: admin_id,
@@ -626,6 +699,8 @@ class itemController {
       console.log("Delete result:", deleteResult ? "Success" : "Failed");
 
       if (deleteResult) {
+        // The item's stock history goes with it.
+        await mongoose.model("Stock_movement").deleteMany({ item_ref: deleteResult._id });
         return res.status(ST_CODES.OK).json({
           status: true,
           message: "Item deleted successfully",

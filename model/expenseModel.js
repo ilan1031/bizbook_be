@@ -129,4 +129,7 @@ const ExpenseSchema = new mongoose.Schema(
   }
 );
 
+// The expense list (and its count) filters by organisation, admin and deleted flag.
+ExpenseSchema.index({ organization_id: 1, admin_id: 1, is_deleted: 1 });
+
 module.exports = mongoose.model("Expense", ExpenseSchema);

@@ -6,16 +6,45 @@ const queryHelper = require("../helpers/query");
 const { LOGO_ERROR, isValidLogo } = require("../helpers/logo");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
+const { nextOrganizationId } = require("../helpers/orgId");
 const UsersCollection = mongoose.model("user");
 const columnsJson = require("../helpers/columns.json");
 const chartOfAccountsJson = require("../helpers/chartOfAccounts.json");
 const fs = require("fs");
 const path = require("path");
 
+// GSTIN: 2-digit state code, PAN (5 letters, 4 digits, 1 letter), entity
+// number, "Z", check character.
+const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+// Users with an organisation being created right now (stops a double click
+// from creating two).
+const creatingOrgFor = new Set();
+
 class OrgController {
   async createOrg(req, res) {
+    const lockKey = String(res.locals.user_id);
+    if (creatingOrgFor.has(lockKey)) {
+      return res.status(409).send({ status: false, message: "Your organisation is already being created. Please wait a moment." });
+    }
+    creatingOrgFor.add(lockKey);
     try {
-      let bData = req.body;
+      let bData = req.body || {};
+      const orgName = String(bData.organizationName ?? "").trim();
+      if (!orgName) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "Organisation name is required" });
+      }
+      if (orgName.length > 100) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "Organisation name can be at most 100 characters" });
+      }
+      const gstIn = String(bData.gst_in ?? "").trim().toUpperCase();
+      if (gstIn && !GSTIN_RE.test(gstIn)) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "Enter a valid 15-character GSTIN, e.g. 33ABCDE1234F1Z5" });
+      }
+      // The setup screen sends the PIN code as "country_code".
+      const zip = String(bData.zip ?? bData.country_code ?? "").trim();
+      if (zip && !/^\d{6}$/.test(zip)) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "PIN code must be 6 digits" });
+      }
       let orgData = await OrgCollection.find({
         admin_id: res.locals.user_id,
         org_type: "default",
@@ -27,24 +56,22 @@ class OrgController {
 
       let userData = await UsersCollection.findById(res.locals.user_id);
 
-      let orgUniqueId = await commonHelper.generateOrgUniqueId(
-        OrgCollection,
-        "organization_id"
-      );
+      let orgUniqueId = await nextOrganizationId(OrgCollection);
       // console.log(orgUniqueId, "orgUniqueId");
       // return;
       let modelData = {
         organization_id: orgUniqueId,
         admin_id: res.locals.user_id,
         phone: userData.mobile,
-        org_name: bData.organizationName,
+        org_name: orgName,
         portal_name: "",
         country: bData.country || "India",
         state: bData.state || "Tamilnadu",
         city: bData.city || "",
         first_street: bData.first_street || "",
         second_street: bData.second_street || "",
-        zip: bData.country_code || "624702",
+        // zip is required by the schema; without one the old placeholder is kept.
+        zip: zip || "624702",
         fiscal_year_start_month: "APRIL",
         language_code: "EN",
         time_zone: bData.timeZone || "IST",
@@ -52,7 +79,7 @@ class OrgController {
         currency_code: bData.currency || "INR",
         industry_type: bData.industry_name || "",
         theme: "primary",
-        gst_in: bData.gst_in || "",
+        gst_in: gstIn,
         org_type: bData.org_type || "",
       };
       await COA_Collection.create({
@@ -85,12 +112,16 @@ class OrgController {
       res
         .status(ST_CODES.INTERNAL_SERVER_ERROR)
         .send({ message: "Something went wrong" });
+    } finally {
+      creatingOrgFor.delete(lockKey);
     }
   }
 
   async getOrganisation(req, res) {
     try {
-      const { page = 1, limit = 5 } = req.body;
+      // Without paging parameters every one of the user's organisations is
+      // returned (the org switcher, org list and templates need them all).
+      const { page = 1, limit = 0 } = req.body || {};
       const query = {};
       query["admin_id"] = res.locals.user_id;
       let sort = { createdAt: 1 };
@@ -111,8 +142,8 @@ class OrgController {
         org_type: 1,
         logo: 1,
       };
-      const limitInt = parseInt(limit, 10);
-      const pageInt = parseInt(page, 10);
+      const limitInt = Math.max(0, parseInt(limit, 10) || 0);
+      const pageInt = Math.max(1, parseInt(page, 10) || 1);
       const results = await queryHelper.findData(
         OrgCollection,
         query,
@@ -322,17 +353,23 @@ class OrgController {
   async updateOrgStatus(req, res) {
     try {
       let admin_id = res.locals.user_id;
-      let { org_id } = req.query;
+      // The organisation's number (organization_id). The tenant check in
+      // userMiddleware has already confirmed it belongs to this user.
+      const orgNumber = Number(req.query.organization_id || req.query.org_id || req.body?.organization_id);
+      if (!Number.isInteger(orgNumber) || orgNumber <= 0) {
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "organization_id is required" });
+      }
       let orgData = await OrgCollection.findOne({
-        _id: org_id,
+        organization_id: orgNumber,
         admin_id: admin_id,
       });
       if (!orgData) {
-        res.status(ST_CODES.NOT_FOUND).send({
+        return res.status(ST_CODES.NOT_FOUND).send({
           status: false,
-          message: "Canot find the organization",
+          message: "Cannot find the organization",
         });
       }
+      const org_id = orgData._id;
       let changeDefaultStatus = await OrgCollection.find({
         admin_id: admin_id,
         org_type: "default",

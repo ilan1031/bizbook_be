@@ -13,9 +13,12 @@ const { getClientIp, CATALOG } = require("../helpers/rbac");
 const { canSendCodes, sendLoginCode, sendSignupAlert } = require("../helpers/accountEmails");
 const { sendInviteAccepted } = require("../helpers/portalEmails");
 const { appUrl } = require("../helpers/mailer");
+const teamAccess = require("../helpers/teamAccess");
 
-const OTP_TTL_MS = 5 * 60 * 1000;
-const OTP_MAX_ATTEMPTS = 5;
+const { OTP_TTL_MS, OTP_MAX_ATTEMPTS, AUDIT_KEEP, newCode, hashOtp } = require("../helpers/signInCodes");
+// Same rule as the email field in model/usersSchema.js.
+const SIGNUP_EMAIL_RE =
+  /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
 
 // One-time sign-in codes, sent by email (helpers/accountEmails.js).
 // On when LOGIN_OTP_ENABLED=true and email can be delivered (in production
@@ -26,8 +29,6 @@ const OTP_MAX_ATTEMPTS = 5;
 const loginOtpEnabled = () => process.env.LOGIN_OTP_ENABLED === "true" && canSendCodes();
 const codeOnEveryLogin = () => (process.env.LOGIN_OTP_MODE || "every_login") === "every_login";
 
-const hashOtp = (code) =>
-  crypto.createHmac("sha256", process.env.JWT_SECRET).update(String(code)).digest("hex");
 
 const findSuperadmin = () => UsersCollection.findOne({ role: "superadmin" }).lean();
 
@@ -67,15 +68,25 @@ const completeLogin = async (req, res, user) => {
   const entry = (user.allowed_ips || []).find((e) => e.ip === ip);
   if (entry) entry.last_login_at = now;
   user.last_login_at = now;
-  user.login_otp = undefined;
-  await user.save();
+  // A targeted update, not user.save(): two sign-ins (or a sign-in and a
+  // password change) at the same moment must not fail with a version error.
+  const update = { $set: { allowed_ips: user.allowed_ips, last_login_at: now }, $unset: { login_otp: 1 } };
+  if (user.login_otp?.source === "admin") {
+    update.$push = { sign_in_code_log: { $each: [{ action: "used", at: now, by_email: user.email }], $slice: -AUDIT_KEEP } };
+  }
+  await UsersCollection.updateOne({ _id: user._id }, update);
 
-  const token = jwt.sign({ userId: user._id, role: "admin" }, process.env.JWT_SECRET, {
+  // iat_ms: the issue time to the millisecond, so a removal from a team can end
+  // the sessions issued before it (middleware/userMiddleware.js).
+  const token = jwt.sign({ userId: user._id, role: "admin", iat_ms: Date.now() }, process.env.JWT_SECRET, {
     expiresIn: "10d",
   });
-  const orgData =
-    (await OrgCollection.findOne({ admin_id: user._id, org_type: "default" }).lean()) ||
-    (await OrgCollection.findOne({ admin_id: user._id }).lean());
+  // A team member signs in to the organisation they belong to.
+  const membership = await teamAccess.membershipOf(user._id);
+  const orgData = membership
+    ? await OrgCollection.findOne({ organization_id: membership.organization_id }).lean()
+    : (await OrgCollection.findOne({ admin_id: user._id, org_type: "default" }).lean()) ||
+      (await OrgCollection.findOne({ admin_id: user._id }).lean());
 
   return res.status(ST_CODES.OK).send({
     token,
@@ -91,8 +102,33 @@ const completeLogin = async (req, res, user) => {
   });
 };
 
+// A code the superadmin issued from Users & Access (see adminController).
+// It replaces the emailed code for this sign-in, so it works when mail is down.
+const pendingAdminCode = (user) => {
+  const pending = user?.login_otp;
+  if (pending?.source !== "admin" || !pending.code_hash) return null;
+  return new Date(pending.expires_at) > new Date() && pending.attempts < OTP_MAX_ATTEMPTS ? pending : null;
+};
+
+const startAdminCodeStep = async (req, res, user, ip) => {
+  // Bound to the device starting this sign-in, the same as an emailed code.
+  await UsersCollection.updateOne({ _id: user._id }, { $set: { "login_otp.ip": ip } });
+  const otpSession = jwt.sign({ userId: user._id, ip, purpose: "login-otp" }, process.env.JWT_SECRET, {
+    expiresIn: "5m",
+  });
+  const expires = new Date(user.login_otp.expires_at);
+  return res.status(ST_CODES.OK).json({
+    otp_required: true,
+    otp_session: otpSession,
+    channel: "admin",
+    sent_to: "",
+    expires_at: expires,
+    message: `Enter the sign-in code your administrator gave you. It expires at ${expires.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}.`,
+  });
+};
+
 const startLoginOtp = async (req, res, user, ip) => {
-  const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+  const code = newCode();
   user.login_otp = {
     code_hash: hashOtp(code),
     ip,
@@ -138,26 +174,40 @@ class usersController {
         agreeToTerms,
       } = req.body;
 
-      if (!email || !password || !phoneNumber) {
-        return res.status(400).json({ message: "All fields are required" });
+      const company = String(companyName ?? "").trim();
+      if (!company || !email || !password || !phoneNumber) {
+        return res.status(400).json({ message: "Company name, email, password and mobile number are required" });
+      }
+      if (company.length > 120) {
+        return res.status(400).json({ message: "Company name can be at most 120 characters" });
       }
       const normalizedEmail = String(email).trim().toLowerCase();
-      const mobile = String(phoneNumber).replace(/\D/g, "");
-      if (mobile.length < 10) {
-        return res.status(400).json({ message: "Enter a valid mobile number" });
+      if (normalizedEmail.length > 254 || !SIGNUP_EMAIL_RE.test(normalizedEmail)) {
+        return res.status(400).json({ message: "Please enter a valid email address" });
+      }
+      let mobile = String(phoneNumber).replace(/\D/g, "");
+      if (mobile.length === 12 && mobile.startsWith("91")) mobile = mobile.slice(2);
+      if (!/^\d{10}$/.test(mobile)) {
+        return res.status(400).json({ message: "Enter a valid 10-digit mobile number" });
       }
 
-      const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])(?=.{8,})/;
+      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])(?=.{8,})/;
       if (!passwordRegex.test(String(password))) {
         return res.status(400).json({
           message:
-            "Password must be at least 8 characters long and include at least one uppercase letter, one number, and one special character.",
+            "Password must be at least 8 characters long and include at least one uppercase letter, one lowercase letter, one number, and one special character.",
         });
+      }
+      if (agreeToTerms !== true && agreeToTerms !== "true") {
+        return res.status(400).json({ message: "Please accept the terms and conditions to continue" });
       }
 
       const existingUser = await UsersCollection.findOne({ email: normalizedEmail });
       if (existingUser)
         return res.status(400).json({ message: "User already exists" });
+      if (await UsersCollection.exists({ mobile })) {
+        return res.status(400).json({ message: "This mobile number is already registered" });
+      }
 
       const hashedPassword = await bcrypt.hash(String(password), 10);
 
@@ -165,13 +215,13 @@ class usersController {
       // superadmin grants them. The sign-up IP becomes their first allowed IP.
       const signupIp = getClientIp(req);
       const newUser = new UsersCollection({
-        company_name: companyName,
+        company_name: company,
         email: normalizedEmail,
         password: hashedPassword,
         mobile,
         country,
         state,
-        agreement_status: agreeToTerms,
+        agreement_status: true,
         role: "user",
         status: "pending",
         permissions: {},
@@ -189,10 +239,17 @@ class usersController {
           "Account created. An administrator needs to approve it before you can sign in.",
       });
     } catch (error) {
+      // Two sign-ups racing for the same email (double click): the unique
+      // index refuses the second one.
+      if (error?.code === 11000) {
+        return res.status(400).json({ message: "User already exists" });
+      }
+      if (error?.name === "ValidationError") {
+        const first = Object.values(error.errors || {})[0];
+        return res.status(400).json({ message: first?.path === "email" ? "Please enter a valid email address" : first?.message || "Please check the form" });
+      }
       console.log("reg error", error);
-      res
-        .status(ST_CODES.INTERNAL_SERVER_ERROR)
-        .json({ message: "Server error", error });
+      res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ message: "Server error" });
     }
   }
   //   async addAssetsRecords(req, res) {
@@ -232,10 +289,22 @@ class usersController {
 
       // Accept an email address or a 10-digit mobile number.
       const login = String(email).trim().toLowerCase();
-      const user = await UsersCollection.findOne(
-        login.includes("@") ? { email: login } : { mobile: login.replace(/\D/g, "") }
-      );
-      if (!user || !(await bcrypt.compare(String(password), user.password)))
+      let user = null;
+      if (login.includes("@")) {
+        user = await UsersCollection.findOne({ email: login });
+        if (user && !(await bcrypt.compare(String(password), user.password))) user = null;
+      } else {
+        // Older accounts may share a mobile number: sign in to the one whose
+        // password matches.
+        const candidates = await UsersCollection.find({ mobile: login.replace(/\D/g, "") }).limit(20);
+        for (const c of candidates) {
+          if (await bcrypt.compare(String(password), c.password)) {
+            user = c;
+            break;
+          }
+        }
+      }
+      if (!user)
         return res
           .status(ST_CODES.BAD_REQUEST)
           .json({ message: "Invalid credentials" });
@@ -250,6 +319,11 @@ class usersController {
                 : "Your account is waiting for administrator approval.",
           });
         }
+        // Team members who haven't accepted their invite, or were disabled.
+        const teamBlock = await teamAccess.loginBlockFor(user._id);
+        if (teamBlock) {
+          return res.status(teamBlock.status).json({ code: teamBlock.code, message: teamBlock.message });
+        }
 
       }
 
@@ -262,6 +336,10 @@ class usersController {
           message: `You can only sign in from ${user.ip_limit ?? 2} devices/networks. Ask your administrator to remove an old one.`,
         });
       }
+      if (user.login_otp?.source === "admin") {
+        if (pendingAdminCode(user)) return startAdminCodeStep(req, res, user, ip);
+        await UsersCollection.updateOne({ _id: user._id }, { $unset: { login_otp: 1 } });
+      }
       if (loginOtpEnabled() && (codeOnEveryLogin() || !known)) {
         return startLoginOtp(req, res, user, ip);
       }
@@ -272,9 +350,7 @@ class usersController {
       return completeLogin(req, res, user);
     } catch (error) {
       console.log("login error", error);
-      res
-        .status(ST_CODES.INTERNAL_SERVER_ERROR)
-        .json({ message: "Server error", error });
+      res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ message: "Server error" });
     }
   }
   // Second login step: checks the code, then remembers the IP.
@@ -348,24 +424,33 @@ class usersController {
   // The signed-in user's access: role, status, permissions and the page catalog.
   async getMe(req, res) {
     try {
-      const user = await UsersCollection.findById(res.locals.user_id)
+      // A team member's access is what their role gives within the
+      // organisation (res.user, from the middleware); their own account is
+      // still their login.
+      const member = res.locals.member;
+      const user = await UsersCollection.findById(res.locals.actor_id || res.locals.user_id)
         .select("email mobile company_name role status permissions limits ip_limit allowed_ips")
         .lean();
       if (!user) return res.status(ST_CODES.NOT_FOUND).json({ message: "User not found" });
+      const access = member ? res.user : user;
       res.status(ST_CODES.OK).json({
         status: true,
         data: {
+          // The signed-in person (not the organisation admin), used to scope per-user UI state.
+          id: String(user._id),
           email: user.email,
           mobile: user.mobile,
           company_name: user.company_name,
           role: user.role || "user",
           is_superadmin: user.role === "superadmin",
           account_status: user.status,
-          permissions: user.permissions || {},
+          permissions: access.permissions || {},
           ip_limit: user.ip_limit ?? 2,
           ip_count: (user.allowed_ips || []).length,
-          limits: user.limits || {},
-          usage: (await require("../helpers/usageLimits").usageFor([user._id]))[String(user._id)],
+          limits: access.limits || {},
+          usage: (await require("../helpers/usageLimits").usageFor([access._id]))[String(access._id)],
+          // Set when this person is on a team (the organisation they belong to).
+          team: member ? { organisation_id: member.organization_id, org_name: member.org_name, role_id: member.role_id, role_name: member.role_name } : null,
           catalog: CATALOG,
           always_allowed_routes: require("../helpers/rbac").ALWAYS_ALLOWED_ROUTES,
           shared_routes: require("../helpers/rbac").SHARED_ROUTES,
@@ -469,9 +554,14 @@ class usersController {
         });
       }
       const { password: _omit, login_otp: _otp, ...safeAdminData } = adminData.toObject();
+      // A team member sees the organisation admin's name and contact only,
+      // not the admin's sign-in devices, limits or permissions.
+      const data = res.locals.member
+        ? { _id: safeAdminData._id, email: safeAdminData.email, company_name: safeAdminData.company_name, country: safeAdminData.country, state: safeAdminData.state, role: safeAdminData.role, status: safeAdminData.status }
+        : safeAdminData;
       return res.status(ST_CODES.OK).send({
         status: true,
-        data: safeAdminData,
+        data,
         message: "Fetched successfully...",
       });
     } catch (error) {
@@ -537,9 +627,7 @@ class usersController {
       });
     } catch (error) {
       console.log("login error", error);
-      res
-        .status(ST_CODES.INTERNAL_SERVER_ERROR)
-        .json({ message: "Server error", error });
+      res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({ message: "Server error" });
     }
   }
 

@@ -16,7 +16,9 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    mobile: { type: String, required: true },
+    // Team accounts (helpers/teamService.js) are created from an invite,
+    // which only has an email address.
+    mobile: { type: String, required: function () { return !this.team_account; } },
     company_name: {
       type: String,
     },
@@ -67,14 +69,38 @@ const userSchema = new mongoose.Schema(
       ip: String,
       expires_at: Date,
       attempts: { type: Number, default: 0 },
+      // "admin" when the superadmin issued it from Users & Access (no email sent).
+      source: { type: String, enum: ["email", "admin"], default: "email" },
+      issued_by: { type: mongoose.Schema.Types.ObjectId, ref: "user" },
+      issued_at: Date,
     },
+    // Who issued and used superadmin sign-in codes, and when. Never holds a code.
+    sign_in_code_log: [
+      {
+        _id: false,
+        action: { type: String, enum: ["issued", "used"] },
+        at: Date,
+        by: { type: mongoose.Schema.Types.ObjectId, ref: "user" },
+        by_email: String,
+      },
+    ],
     last_login_at: { type: Date },
     approved_at: { type: Date },
+    // Tokens issued before this are refused (middleware/userMiddleware.js).
+    password_changed_at: { type: Date },
+    // Team members: an account made from an invite, and when it accepted.
+    team_account: { type: Boolean, default: false },
+    team_accepted_at: { type: Date },
+    // Set when the person is removed from a team: their sessions end (401).
+    team_session_cutoff: { type: Date },
   },
   {
     timestamps: true,
     minimize: false,
   }
 );
+
+// Sign-in looks users up by email (indexed by the unique email field) or by mobile.
+userSchema.index({ mobile: 1 });
 
 module.exports = mongoose.model("user", userSchema);

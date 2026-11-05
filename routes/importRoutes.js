@@ -24,6 +24,7 @@ router.post("/import-bills", authMiddleware, ImportController.uploadBills);
 router.post("/customers", authMiddleware, RecordImport.importCustomers);
 router.post("/vendors", authMiddleware, RecordImport.importVendors);
 router.post("/items", authMiddleware, RecordImport.importItems);
+router.post("/accounts", authMiddleware, RecordImport.importAccounts);
 // Import purchase order from uploaded file
 router.post("/purchase-order", authMiddleware, ImportController.uploadPurchaseOrder);
 module.exports = router;

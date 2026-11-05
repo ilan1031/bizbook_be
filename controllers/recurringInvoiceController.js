@@ -6,6 +6,7 @@ const InvoiceCollection = require("../model/invoice");
 const SalesOrderCollection = require("../model/salesOrder");
 const queryHelper = require("../helpers/query");
 const { priceSalesDocument, loadTaxContext, invoiceJournalLines } = require("../helpers/gstHelper");
+const { validateSalesDocument } = require("../helpers/salesValidation");
 
 // Fields priceSalesDocument sets.
 const PRICED_FIELDS = [
@@ -338,6 +339,10 @@ class RecurringInvoiceController {
         bData.balance_formatted = "₹0.00";
         bData.line_items = [];
       }
+
+      // Customer, lines and amounts must make sense before the profile is saved.
+      const invalid = validateSalesDocument(bData, { label: "recurring invoice", dueField: "end_date", dueLabel: "End date" });
+      if (invalid) return res.status(400).json({ status: false, message: invalid });
 
       // Totals (discount, GST by place of supply, TDS/TCS) from the lines.
       if (bData.line_items.length) {
@@ -1788,6 +1793,9 @@ class RecurringInvoiceController {
         ...(typeof existingInvoice.toObject === "function" ? existingInvoice.toObject() : existingInvoice),
         ...bData,
       };
+      const invalidEdit = validateSalesDocument(repriced, { label: "recurring invoice", dueField: "end_date", dueLabel: "End date" });
+      if (invalidEdit) return res.status(400).json({ status: false, message: invalidEdit });
+      if (bData.line_items !== undefined) bData.line_items = repriced.line_items;
       priceSalesDocument(repriced, await loadTaxContext(organization_id, repriced));
       for (const field of PRICED_FIELDS) bData[field] = repriced[field];
       bData.balance = repriced.total;

@@ -29,11 +29,11 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 16) {
 // Account email (sign-in codes, sign-up and approval notices): say clearly
 // when it can't be delivered.
 {
-  const { isMailConfigured } = require("./helpers/mailer");
+  const { isMailConfigured, mailTarget } = require("./helpers/mailer");
   const everyLogin = (process.env.LOGIN_OTP_MODE || "every_login") === "every_login";
   if (isMailConfigured()) {
     if (process.env.LOGIN_OTP_ENABLED === "true") {
-      console.log(`Sign-in codes by email (${process.env.EMAIL_USER}), ${everyLogin ? "on every login" : "for new devices"}.`);
+      console.log(`Sign-in codes by email (${process.env.EMAIL_USER} via ${mailTarget()}), ${everyLogin ? "on every login" : "for new devices"}.`);
     }
   } else if (process.env.NODE_ENV === "production") {
     console.warn("WARNING: EMAIL_USER / EMAIL_PASS aren't set: no sign-in codes, sign-up alerts or approval emails will be sent.");
@@ -84,6 +84,9 @@ require("./model/journalSchema");
 require("./model/withholdingTaxSchema");
 require("./model/creditDocumentModels");
 require("./model/coa_transactionSchema");
+require("./model/teamMemberSchema");
+require("./model/teamRoleSchema");
+require("./model/teamAuditSchema");
 
 require("./cron/recurringInvoiceCron");
 require("./cron-job/cron");
@@ -135,6 +138,8 @@ const ProfitAndLossRoutes = require("./routes/ProfitAndLossRoutes");
 const manualJournalRoutes = require("./routes/manualJournalRoutes");
 const balanceSheetRoutes = require("./routes/balanceSheetRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const inventoryRoutes = require("./routes/inventoryRoutes");
+const teamRoutes = require("./routes/teamRoutes");
 
 // const emailRoutes = require('./routes/emailRoutes');
 // const itemRoutes = require("./routes/itemRoutes");
@@ -208,25 +213,59 @@ app.use(helmet({ contentSecurityPolicy: false }));
 
 // General API rate limit — slows down brute-forcing and body-size abuse
 // since nothing else in the app currently limits request volume.
+// Signed-in requests are counted per user and address (so a whole office
+// behind one NAT address doesn't share one budget); anonymous ones per IP.
+// Limits per 15 minutes, configurable:
+//   RATE_LIMIT_USER_MAX (default 3000), RATE_LIMIT_IP_MAX (default 1500),
+//   AUTH_RATE_LIMIT_MAX (failed sign-in/sign-up attempts, default 20).
+const envInt = (name, fallback) => {
+  const n = parseInt(process.env[name], 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+const rateLimitUser = (req) => {
+  if (req._rateLimitUser !== undefined) return req._rateLimitUser;
+  let id = null;
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (token && process.env.JWT_SECRET) {
+    try {
+      const decoded = require("jsonwebtoken").verify(token, process.env.JWT_SECRET);
+      if (decoded?.userId) id = `${decoded.role || "admin"}:${decoded.userId}`;
+    } catch (e) {
+      id = null;
+    }
+  }
+  req._rateLimitUser = id;
+  return id;
+};
 app.use(
   "/api/v1",
   rateLimit({
     windowMs: 15 * 60 * 1000,
-    // Per client IP; each page makes several API calls.
-    max: 1500,
+    limit: (req) => (rateLimitUser(req) ? envInt("RATE_LIMIT_USER_MAX", 3000) : envInt("RATE_LIMIT_IP_MAX", 1500)),
+    keyGenerator: (req) => {
+      const user = rateLimitUser(req);
+      // Per signed-in user per address: people behind one office address
+      // each get their own budget, and one user's devices don't share one.
+      const ip = rateLimit.ipKeyGenerator(req.ip || "");
+      return user ? `user:${user}@${ip}` : `ip:${ip}`;
+    },
     standardHeaders: true,
     legacyHeaders: false,
+    message: { code: "RATE_LIMITED", message: "Too many requests. Please wait a minute and try again." },
   })
 );
 
 // Tighter limit on login/register specifically, to slow credential stuffing
-// and account-enumeration attempts.
+// and account-enumeration attempts. Only failed attempts count, so people
+// signing in normally never use it up.
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  limit: () => envInt("AUTH_RATE_LIMIT_MAX", 20),
+  skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { message: "Too many attempts, please try again later." },
+  message: { code: "RATE_LIMITED", message: "Too many attempts, please try again later." },
 });
 app.use(
   [
@@ -248,7 +287,16 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// Attachments are shown by the front end, which runs on another origin, so
+// they may be embedded cross-origin (helmet's default is same-origin only).
+app.use(
+  "/uploads",
+  (req, res, next) => {
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    next();
+  },
+  express.static(path.join(__dirname, "uploads"))
+);
 
 // Assign routes COMMON BEO
 app.use("/api/v1", userRoutes);
@@ -301,6 +349,8 @@ app.use("/api/v1", manualJournalRoutes);
 app.use("/api/v1", balanceSheetRoutes);
 app.use("/api/v1", creditDocumentRoutes);
 app.use("/api/v1", adminRoutes);
+app.use("/api/v1", inventoryRoutes);
+app.use("/api/v1", teamRoutes);
 
 // catch 404 and forward to error handler
 app.use(function (req, res, next) {
@@ -308,6 +358,11 @@ app.use(function (req, res, next) {
 });
 
 app.use(function (err, req, res, next) {
+  // Upload problems (file too large, too many files) are the user's input.
+  if (err && err.name === "MulterError" && !err.status) {
+    err.status = 400;
+    if (err.code === "LIMIT_FILE_SIZE") err.message = "The file is too large (10 MB at most).";
+  }
   const status = err.status || err.statusCode || 500;
   if (status >= 500) console.error(`${req.method} ${req.originalUrl}:`, err);
   // API callers get JSON; never leak internals on server errors.

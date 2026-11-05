@@ -204,28 +204,9 @@ const getPrimaryContactEmail = async (customer_id) => {
   }
 };
 
-// Configure email transporter (you'll need to configure this based on your email service)
-const createEmailTransporter = () => {
-  // Temporary hardcoded configuration for testing
-  const config = {
-    host: "smtp.gmail.com", // Hardcoded for testing
-    port: 587,
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER || "your-email@gmail.com", // Replace with your email
-      pass: process.env.SMTP_PASSWORD || "your-app-password", // Replace with your app password
-    },
-  };
-
-  console.log("SMTP Config:", {
-    host: config.host,
-    port: config.port,
-    user: config.auth.user,
-    hasPassword: !!config.auth.pass,
-  });
-
-  return nodemailer.createTransport(config);
-};
+// Mail goes through the configured SMTP server (EMAIL_HOST / EMAIL_PORT /
+// EMAIL_USER / EMAIL_PASS), see helpers/mailer.js.
+const createEmailTransporter = () => require("./mailer").getTransporter();
 
 // Send invoice notification email
 const sendInvoiceNotificationEmail = async (

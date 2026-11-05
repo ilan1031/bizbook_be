@@ -16,24 +16,10 @@ const ContactPersonCollection = require("../model/contactPerson");
 const portalEmails = require("../helpers/portalEmails");
 // const contactDetails = require('../model/contactDetails');
 
-// Create email transporter
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  },
-  debug: false
-});
-
-if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.NODE_ENV !== "test") {
-  transporter.verify((error) => {
-    if (error) console.error("SMTP Connection Error:", error.message);
-  });
-}
+// Mail goes through the configured SMTP server (EMAIL_HOST / EMAIL_PORT /
+// EMAIL_USER / EMAIL_PASS), see helpers/mailer.js.
+const { getTransporter } = require("../helpers/mailer");
+const transporter = { sendMail: (options) => getTransporter().sendMail(options) };
 
 // Helper function for standard email template
 function formatEmailTemplate(orderData) {
@@ -432,7 +418,7 @@ const poEmailController = {
         
         return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
           status: false,
-          message: "Failed to send email",
+          message: `The email couldn't be sent: ${emailError.message}`,
           error: emailError.message
         });
       }
@@ -804,7 +790,7 @@ async verifyPortalInvite(req, res) {
       );
   
       // Fixed condition: Check if results exist and has data
-      if (!results || !results.msg || results.msg.length === 0) {
+      if (!results || !results.status || !Array.isArray(results.msg)) {
         return res.status(ST_CODES.NOT_FOUND).json({
           success: false,
           message: "No email logs found"

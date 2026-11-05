@@ -9,6 +9,7 @@ const organizationSchema = new mongoose.Schema(
     organization_id: {
       type: Number,
       required: true,
+      unique: true,
     },
     org_name: {
       type: String,
@@ -65,6 +66,14 @@ const organizationSchema = new mongoose.Schema(
     },
     state_code: {
       type: String,
+    },
+    // Most team members (invited or active) this organisation may have;
+    // set by the superadmin (helpers/teamService.js).
+    team_max_members: {
+      type: Number,
+      default: 5,
+      min: 0,
+      max: 500,
     },
 
     state: {
@@ -136,4 +145,7 @@ const organizationSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+// Sign-in and the sidebar find an admin's organisation by admin_id (and org_type).
+organizationSchema.index({ admin_id: 1, org_type: 1 });
+
 module.exports = mongoose.model("Organization", organizationSchema);

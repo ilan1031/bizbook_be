@@ -236,125 +236,9 @@ class recurringBillsController {
         }
         bData.organization_id = orgData.organization_id;
 
-        // Calculate amounts for journal entries (similar to createBills logic)
-        const sub_total = Number(bData.sub_total || bData.total);
-        const discount = Number(bData.discount_amount || 0);
-        const adjustment = Number(bData.adjustment || 0);
-        const tax_percentage = Number(bData.tax_percentage || 0);
-        const tax_type = bData.tax_type; // "TDS" or "GST"
-        const tax_amount = (tax_percentage / 100) * (sub_total - discount);
-        const total_payable =
-          sub_total -
-          discount +
-          (tax_type === "GST" ? tax_amount : -tax_amount) +
-          adjustment;
-
-        // Generate unique Journal ID
-        let journalUniqueId = await commonHelper.generateUniqueId(
-          JournalCollection,
-          "journal_id",
-          5,
-          "JL"
-        );
-
-        // Create Journal Line Items following invoice pattern
-        const Journal_line_items = [];
-
-        // Add expense entries from line_items
-        if (bData.line_items && bData.line_items.length > 0) {
-          bData.line_items.forEach((item) => {
-            Journal_line_items.push({
-              coa_account_id: item.account_id || "AC_078",
-              coa_account_name: item.account || "Cost of Goods Sold",
-              creditOrDebit: "Debit",
-              amount: Number(item.amount || 0),
-              amount_formatted: formatCurrency(Number(item.amount || 0)),
-            });
-          });
-        } else {
-          // Default expense entry if no items
-          Journal_line_items.push({
-            coa_account_id: "AC_078",
-            coa_account_name: "Cost of Goods Sold",
-            creditOrDebit: "Debit",
-            amount: sub_total,
-            amount_formatted: formatCurrency(sub_total),
-          });
-        }
-
-        // Add tax-specific entry
-        if (tax_type === "GST" && tax_amount > 0) {
-          Journal_line_items.push({
-            coa_account_id: "AC_010", // GST Input Tax Credit
-            coa_account_name: "Input Tax Credits",
-            creditOrDebit: "Debit",
-            amount: tax_amount,
-            amount_formatted: formatCurrency(tax_amount),
-          });
-        } else if (tax_type === "TDS" && tax_amount > 0) {
-          Journal_line_items.push({
-            coa_account_id: "AC_022",
-            coa_account_name: "TDS Payable",
-            creditOrDebit: "Credit",
-            amount: tax_amount,
-            amount_formatted: formatCurrency(tax_amount),
-          });
-        }
-
-        // Add discount if any
-        if (discount !== 0) {
-          Journal_line_items.push({
-            coa_account_id: "AC_075",
-            coa_account_name: "Purchase Discounts",
-            creditOrDebit: "Credit",
-            amount: Math.abs(discount),
-            amount_formatted: formatCurrency(Math.abs(discount)),
-          });
-        }
-
-        // Add adjustment if any
-        if (adjustment !== 0) {
-          Journal_line_items.push({
-            coa_account_id: "AC_065",
-            coa_account_name: "Other Expenses",
-            creditOrDebit: adjustment > 0 ? "Debit" : "Credit",
-            amount: Math.abs(adjustment),
-            amount_formatted: formatCurrency(Math.abs(adjustment)),
-          });
-        }
-
-        // Final payable entry (Credit to Accounts Payable)
-        Journal_line_items.push({
-          coa_account_id: "AC_032",
-          coa_account_name: "Accounts Payable",
-          creditOrDebit: "Credit",
-          amount: total_payable,
-          amount_formatted: formatCurrency(total_payable),
-        });
-
-        const journalData = {
-          organization_id: orgId,
-          admin_id: admin_id,
-          journal_id: journalUniqueId,
-          journal_date: bData.start_date,
-          journal_date_formatted: commonHelper.formatDateString(
-            bData.start_date
-          ),
-          total_amount: total_payable,
-          total_amount_formatted: formatCurrency(total_payable),
-          type: "Recurring Bill",
-          vendor_name: bData.vendor_name || "",
-          line_items: Journal_line_items,
-        };
-
-        // Add journal_id to bill data
-        bData["journal_id"] = journalUniqueId;
-
-        console.log("The Journal Data for Recurring Bill:", journalData);
-
-        const savedJournal = await JournalCollection.create([journalData], {
-          session,
-        });
+        // A recurring profile is only a template: it has no journal. Each
+        // bill it creates posts its own journal.
+        delete bData.journal_id;
 
         // History
         const commented_by_id = res.locals.user_id || "";
@@ -477,10 +361,9 @@ class recurringBillsController {
 
         return res.status(ST_CODES.CREATED || 201).json({
           status: true,
-          message: "Recurring Bill created successfully with journal entries.",
+          message: "Recurring Bill created successfully.",
           data: createBill[0],
           recurring_bill_id: billUniqueId,
-          journalData: savedJournal[0],
         });
       } catch (transactionError) {
         // Rollback transaction on any error
@@ -767,7 +650,7 @@ class recurringBillsController {
       try {
         // Fetch existing recurring bill to get current data and journal_id
         const existingBill = await RecurringBillsCollection.findOne(
-          { recurring_bill_id },
+          { recurring_bill_id, organization_id: orgId, admin_id, deleted_at: null },
           null,
           { session }
         );
@@ -830,6 +713,17 @@ class recurringBillsController {
         }
 
         // Update journal entries if there's a journal_id and financial data has changed
+        // Profiles don't post journals. Older profiles were given one at
+        // creation, which double-counted every bill they made: take it out
+        // of the books instead of re-posting it.
+        if (existingBill.journal_id) {
+          await JournalCollection.updateOne(
+            { journal_id: existingBill.journal_id, organization_id: String(orgId) },
+            { $set: { posting_status: "void" } },
+            { session }
+          );
+          shouldUpdateJournal = false;
+        }
         if (existingBill.journal_id && shouldUpdateJournal) {
           console.log("Updating journal entries...");
 
@@ -1061,8 +955,9 @@ class recurringBillsController {
         delete updateFields.general; // Remove any UI-specific fields
 
         // Perform update on recurring bill
+        for (const f of ["_id", "admin_id", "organization_id", "recurring_bill_id", "journal_id", "comments"]) delete updateFields[f];
         const updatedBill = await RecurringBillsCollection.findOneAndUpdate(
-          { recurring_bill_id }, // match by recurring_bill_id
+          { recurring_bill_id, organization_id: orgId, admin_id }, // match by recurring_bill_id
           {
             $set: updateFields,
             $push: { comments: comment },

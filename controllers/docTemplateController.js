@@ -70,12 +70,45 @@ const DEFAULTS = {
 };
 
 const str = (v, max) => (v === undefined || v === null ? "" : String(v).slice(0, max));
+
+// Text fields and their limits (also shown on the templates screen).
+const TEXT_LIMITS = [
+  ["title", "Title", 60],
+  ["subtitle", "Subtitle", 80],
+  ["tagline", "Tagline", 200],
+  ["terms", "Terms & conditions", 3000],
+  ["note", "Note", 1000],
+  ["signatory", "Signatory", 100],
+  ["footer", "Footer", 300],
+];
+const BANK_LIMITS = [
+  ["account_name", "Account name", 100],
+  ["bank", "Bank name", 100],
+  ["account_no", "Account number", 40],
+  ["ifsc", "IFSC", 20],
+  ["branch", "Branch", 100],
+  ["upi", "UPI ID", 100],
+];
+const tooLong = (input) => {
+  for (const [key, label, max] of TEXT_LIMITS) {
+    const v = input[key];
+    if (v !== undefined && v !== null && String(v).length > max) return `${label} can be at most ${max} characters`;
+  }
+  const bank = input.bank || {};
+  for (const [key, label, max] of BANK_LIMITS) {
+    const v = bank[key];
+    if (v !== undefined && v !== null && String(v).length > max) return `${label} can be at most ${max} characters`;
+  }
+  return null;
+};
 const bool = (v, d) => (v === undefined ? d : Boolean(v));
 
 // Keeps only known fields, with sane lengths.
 const clean = (type, input = {}) => {
   const d = DEFAULTS[type];
   const bank = input.bank || {};
+  const long = tooLong(input);
+  if (long) return { error: long };
   const logo = str(input.logo, MAX_LOGO + 1);
   if (!isValidLogo(logo)) return { error: LOGO_ERROR };
   const advance = Number(input.advance_percent ?? d.advance_percent);

@@ -64,6 +64,7 @@ const money = (n) =>
 
 // Schema fields, spread into each sales model.
 const GST_LINE_FIELDS = {
+  hsn_or_sac: { type: String, default: "" },
   gst_rate: { type: Number, default: 0 },
   taxable_amount: { type: Number, default: 0 },
   gst_amount: { type: Number, default: 0 },
