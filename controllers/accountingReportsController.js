@@ -85,6 +85,8 @@ class AccountingReportsController {
         const account = accounts.get(id);
         const closing = row.opening + row.debit - row.credit;
         if (row.opening === 0 && row.debit === 0 && row.credit === 0) continue;
+        // An account that nets to nothing is left out, unless the period itself moved it.
+        if (closing === 0 && (!fromDate || (row.debit === 0 && row.credit === 0))) continue;
         const cols = columns(closing);
         totalDebit += closing > 0 ? closing : 0;
         totalCredit += closing < 0 ? -closing : 0;

@@ -45,7 +45,8 @@ const PAGES = [
   { key: "projects", label: "Projects", group: "Time Tracking", routes: ["/time/projects"], planned: true },
 
   { key: "chartOfAccounts", label: "Chart of Accounts", group: "Accountant", routes: ["/accountant/chartOfAccounts"] },
-  { key: "journalEntries", label: "Journal Entries", group: "Accountant", routes: ["/accountant/journals"] },
+  { key: "fixedAssets", label: "Fixed Assets", group: "Accountant", routes: ["/accountant/fixedassets"] },
+  { key: "journalEntries",label: "Journal Entries", group: "Accountant", routes: ["/accountant/journals"] },
 
   { key: "profitAndLoss", label: "Profit and Loss", group: "Reports", routes: ["/reports/profitandloss"], actions: VIEW_ONLY },
   { key: "balanceSheet", label: "Balance Sheet", group: "Reports", routes: ["/reports/balancesheet"], actions: VIEW_ONLY },
@@ -180,6 +181,11 @@ const API_RULES = [
   { re: /^\/api\/v1\/reports\/gst-summary$/, pages: ["gstSummary"], action: "view" },
   // Bank statements: view reads, create imports, edit matches, delete removes.
   { re: /^\/api\/v1\/banking(\/|$)/, pages: ["banking"] },
+  // Fixed assets: posting depreciation changes the books (edit); disposing of
+  // an asset removes it from them (delete); the rest follows the HTTP method.
+  { re: /^\/api\/v1\/fixed-assets\/depreciation\/run$/, pages: ["fixedAssets"], action: "edit" },
+  { re: /^\/api\/v1\/fixed-assets\/[^/]+\/dispose$/, pages: ["fixedAssets"], action: "delete" },
+  { re: /^\/api\/v1\/fixed-assets(\/|$)/, pages: ["fixedAssets"] },
 
   { re: /^\/api\/v1\/email\/(invite-portal|verify-invite)$/, pages: ["customerPortal"], action: "create" },
   // Emailing a document: only users who can create or edit sales/purchase
