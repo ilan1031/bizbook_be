@@ -215,6 +215,212 @@ class AccountingReportsController {
     }
   }
 
+  // GET /reports/day-book?org_id=&from=&to=  every posted entry, day by day.
+  async getDayBook(req, res) {
+    try {
+      const admin_id = res.locals.user_id;
+      const organization_id = req.query.org_id;
+      if (!organization_id) return bad(res, "Organization ID is required");
+      const range = periodFrom(req);
+      if (range.error) return bad(res, range.error);
+      const LIMIT = 1000;
+      const journals = await Journal()
+        .find(
+          { organization_id: String(organization_id), admin_id, journal_date: { $gte: range.from.startOf("day").toDate(), $lte: range.to.endOf("day").toDate() }, ...POSTED_JOURNALS },
+          { journal_id: 1, journal_date: 1, type: 1, customer_name: 1, vendor_name: 1, reference_number: 1, notes: 1, line_items: 1 }
+        )
+        .sort({ journal_date: 1, createdAt: 1 })
+        .limit(LIMIT + 1)
+        .lean();
+      const truncated = journals.length > LIMIT;
+      if (truncated) journals.pop();
+
+      const days = new Map();
+      let totalDebit = 0;
+      for (const journal of journals) {
+        const key = dayjs(journal.journal_date).format("YYYY-MM-DD");
+        const day = days.get(key) || { date: key, entries: [], debit: 0 };
+        let debit = 0;
+        const lines = (journal.line_items || []).map((l) => {
+          const paise = toPaise(l.amount || 0);
+          const isDebit = l.creditOrDebit === "Debit";
+          if (isDebit) debit += paise;
+          return { account_id: l.coa_account_id, account_name: l.coa_account_name || "", debit: isDebit ? fromPaise(paise) : 0, credit: isDebit ? 0 : fromPaise(paise) };
+        });
+        day.entries.push({ journal_id: journal.journal_id, type: journal.type, name: journal.customer_name || journal.vendor_name || "", reference: journal.reference_number || "", notes: journal.notes || "", amount: fromPaise(debit), lines });
+        day.debit += debit;
+        totalDebit += debit;
+        days.set(key, day);
+      }
+      res.status(ST_CODES.OK).json({
+        status: true,
+        data: {
+          from: range.from.format("YYYY-MM-DD"),
+          to: range.to.format("YYYY-MM-DD"),
+          days: [...days.values()].map((d) => ({ ...d, debit: fromPaise(d.debit) })),
+          totals: { entries: journals.length, amount: fromPaise(totalDebit) },
+          truncated,
+          limit: LIMIT,
+        },
+      });
+    } catch (error) {
+      return fail(res, "day book", error);
+    }
+  }
+
+  // GET /reports/cash-flow?org_id=&from=&to=
+  // Cash and bank movement for the period, explained by what the money was
+  // for: each journal's cash effect is traced to its other (non-cash) accounts.
+  async getCashFlow(req, res) {
+    try {
+      const admin_id = res.locals.user_id;
+      const organization_id = req.query.org_id;
+      if (!organization_id) return bad(res, "Organization ID is required");
+      const range = periodFrom(req, "year");
+      if (range.error) return bad(res, range.error);
+      const fromDate = range.from.startOf("day").toDate();
+
+      const [accounts, journals] = await Promise.all([
+        getAccountsMap(organization_id, admin_id),
+        Journal()
+          .find(
+            { organization_id: String(organization_id), admin_id, journal_date: { $lte: range.to.endOf("day").toDate() }, ...POSTED_JOURNALS },
+            { journal_date: 1, line_items: 1 }
+          )
+          .lean(),
+      ]);
+
+      const isCash = (id) => CASH_TYPES.includes(accounts.get(id)?.account_type);
+      const sections = Object.fromEntries(CASH_FLOW_SECTIONS.map((sec) => [sec.key, new Map()]));
+      const cashAccounts = new Map();
+      let opening = 0;
+      let net = 0;
+      for (const journal of journals) {
+        const before = journal.journal_date < fromDate;
+        const lines = journal.line_items || [];
+        for (const line of lines) {
+          if (!isCash(line.coa_account_id)) continue;
+          const signed = line.creditOrDebit === "Debit" ? toPaise(line.amount || 0) : -toPaise(line.amount || 0);
+          const entry = cashAccounts.get(line.coa_account_id) || { opening: 0, change: 0 };
+          if (before) {
+            opening += signed;
+            entry.opening += signed;
+          } else {
+            net += signed;
+            entry.change += signed;
+          }
+          cashAccounts.set(line.coa_account_id, entry);
+        }
+        if (before) continue;
+        // The journal's cash effect, spread over its non-cash lines.
+        for (const line of lines) {
+          if (isCash(line.coa_account_id)) continue;
+          const account = accounts.get(line.coa_account_id);
+          const signed = line.creditOrDebit === "Debit" ? toPaise(line.amount || 0) : -toPaise(line.amount || 0);
+          const section = CASH_FLOW_SECTIONS.find((sec) => sec.types.includes(account?.account_type)) || CASH_FLOW_SECTIONS[0];
+          const key = line.coa_account_id || "(none)";
+          const item = sections[section.key].get(key) || { account_id: key, account_name: account?.account_name || line.coa_account_name || "Unknown account", amount: 0 };
+          item.amount += -signed; // a credit elsewhere means cash came in
+          sections[section.key].set(key, item);
+        }
+      }
+
+      const outSections = CASH_FLOW_SECTIONS.map((sec) => {
+        const items = [...sections[sec.key].values()].filter((i) => i.amount !== 0).sort((a, b) => a.account_name.localeCompare(b.account_name));
+        return { key: sec.key, title: sec.title, items: items.map((i) => ({ ...i, amount: fromPaise(i.amount) })), total: fromPaise(items.reduce((t, i) => t + i.amount, 0)) };
+      });
+      const explained = outSections.reduce((t, sec) => t + toPaise(sec.total), 0);
+      res.status(ST_CODES.OK).json({
+        status: true,
+        data: {
+          from: range.from.format("YYYY-MM-DD"),
+          to: range.to.format("YYYY-MM-DD"),
+          opening_balance: fromPaise(opening),
+          sections: outSections,
+          net_change: fromPaise(net),
+          closing_balance: fromPaise(opening + net),
+          cash_accounts: [...cashAccounts.entries()].map(([id, c]) => ({ account_id: id, account_name: accounts.get(id)?.account_name || id, opening: fromPaise(c.opening), change: fromPaise(c.change), closing: fromPaise(c.opening + c.change) })),
+          checks: { is_explained: explained === net, unexplained: fromPaise(net - explained) },
+        },
+      });
+    } catch (error) {
+      return fail(res, "cash flow", error);
+    }
+  }
+
+  // GET /reports/gst-summary?org_id=&from=&to=  output tax on sales against input tax on purchases.
+  async getGstSummary(req, res) {
+    try {
+      const admin_id = res.locals.user_id;
+      const organization_id = req.query.org_id;
+      if (!organization_id) return bad(res, "Organization ID is required");
+      if (!/^\d+$/.test(String(organization_id))) return bad(res, "Organization ID must be a number");
+      const range = periodFrom(req);
+      if (range.error) return bad(res, range.error);
+      const orgNo = Number(organization_id);
+      const inRange = (d) => d && d.isValid() && !d.isBefore(range.from.startOf("day")) && !d.isAfter(range.to.endOf("day"));
+
+      const [invoices, bills] = await Promise.all([
+        Invoice()
+          .find({ organization_id: orgNo, admin_id, status: { $nin: ["draft", "Draft", "void", "Void"] } })
+          .select("invoice_number date customer_name line_items gst_total cgst_total sgst_total igst_total")
+          .lean(),
+        Bill()
+          .find({ organization_id: orgNo, admin_id, status_type: { $nin: ["DRAFT", "VOID"] }, billDate: { $gte: range.from.startOf("day").toDate(), $lte: range.to.endOf("day").toDate() } })
+          .select("bill_number billDate items gst_total cgst_total sgst_total igst_total")
+          .lean(),
+      ]);
+
+      const side = () => ({ documents: 0, taxable: 0, cgst: 0, sgst: 0, igst: 0, tax: 0, rates: new Map() });
+      const sales = side();
+      const purchases = side();
+      const add = (target, lines, doc, taxableOf) => {
+        target.documents += 1;
+        target.cgst += toPaise(doc.cgst_total);
+        target.sgst += toPaise(doc.sgst_total);
+        target.igst += toPaise(doc.igst_total);
+        target.tax += toPaise(doc.gst_total);
+        for (const line of lines || []) {
+          const rate = Number(line.gst_rate || 0);
+          const taxable = toPaise(taxableOf(line));
+          target.taxable += taxable;
+          const row = target.rates.get(rate) || { rate, taxable: 0, tax: 0 };
+          row.taxable += taxable;
+          row.tax += toPaise(line.gst_amount);
+          target.rates.set(rate, row);
+        }
+      };
+      for (const inv of invoices) {
+        const d = parseDate(inv.date) || (inv.date ? dayjs(inv.date) : null);
+        if (inRange(d)) add(sales, inv.line_items, inv, (l) => l.taxable_amount ?? l.item_total);
+      }
+      for (const bill of bills) add(purchases, bill.items, bill, (l) => l.item_total);
+
+      const finish = (t) => ({
+        documents: t.documents,
+        taxable: fromPaise(t.taxable),
+        cgst: fromPaise(t.cgst),
+        sgst: fromPaise(t.sgst),
+        igst: fromPaise(t.igst),
+        tax: fromPaise(t.tax),
+        by_rate: [...t.rates.values()].sort((a, b) => a.rate - b.rate).map((r) => ({ rate: r.rate, taxable: fromPaise(r.taxable), tax: fromPaise(r.tax) })),
+      });
+      res.status(ST_CODES.OK).json({
+        status: true,
+        data: {
+          from: range.from.format("YYYY-MM-DD"),
+          to: range.to.format("YYYY-MM-DD"),
+          sales: finish(sales),
+          purchases: finish(purchases),
+          net: { cgst: fromPaise(sales.cgst - purchases.cgst), sgst: fromPaise(sales.sgst - purchases.sgst), igst: fromPaise(sales.igst - purchases.igst), payable: fromPaise(sales.tax - purchases.tax) },
+          notes: ["Credit notes and vendor credits are not netted off in this summary yet."],
+        },
+      });
+    } catch (error) {
+      return fail(res, "GST summary", error);
+    }
+  }
+
   // GET /reports/aged-receivables?org_id=&as_of=
   getAgedReceivables(req, res) {
     return aged(req, res, "receivables");
@@ -225,6 +431,24 @@ class AccountingReportsController {
     return aged(req, res, "payables");
   }
 }
+
+// from/to of a period report; the default is this month (or this year when
+// asked). { error } when a date isn't real or the range is backwards.
+const periodFrom = (req, span = "month") => {
+  const today = dayjs();
+  const to = parseDate(req.query.to) || (req.query.to ? null : today.endOf(span));
+  const from = parseDate(req.query.from) || (req.query.from ? null : today.startOf(span));
+  if (!from || !to) return { error: "Dates must be valid (YYYY-MM-DD or DD-MM-YYYY)" };
+  if (from.isAfter(to)) return { error: "The start date must be on or before the end date" };
+  return { from, to };
+};
+
+const CASH_TYPES = ["cash", "bank"];
+const CASH_FLOW_SECTIONS = [
+  { key: "operating", title: "Operating activities", types: [] },
+  { key: "investing", title: "Investing activities", types: ["fixed_asset", "other_asset"] },
+  { key: "financing", title: "Financing activities", types: ["equity", "long_term_liability", "other_liability"] },
+];
 
 const BUCKETS = [
   { key: "current", label: "Current", test: (d) => d <= 0 },

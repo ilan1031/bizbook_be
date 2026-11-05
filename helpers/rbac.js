@@ -54,6 +54,9 @@ const PAGES = [
   { key: "generalLedger", label: "General Ledger", group: "Reports", routes: ["/reports/generalledger"], actions: VIEW_ONLY },
   { key: "agedReceivables", label: "Aged Receivables", group: "Reports", routes: ["/reports/agedreceivables"], actions: VIEW_ONLY },
   { key: "agedPayables", label: "Aged Payables", group: "Reports", routes: ["/reports/agedpayables"], actions: VIEW_ONLY },
+  { key: "dayBook", label: "Day Book", group: "Reports", routes: ["/reports/daybook"], actions: VIEW_ONLY },
+  { key: "cashFlow", label: "Cash Flow", group: "Reports", routes: ["/reports/cashflow"], actions: VIEW_ONLY },
+  { key: "gstSummary", label: "GST Summary", group: "Reports", routes: ["/reports/gstsummary"], actions: VIEW_ONLY },
   { key: "inventoryValuation", label: "Inventory Valuation", group: "Reports", routes: ["/reports/inventoryvaluation"], actions: VIEW_ONLY },
 
   // Features: switched on per user like pages. apiOnly ones have no screen
@@ -172,6 +175,9 @@ const API_RULES = [
   { re: /^\/api\/v1\/reports\/general-ledger$/, pages: ["generalLedger"], action: "view" },
   { re: /^\/api\/v1\/reports\/aged-receivables$/, pages: ["agedReceivables"], action: "view" },
   { re: /^\/api\/v1\/reports\/aged-payables$/, pages: ["agedPayables"], action: "view" },
+  { re: /^\/api\/v1\/reports\/day-book$/, pages: ["dayBook"], action: "view" },
+  { re: /^\/api\/v1\/reports\/cash-flow$/, pages: ["cashFlow"], action: "view" },
+  { re: /^\/api\/v1\/reports\/gst-summary$/, pages: ["gstSummary"], action: "view" },
 
   { re: /^\/api\/v1\/email\/(invite-portal|verify-invite)$/, pages: ["customerPortal"], action: "create" },
   // Emailing a document: only users who can create or edit sales/purchase
