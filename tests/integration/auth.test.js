@@ -339,6 +339,29 @@ test("raising the IP limit lets another device in", async () => {
   await as("203.0.113.1").patch(`/api/v1/admin/users/${userId}`, { ip_limit: 2 }, saToken);
 });
 
+test("a device is recognised by its id, so a changing IP doesn't sign it out", async () => {
+  const me = (ip, device) => {
+    const r = request(app).get("/api/v1/user/me").set("X-Forwarded-For", ip).set("Authorization", `Bearer ${userToken}`);
+    return device ? r.set("X-Device-Id", device) : r;
+  };
+  const D1 = "device-aaaaaaaaaaaaaaaa";
+  const D2 = "device-bbbbbbbbbbbbbbbb";
+  // An entry saved before ids existed is adopted by the browser that comes from its address.
+  assert.equal((await me("10.0.0.1", D1)).status, 200);
+  // The same browser from a different address stays signed in.
+  assert.equal((await me("10.0.0.77", D1)).status, 200);
+  // A browser that was never approved is refused, whatever its address.
+  assert.equal((await me("10.0.0.77", D2)).body.code, "IP_NOT_ALLOWED");
+  // Removing the device ends that browser's session.
+  const u = await mongoose.model("user").findById(userId).lean();
+  const entry = u.allowed_ips.find((i) => i.device_id === D1);
+  assert.ok(entry, "the id was saved");
+  assert.equal((await as("203.0.113.1").del(`/api/v1/admin/users/${userId}/ips/${entry._id}`, saToken)).status, 200);
+  assert.equal((await me("10.0.0.1", D1)).body.code, "IP_NOT_ALLOWED");
+  // Put the plain address back for the tests that follow.
+  await mongoose.model("user").updateOne({ _id: userId }, { $push: { allowed_ips: { ip: "10.0.0.1" } } });
+});
+
 test("page permissions are enforced on the API", async () => {
   const ip = as("10.0.0.1");
   const org = await ip.post(

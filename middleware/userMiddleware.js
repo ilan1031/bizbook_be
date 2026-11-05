@@ -4,6 +4,7 @@ const usersCollection = mongoose.model("user");
 const ClientCollection = mongoose.model("clients");
 const OrgCollection = mongoose.model("Organization");
 const { checkApiAccess, classifyRequest, getClientIp } = require("../helpers/rbac");
+const { deviceIdOf, findDevice } = require("../helpers/devices");
 const { checkCreateLimit, recordCreate, checkOrgLimit } = require("../helpers/usageLimits");
 const ContactCollection = mongoose.model("Contact");
 const teamAccess = require("../helpers/teamAccess");
@@ -129,8 +130,15 @@ const authMiddleware = async (req, res, next) => {
             success: false,
           });
         }
-        const ip = getClientIp(req);
-        if (!(user.allowed_ips || []).some((entry) => entry.ip === ip)) {
+        const device = findDevice(user, req);
+        if (device && !device.device_id && deviceIdOf(req)) {
+          // An entry saved before devices had ids: it now belongs to this browser.
+          await usersCollection.updateOne(
+            { _id: user._id, "allowed_ips._id": device._id },
+            { $set: { "allowed_ips.$.device_id": deviceIdOf(req), "allowed_ips.$.ip": getClientIp(req) } }
+          ).catch(() => {});
+        }
+        if (!device) {
           return res.status(403).json({
             code: "IP_NOT_ALLOWED",
             message: "This device's IP address isn't approved for your account. Please sign in again.",

@@ -10,6 +10,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { getClientIp, CATALOG } = require("../helpers/rbac");
+const { deviceIdOf, findDevice, newDevice } = require("../helpers/devices");
 const { canSendCodes, sendLoginCode, sendSignupAlert } = require("../helpers/accountEmails");
 const { sendInviteAccepted } = require("../helpers/portalEmails");
 const { appUrl } = require("../helpers/mailer");
@@ -65,8 +66,12 @@ const notifySuperadminOfSignup = async (newUser) => {
 const completeLogin = async (req, res, user) => {
   const ip = getClientIp(req);
   const now = new Date();
-  const entry = (user.allowed_ips || []).find((e) => e.ip === ip);
-  if (entry) entry.last_login_at = now;
+  const entry = findDevice(user, req);
+  if (entry) {
+    entry.last_login_at = now;
+    entry.ip = ip; // where it was last seen
+    if (!entry.device_id && deviceIdOf(req)) entry.device_id = deviceIdOf(req);
+  }
   user.last_login_at = now;
   // A targeted update, not user.save(): two sign-ins (or a sign-in and a
   // password change) at the same moment must not fail with a version error.
@@ -269,7 +274,7 @@ class usersController {
         status: "pending",
         permissions: {},
         allowed_ips: signupIp
-          ? [{ ip: signupIp, user_agent: String(req.headers["user-agent"] || "").slice(0, 200) }]
+          ? [newDevice(req)]
           : [],
       });
       await newUser.save();
@@ -372,7 +377,7 @@ class usersController {
 
       const ip = getClientIp(req);
       const isSuperadmin = user.role === "superadmin";
-      const known = isSuperadmin || (user.allowed_ips || []).some((entry) => entry.ip === ip);
+      const known = isSuperadmin || Boolean(findDevice(user, req));
       if (!known && (user.allowed_ips || []).length >= (user.ip_limit ?? 2)) {
         await UsersCollection.updateOne(
           { _id: user._id },
@@ -392,7 +397,7 @@ class usersController {
         return startLoginOtp(req, res, user, ip);
       }
       if (!known) {
-        user.allowed_ips.push({ ip, user_agent: String(req.headers["user-agent"] || "").slice(0, 200) });
+        user.allowed_ips.push(newDevice(req));
       }
 
       return completeLogin(req, res, user);
@@ -458,7 +463,7 @@ class usersController {
       }
 
       // Re-check the limit: another device may have been added meanwhile.
-      if (!isSuperadmin && !(user.allowed_ips || []).some((e) => e.ip === ip)) {
+      if (!isSuperadmin && !findDevice(user, req)) {
         const limit = user.ip_limit ?? 2;
         if ((user.allowed_ips || []).length >= limit) {
           await UsersCollection.updateOne(
@@ -471,7 +476,7 @@ class usersController {
             message: `You've hit the device limit: this account can sign in from ${limit} device${limit === 1 ? "" : "s"}/network${limit === 1 ? "" : "s"}, and this one (${ip}) isn't one of them. Ask your administrator to remove an old one.`,
           });
         }
-        user.allowed_ips.push({ ip, user_agent: String(req.headers["user-agent"] || "").slice(0, 200) });
+        user.allowed_ips.push(newDevice(req));
       }
       return completeLogin(req, res, user);
     } catch (error) {

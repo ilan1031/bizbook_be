@@ -61,6 +61,7 @@ const userSchema = new mongoose.Schema(
     allowed_ips: [
       {
         ip: { type: String, required: true },
+        device_id: { type: String },
         added_at: { type: Date, default: Date.now },
         last_login_at: { type: Date },
         user_agent: { type: String, default: "" },
