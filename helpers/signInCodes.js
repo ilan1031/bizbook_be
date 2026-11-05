@@ -16,4 +16,36 @@ const newCode = () => String(crypto.randomInt(0, 1000000)).padStart(6, "0");
 const hashOtp = (code) =>
   crypto.createHmac("sha256", process.env.JWT_SECRET).update(String(code)).digest("hex");
 
-module.exports = { OTP_TTL_MS, OTP_MAX_ATTEMPTS, ISSUE_WINDOW_MS, ISSUE_MAX, AUDIT_KEEP, newCode, hashOtp };
+// A code that could not be emailed is kept readable, for its 5 minutes only,
+// so the superadmin can pass it on from Users & Access. It is encrypted
+// (AES-256-GCM, keyed from JWT_SECRET) so it is never plain text in the
+// database, and only the superadmin's list decrypts it.
+const sealKey = () => crypto.createHash("sha256").update(`sign-in-code:${process.env.JWT_SECRET}`).digest();
+const sealCode = (code) => {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", sealKey(), iv);
+  const body = Buffer.concat([cipher.update(String(code), "utf8"), cipher.final()]);
+  return [iv, cipher.getAuthTag(), body].map((b) => b.toString("base64")).join(".");
+};
+const unsealCode = (sealed) => {
+  try {
+    const [iv, tag, body] = String(sealed).split(".").map((p) => Buffer.from(p, "base64"));
+    const decipher = crypto.createDecipheriv("aes-256-gcm", sealKey(), iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
+};
+
+module.exports = {
+  OTP_TTL_MS,
+  OTP_MAX_ATTEMPTS,
+  ISSUE_WINDOW_MS,
+  ISSUE_MAX,
+  AUDIT_KEEP,
+  newCode,
+  hashOtp,
+  sealCode,
+  unsealCode,
+};

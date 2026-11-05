@@ -31,6 +31,16 @@ services:
         value: "true"
       - key: LOGIN_OTP_MODE
         value: every_login
+      # Mail. On Render's free plan SMTP (Gmail) is blocked, so use an HTTPS
+      # provider: BREVO_API_KEY (or RESEND_API_KEY) with EMAIL_FROM_ADDRESS, a
+      # sender verified with that provider. EMAIL_USER / EMAIL_PASS (Gmail App
+      # Password) work on a paid plan, or anywhere SMTP isn't blocked.
+      - key: BREVO_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM_ADDRESS
+        sync: false
       - key: EMAIL_USER
         sync: false
       - key: EMAIL_PASS

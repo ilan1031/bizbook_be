@@ -32,7 +32,7 @@ const list = (v) =>
 
 const senderAddress = (orgName) => {
   if (process.env.EMAIL_FROM) return process.env.EMAIL_FROM;
-  const user = process.env.EMAIL_USER;
+  const user = require("./mailer").fromAddress();
   if (!user) return '"BizBooks" <no-reply@bizbooks.local>';
   const name = String(orgName || "BizBooks").replace(/[<>"\r\n]/g, "").slice(0, 80);
   return `"${name}" <${user}>`;

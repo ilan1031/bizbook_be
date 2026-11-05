@@ -29,16 +29,16 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 16) {
 // Account email (sign-in codes, sign-up and approval notices): say clearly
 // when it can't be delivered.
 {
-  const { isMailConfigured, mailTarget } = require("./helpers/mailer");
+  const { isMailConfigured, mailTarget, fromAddress } = require("./helpers/mailer");
   const everyLogin = (process.env.LOGIN_OTP_MODE || "every_login") === "every_login";
   if (isMailConfigured()) {
     if (process.env.LOGIN_OTP_ENABLED === "true") {
-      console.log(`Sign-in codes by email (${process.env.EMAIL_USER} via ${mailTarget()}), ${everyLogin ? "on every login" : "for new devices"}.`);
+      console.log(`Sign-in codes by email (${fromAddress()} via ${mailTarget()}), ${everyLogin ? "on every login" : "for new devices"}.`);
     }
   } else if (process.env.NODE_ENV === "production") {
-    console.warn("WARNING: EMAIL_USER / EMAIL_PASS aren't set: no sign-in codes, sign-up alerts or approval emails will be sent.");
+    console.warn("WARNING: email isn't set up (EMAIL_USER + EMAIL_PASS, or BREVO_API_KEY / RESEND_API_KEY + EMAIL_FROM_ADDRESS): no sign-in codes, sign-up alerts or approval emails will be sent.");
   } else {
-    console.warn("NOTE: EMAIL_USER / EMAIL_PASS aren't set: emails (including sign-in codes) are printed in this log.");
+    console.warn("NOTE: email isn't set up: emails (including sign-in codes) are printed in this log.");
   }
 }
 if (
@@ -163,34 +163,33 @@ app.set("view engine", "ejs");
 // allow-listed origin instead so credentialed cross-origin requests stay
 // restricted to our own frontend(s).
 // FRONTEND_URL (and PORTAL_URL, the customer portal) may list several
-// origins separated by commas
-// (e.g. the Vercel production URL and a preview URL).
-const allowedOrigins = [
-  ...[process.env.FRONTEND_URL, process.env.PORTAL_URL]
-    .join(",")
-    .split(",")
-    .map((o) => o.trim().replace(/\/+$/, ""))
-    .filter(Boolean),
-  "http://localhost:3000",
-];
+// origins separated by commas (e.g. the Vercel production URL and a preview
+// URL); an entry may use "*" for one hostname label, like
+// https://*.vercel.app. See helpers/hostingConfig.js.
+const { trustProxySetting, originMatchers, isOriginAllowed } = require("./helpers/hostingConfig");
+const allowedOrigins = originMatchers();
 
 // Behind a reverse proxy (Render, etc.) the client's IP arrives in
-// X-Forwarded-For. TRUST_PROXY tells Express how many proxy hops to trust
-// (Render: 1). Leave it unset when not behind a proxy, otherwise clients
-// could fake their IP - which the per-user IP allow-list relies on.
-if (process.env.TRUST_PROXY) {
-  const hops = Number(process.env.TRUST_PROXY);
-  app.set("trust proxy", Number.isNaN(hops) ? process.env.TRUST_PROXY : hops);
-}
+// X-Forwarded-For, and Express must be told to trust it: TRUST_PROXY sets the
+// number of proxy hops (Render: 1, and that's the default there). Left off
+// anywhere else, otherwise clients could fake the IP the per-user allow-list
+// relies on.
+const proxySetting = trustProxySetting();
+if (proxySetting !== undefined) app.set("trust proxy", proxySetting);
 
+const warnedOrigins = new Set();
 app.use(
   cors({
     origin: (origin, callback) => {
       // Allow non-browser tools (curl, server-to-server) with no Origin header.
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
+      if (isOriginAllowed(origin, allowedOrigins)) return callback(null, true);
+      // Not an error: the browser just gets no CORS headers and blocks the
+      // call. Say once which origin to add, instead of a stack trace per request.
+      if (!warnedOrigins.has(origin)) {
+        warnedOrigins.add(origin);
+        console.warn(`CORS: blocked requests from ${origin}. If that is your frontend, add it to FRONTEND_URL (comma-separated).`);
       }
-      return callback(new Error("Not allowed by CORS"));
+      return callback(null, false);
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],

@@ -15,7 +15,7 @@ const { sendInviteAccepted } = require("../helpers/portalEmails");
 const { appUrl } = require("../helpers/mailer");
 const teamAccess = require("../helpers/teamAccess");
 
-const { OTP_TTL_MS, OTP_MAX_ATTEMPTS, AUDIT_KEEP, newCode, hashOtp } = require("../helpers/signInCodes");
+const { OTP_TTL_MS, OTP_MAX_ATTEMPTS, AUDIT_KEEP, newCode, hashOtp, sealCode } = require("../helpers/signInCodes");
 // Same rule as the email field in model/usersSchema.js.
 const SIGNUP_EMAIL_RE =
   /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
@@ -139,9 +139,52 @@ const startLoginOtp = async (req, res, user, ip) => {
 
   const sent = await sendLoginCode(user, code);
   if (!sent.ok) {
-    return res.status(ST_CODES.INTERNAL_SERVER_ERROR).json({
-      code: "OTP_SEND_FAILED",
-      message: "We couldn't send your sign-in code. Try again or contact your administrator.",
+    // The email didn't go out. The code isn't lost: it's kept (encrypted, for
+    // its 5 minutes) so the superadmin can read it under Users & Access and
+    // pass it on, and the person can still finish signing in with it.
+    const now = new Date();
+    const isSuperadmin = user.role === "superadmin";
+    await UsersCollection.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          login_otp: {
+            code_hash: hashOtp(code),
+            ip,
+            expires_at: new Date(now.getTime() + OTP_TTL_MS),
+            attempts: 0,
+            source: "admin",
+            auto: true,
+            reason: "email_failed",
+            issued_at: now,
+            // The superadmin can't read their own code in the list they can't
+            // reach: theirs goes to the server log (visible to whoever runs it).
+            ...(isSuperadmin ? {} : { sealed: sealCode(code) }),
+          },
+        },
+        $push: {
+          sign_in_code_log: {
+            $each: [{ action: "email_failed", at: now, by_email: "system", detail: String(sent.error || "").slice(0, 200) }],
+            $slice: -AUDIT_KEEP,
+          },
+        },
+      }
+    );
+    console.warn(`[sign-in code] couldn't email the code to ${user.email}: ${sent.error || "unknown error"}`);
+    if (isSuperadmin) {
+      console.warn(`[sign-in code] superadmin code for ${user.email}: ${code} (valid 5 minutes, needs the password too)`);
+    }
+    const otpSession = jwt.sign({ userId: user._id, ip, purpose: "login-otp" }, process.env.JWT_SECRET, { expiresIn: "5m" });
+    return res.status(ST_CODES.OK).json({
+      otp_required: true,
+      otp_session: otpSession,
+      channel: "admin",
+      sent_to: "",
+      expires_at: new Date(now.getTime() + OTP_TTL_MS),
+      fallback: true,
+      message: isSuperadmin
+        ? "We couldn't email your code. It was written to the server log. Enter it here."
+        : "We couldn't email your code. Ask your administrator for a temporary sign-in code and enter it here.",
     });
   }
 

@@ -2,10 +2,10 @@ const mongoose = require("mongoose");
 const UsersCollection = mongoose.model("user");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 const { CATALOG, sanitizePermissions } = require("../helpers/rbac");
-const { isMailConfigured, sendMail, getMailHealth, mailTarget } = require("../helpers/mailer");
+const { isMailConfigured, fromAddress, sendMail, getMailHealth, mailTarget } = require("../helpers/mailer");
 const { sendApprovedEmail } = require("../helpers/accountEmails");
 const { sanitizeLimits, usageFor } = require("../helpers/usageLimits");
-const { OTP_TTL_MS, ISSUE_WINDOW_MS, ISSUE_MAX, AUDIT_KEEP, newCode, hashOtp } = require("../helpers/signInCodes");
+const { OTP_TTL_MS, OTP_MAX_ATTEMPTS, ISSUE_WINDOW_MS, ISSUE_MAX, AUDIT_KEEP, newCode, hashOtp, unsealCode } = require("../helpers/signInCodes");
 
 const STATUSES = ["pending", "active", "inactive"];
 
@@ -18,15 +18,38 @@ const isValidId = (id) => mongoose.Types.ObjectId.isValid(String(id));
 
 class AdminController {
   async listUsers(req, res) {
+    // The list can include a pending sign-in code: never cache it.
+    res.set("Cache-Control", "no-store");
     try {
       const query = {};
       if (req.query.status && STATUSES.includes(req.query.status)) {
         query.status = req.query.status;
       }
       const users = await UsersCollection.find(query)
-        .select(PUBLIC_FIELDS)
+        .select(`${PUBLIC_FIELDS} login_otp`)
         .sort({ createdAt: -1 })
         .lean();
+      // A sign-in code that couldn't be emailed waits here for the superadmin
+      // to pass it on (5 minutes, works once). Nothing else of login_otp leaves.
+      for (const u of users) {
+        const otp = u.login_otp;
+        delete u.login_otp;
+        if (otp?.sealed && new Date(otp.expires_at) > new Date() && (otp.attempts || 0) < OTP_MAX_ATTEMPTS) {
+          const code = unsealCode(otp.sealed);
+          if (code) u.pending_sign_in_code = { code, expires_at: otp.expires_at, reason: otp.reason || "email_failed" };
+        }
+      }
+      // Everyone with a code waiting, whichever tab is open (the banner).
+      const waiting = await UsersCollection.find({
+        "login_otp.sealed": { $exists: true },
+        "login_otp.expires_at": { $gt: new Date() },
+      })
+        .select("email login_otp")
+        .lean();
+      const pendingCodes = waiting
+        .filter((u) => (u.login_otp.attempts || 0) < OTP_MAX_ATTEMPTS)
+        .map((u) => ({ user_id: u._id, email: u.email, code: unsealCode(u.login_otp.sealed), expires_at: u.login_otp.expires_at, reason: u.login_otp.reason || "email_failed" }))
+        .filter((c) => c.code);
       // Records created today / this month / this year, against the limits.
       const usage = await usageFor(users.map((u) => u._id));
       const orgCounts = await mongoose.model("Organization").aggregate([
@@ -43,11 +66,12 @@ class AdminController {
       res.status(ST_CODES.OK).json({
         status: true,
         data: users,
+        pending_codes: pendingCodes,
         counts: Object.fromEntries(counts.map((c) => [c._id || "pending", c.n])),
         catalog: CATALOG,
         email: {
           configured: isMailConfigured(),
-          from: isMailConfigured() ? process.env.EMAIL_USER : "",
+          from: isMailConfigured() ? fromAddress() : "",
           target: mailTarget(),
           // The last real send: { ok, error, checked_at }. null until mail is tried.
           health: await getMailHealth(),

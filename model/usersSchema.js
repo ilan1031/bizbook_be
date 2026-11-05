@@ -73,15 +73,21 @@ const userSchema = new mongoose.Schema(
       source: { type: String, enum: ["email", "admin"], default: "email" },
       issued_by: { type: mongoose.Schema.Types.ObjectId, ref: "user" },
       issued_at: Date,
+      // A code the email couldn't deliver (reason "email_failed", auto true),
+      // kept encrypted for its 5 minutes so the superadmin can pass it on.
+      auto: Boolean,
+      reason: String,
+      sealed: String,
     },
     // Who issued and used superadmin sign-in codes, and when. Never holds a code.
     sign_in_code_log: [
       {
         _id: false,
-        action: { type: String, enum: ["issued", "used"] },
+        action: { type: String, enum: ["issued", "used", "email_failed"] },
         at: Date,
         by: { type: mongoose.Schema.Types.ObjectId, ref: "user" },
         by_email: String,
+        detail: String,
       },
     ],
     last_login_at: { type: Date },

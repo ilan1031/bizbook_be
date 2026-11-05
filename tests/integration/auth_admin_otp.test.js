@@ -265,12 +265,46 @@ test("mail failure is reported clearly, and an issued code still gets the user i
     assert.ok(list.body.email.health.checked_at);
     assert.ok(!JSON.stringify(list.body).includes(secret), "the mail password is never sent to the browser");
 
-    // Emailed sign-in codes can't be sent, so a sign-in from a new device fails...
-    const blocked = await login("10.9.0.7", { email: USER.email, password: PASSWORD });
-    assert.equal(blocked.status, 500, JSON.stringify(blocked.body));
-    assert.equal(blocked.body.code, "OTP_SEND_FAILED");
+    // The emailed code can't be sent. The sign-in isn't stuck: the person is
+    // told to ask their administrator, and the code waits for the superadmin.
+    const stuck = await login("10.9.0.8", { email: USER.email, password: PASSWORD });
+    assert.equal(stuck.status, 200, JSON.stringify(stuck.body));
+    assert.equal(stuck.body.otp_required, true);
+    assert.equal(stuck.body.channel, "admin");
+    assert.equal(stuck.body.fallback, true);
+    assert.match(stuck.body.message, /Ask your administrator/);
+    assert.ok(!JSON.stringify(stuck.body).match(/"\d{6}"/), "the code isn't in the person's response");
 
-    // ...until the superadmin issues a code, which needs no mail.
+    // The superadmin's list shows that code; nobody else's request can see it.
+    const waiting = await as("203.0.113.9").get("/api/v1/admin/users", saToken);
+    assert.equal(waiting.headers["cache-control"], "no-store");
+    const row = waiting.body.data.find((u) => String(u._id) === userId);
+    assert.match(row.pending_sign_in_code.code, /^\d{6}$/);
+    assert.equal(row.pending_sign_in_code.reason, "email_failed");
+    assert.equal(row.login_otp, undefined, "the stored record isn't sent");
+    assert.ok(waiting.body.data.filter((u) => u.pending_sign_in_code).length === 1, "only that user's code");
+    assert.equal(waiting.body.pending_codes.length, 1);
+    assert.equal(waiting.body.pending_codes[0].email, USER.email);
+    assert.equal(waiting.body.pending_codes[0].code, row.pending_sign_in_code.code);
+    // The banner list isn't limited by the status tab that is open.
+    const otherTab = await as("203.0.113.9").get("/api/v1/admin/users?status=inactive", saToken);
+    assert.equal(otherTab.body.pending_codes.length, 1);
+    const stored = await User().findById(userId).lean();
+    assert.ok(stored.login_otp.sealed, "kept encrypted");
+    assert.ok(!JSON.stringify(stored.login_otp).includes(row.pending_sign_in_code.code), "never plain text in the database");
+    assert.ok(stored.sign_in_code_log.some((e) => e.action === "email_failed"), "recorded in the audit trail");
+
+    // A wrong code is refused; the code the superadmin passes on works once.
+    const wrong = await verify("10.9.0.8", stuck.body.otp_session, row.pending_sign_in_code.code === "000000" ? "111111" : "000000");
+    assert.equal(wrong.status, 400);
+    const entered = await verify("10.9.0.8", stuck.body.otp_session, row.pending_sign_in_code.code);
+    assert.equal(entered.status, 200, entered.text);
+    assert.ok(entered.body.token);
+    const after = await as("203.0.113.9").get("/api/v1/admin/users", saToken);
+    assert.equal(after.body.data.find((u) => String(u._id) === userId).pending_sign_in_code, undefined, "gone once used");
+    assert.equal((await verify("10.9.0.8", stuck.body.otp_session, row.pending_sign_in_code.code)).status, 400, "works once");
+
+    // The superadmin can also issue a code on demand, which needs no mail.
     const issued = await as("203.0.113.9").post(`/api/v1/admin/users/${userId}/sign-in-code`, {}, saToken);
     assert.equal(issued.status, 201);
     const step = await login("10.9.0.7", { email: USER.email, password: PASSWORD });
@@ -292,4 +326,41 @@ test("with no mailbox set up, the test email is written to the log and nothing f
   assert.equal(r.status, 200, r.text);
   assert.equal(r.body.channel, "console");
   assert.ok(mailLog.some((l) => l.includes("someone@test.local")));
+});
+
+test("when mail is down the superadmin's own code goes to the server log, not a list", async () => {
+  const port = await closedPort();
+  process.env.EMAIL_USER = "mailer@test.local";
+  process.env.EMAIL_PASS = "app-password";
+  process.env.EMAIL_HOST = "127.0.0.1";
+  process.env.EMAIL_PORT = String(port);
+  process.env.LOGIN_OTP_MODE = "every_login";
+  const warned = [];
+  const realWarn = console.warn;
+  const realErr = console.error;
+  console.warn = (...a) => warned.push(a.join(" "));
+  console.error = () => {};
+  try {
+    const step = await login("203.0.113.9", { email: "superadmin@test.local", password: "Super@1234" });
+    assert.equal(step.status, 200, JSON.stringify(step.body));
+    assert.equal(step.body.channel, "admin");
+    assert.equal(step.body.fallback, true);
+    assert.match(step.body.message, /server log/);
+    const line = warned.find((l) => /superadmin code for superadmin@test\.local: \d{6}/.test(l));
+    assert.ok(line, `expected the code in the log, got: ${warned.join(" | ")}`);
+    const code = line.match(/: (\d{6})/)[1];
+    const stored = await User().findOne({ email: "superadmin@test.local" }).lean();
+    assert.equal(stored.login_otp.sealed, undefined, "no readable copy kept for the superadmin");
+    const got = await verify("203.0.113.9", step.body.otp_session, code);
+    assert.equal(got.status, 200, got.text);
+    assert.ok(got.body.token);
+  } finally {
+    console.warn = realWarn;
+    console.error = realErr;
+    process.env.EMAIL_USER = "";
+    process.env.EMAIL_PASS = "";
+    delete process.env.EMAIL_HOST;
+    delete process.env.EMAIL_PORT;
+    process.env.LOGIN_OTP_MODE = "new_device";
+  }
 });

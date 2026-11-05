@@ -3,15 +3,25 @@
 //   EMAIL_USER=you@gmail.com   EMAIL_PASS=<16-letter app password>
 // Other SMTP servers: also set EMAIL_HOST (and EMAIL_PORT, default 465).
 //
+// Hosts that block SMTP (Render's free plan blocks ports 25/465/587) need an
+// HTTPS provider instead: BREVO_API_KEY or RESEND_API_KEY plus
+// EMAIL_FROM_ADDRESS (a sender the provider has verified); see httpMail.js.
+//
 // Without EMAIL_USER/EMAIL_PASS, outside production the message is printed
 // to the server log instead ("console"), so local sign-in still works.
 // Never throws: returns { ok, channel?, error? }.
 const nodemailer = require("nodemailer");
 const mongoose = require("mongoose");
+const { apiProvider, providerLabel, httpTransport } = require("./httpMail");
 
 let transporter = null;
 
-const isMailConfigured = () => Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS);
+// The address mail is sent from: EMAIL_FROM_ADDRESS, or the SMTP login.
+const fromAddress = () => process.env.EMAIL_FROM_ADDRESS || process.env.EMAIL_USER || "";
+const isMailConfigured = () =>
+  apiProvider() ? Boolean(fromAddress()) : Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS);
+// What to set, for messages shown to the person fixing the setup.
+const MAIL_SETUP_HINT = "set EMAIL_USER and EMAIL_PASS (Gmail App Password), or BREVO_API_KEY / RESEND_API_KEY with EMAIL_FROM_ADDRESS";
 const isProduction = () => process.env.NODE_ENV === "production";
 // Whether messages can go anywhere at all (a real mailbox, or the log locally).
 const canSendMail = () => isMailConfigured() || !isProduction();
@@ -22,11 +32,21 @@ const TIMEOUTS = { connectionTimeout: 10000, greetingTimeout: 10000, socketTimeo
 
 // Where mail goes, without credentials: "smtp.example.com:587", or Gmail.
 const mailTarget = () =>
-  process.env.EMAIL_HOST
+  apiProvider()
+    ? `${providerLabel(apiProvider())} API (HTTPS)`
+    : process.env.EMAIL_HOST
     ? `${process.env.EMAIL_HOST}:${Number(process.env.EMAIL_PORT || 465)}`
     : "smtp.gmail.com:465 (EMAIL_HOST not set)";
 
+// Render's free plan (RENDER is set on Render) blocks SMTP, so a timeout there
+// is that block, not the credentials.
+const withHint = (message) =>
+  !apiProvider() && process.env.RENDER && /timeout|ETIMEDOUT|ECONNREFUSED|ENETUNREACH/i.test(message)
+    ? `${message}. Render's free plan blocks SMTP ports (25, 465, 587): send through an HTTPS provider instead by setting BREVO_API_KEY (or RESEND_API_KEY) and EMAIL_FROM_ADDRESS`
+    : message;
+
 const getTransporter = () => {
+  if (!transporter && apiProvider()) transporter = nodemailer.createTransport(httpTransport());
   if (!transporter) {
     const port = Number(process.env.EMAIL_PORT || 465);
     const auth = { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS };
@@ -67,14 +87,14 @@ const getMailHealth = async () => {
 const sendMail = async ({ to, subject, text, html, fromName, replyTo }) => {
   if (!to) return { ok: false, error: "No email address" };
   if (!isMailConfigured()) {
-    if (isProduction()) return { ok: false, error: "Email is not configured (EMAIL_USER / EMAIL_PASS)" };
+    if (isProduction()) return { ok: false, error: `Email is not configured: ${MAIL_SETUP_HINT}` };
     console.log(`[EMAIL:console] to ${to}: ${subject}\n${text}`);
     return { ok: true, channel: "console" };
   }
   const target = mailTarget();
   try {
     await getTransporter().sendMail({
-      from: process.env.EMAIL_FROM || `${String(fromName || "BizBooks").replace(/[<>"]/g, "")} <${process.env.EMAIL_USER}>`,
+      from: process.env.EMAIL_FROM || `${String(fromName || "BizBooks").replace(/[<>"]/g, "")} <${fromAddress()}>`,
       ...(replyTo ? { replyTo } : {}),
       to,
       subject,
@@ -84,9 +104,10 @@ const sendMail = async ({ to, subject, text, html, fromName, replyTo }) => {
     recordMailHealth({ ok: true, target, error: "" });
     return { ok: true, channel: "email", target };
   } catch (err) {
-    console.error(`[mail] send failed via ${target}:`, err.message);
-    recordMailHealth({ ok: false, target, error: err.message });
-    return { ok: false, error: err.message, target };
+    const message = withHint(err.message);
+    console.error(`[mail] send failed via ${target}:`, message);
+    recordMailHealth({ ok: false, target, error: message });
+    return { ok: false, error: message, target };
   }
 };
 
@@ -105,4 +126,4 @@ const layout = (title, bodyHtml) => `<!doctype html><html><body style="margin:0;
 <tr><td style="padding:24px"><h1 style="font-size:18px;margin:0 0 12px">${escapeHtml(title)}</h1>${bodyHtml}</td></tr>
 </table></td></tr></table></body></html>`;
 
-module.exports = { isMailConfigured, canSendMail, sendMail, appUrl, escapeHtml, layout, getTransporter, getMailHealth, mailTarget };
+module.exports = { isMailConfigured, fromAddress, canSendMail, sendMail, appUrl, escapeHtml, layout, getTransporter, getMailHealth, mailTarget };

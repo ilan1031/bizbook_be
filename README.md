@@ -64,7 +64,9 @@ node scripts/backfill-posting-status.js --apply   # writes it
    - `SUPERADMIN_EMAIL` and `SUPERADMIN_PASSWORD`.
    - Any integrations you use.
 
-   `TRUST_PROXY=1` is already set; it's required for correct client IPs behind Render's proxy.
+   `TRUST_PROXY=1` is already set; it's required for correct client IPs behind Render's proxy (the API also assumes 1 hop whenever it runs on Render).
+   - `FRONTEND_URL` may list several origins separated by commas, and an entry may use `*` for one hostname part, e.g. `https://my-app.vercel.app,https://*.vercel.app` to allow Vercel preview URLs. A blocked origin is named once in the log.
+   - **Email.** Render's free plan blocks SMTP ports 25, 465 and 587, so Gmail can't connect from there (sign-in codes fail with "Connection timeout"). Use an HTTPS provider: set `BREVO_API_KEY` (free: 300 emails a day, a sender verified under Senders & IP) or `RESEND_API_KEY`, and `EMAIL_FROM_ADDRESS` (the verified sender). `EMAIL_USER` / `EMAIL_PASS` (Gmail) work on a paid plan. Check it with **Send test email** under Users & Access.
 3. **Allow Render to reach the database.** In Atlas → Network Access, allow Render's outbound IPs, or `0.0.0.0/0`.
 
 Uploaded files are stored on local disk (`uploads/`), which is temporary on Render. Use a persistent disk or move uploads to ImageKit for production.
