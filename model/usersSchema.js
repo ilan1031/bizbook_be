@@ -55,6 +55,9 @@ const userSchema = new mongoose.Schema(
     },
     // Max number of distinct IP addresses this user may log in from.
     ip_limit: { type: Number, default: 2, min: 0, max: 50 },
+    // The last sign-in refused because the device limit was full, so the
+    // superadmin can see exactly which address is being turned away.
+    last_blocked_ip: { ip: String, at: Date, user_agent: String },
     allowed_ips: [
       {
         ip: { type: String, required: true },

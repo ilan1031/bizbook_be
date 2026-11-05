@@ -374,9 +374,14 @@ class usersController {
       const isSuperadmin = user.role === "superadmin";
       const known = isSuperadmin || (user.allowed_ips || []).some((entry) => entry.ip === ip);
       if (!known && (user.allowed_ips || []).length >= (user.ip_limit ?? 2)) {
+        await UsersCollection.updateOne(
+          { _id: user._id },
+          { $set: { last_blocked_ip: { ip, at: new Date(), user_agent: String(req.headers["user-agent"] || "").slice(0, 200) } } }
+        );
         return res.status(ST_CODES.FORBIDDEN).json({
           code: "IP_LIMIT_REACHED",
-          message: `You can only sign in from ${user.ip_limit ?? 2} devices/networks. Ask your administrator to remove an old one.`,
+          ip,
+          message: `You can only sign in from ${user.ip_limit ?? 2} devices/networks, and this one (${ip}) isn't one of them. Ask your administrator to remove an old one.`,
         });
       }
       if (user.login_otp?.source === "admin") {

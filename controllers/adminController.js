@@ -12,7 +12,7 @@ const STATUSES = ["pending", "active", "inactive"];
 // Fields the admin screen shows; never the password or OTP hash (sign_in_code_log
 // has who issued or used a sign-in code, and when, but no code).
 const PUBLIC_FIELDS =
-  "email mobile company_name country state role status permissions limits ip_limit allowed_ips last_login_at approved_at createdAt sign_in_code_log";
+  "email mobile company_name country state role status permissions limits ip_limit allowed_ips last_blocked_ip last_login_at approved_at createdAt sign_in_code_log";
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(String(id));
 
