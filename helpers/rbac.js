@@ -50,6 +50,10 @@ const PAGES = [
   { key: "profitAndLoss", label: "Profit and Loss", group: "Reports", routes: ["/reports/profitandloss"], actions: VIEW_ONLY },
   { key: "balanceSheet", label: "Balance Sheet", group: "Reports", routes: ["/reports/balancesheet"], actions: VIEW_ONLY },
   { key: "journalReport", label: "Journal Report", group: "Reports", routes: ["/reports/journalreport"], actions: VIEW_ONLY },
+  { key: "trialBalance", label: "Trial Balance", group: "Reports", routes: ["/reports/trialbalance"], actions: VIEW_ONLY },
+  { key: "generalLedger", label: "General Ledger", group: "Reports", routes: ["/reports/generalledger"], actions: VIEW_ONLY },
+  { key: "agedReceivables", label: "Aged Receivables", group: "Reports", routes: ["/reports/agedreceivables"], actions: VIEW_ONLY },
+  { key: "agedPayables", label: "Aged Payables", group: "Reports", routes: ["/reports/agedpayables"], actions: VIEW_ONLY },
   { key: "inventoryValuation", label: "Inventory Valuation", group: "Reports", routes: ["/reports/inventoryvaluation"], actions: VIEW_ONLY },
 
   // Features: switched on per user like pages. apiOnly ones have no screen
@@ -164,6 +168,10 @@ const API_RULES = [
   { re: /^\/api\/v1\/get-journal$/, pages: ["journalReport"], action: "view" },
   { re: /^\/api\/v1\/reports\/profit-loss\//, pages: ["profitAndLoss"], action: "view" },
   { re: /^\/api\/v1\/reports\/balance-sheet$/, pages: ["balanceSheet"], action: "view" },
+  { re: /^\/api\/v1\/reports\/trial-balance$/, pages: ["trialBalance"], action: "view" },
+  { re: /^\/api\/v1\/reports\/general-ledger$/, pages: ["generalLedger"], action: "view" },
+  { re: /^\/api\/v1\/reports\/aged-receivables$/, pages: ["agedReceivables"], action: "view" },
+  { re: /^\/api\/v1\/reports\/aged-payables$/, pages: ["agedPayables"], action: "view" },
 
   { re: /^\/api\/v1\/email\/(invite-portal|verify-invite)$/, pages: ["customerPortal"], action: "create" },
   // Emailing a document: only users who can create or edit sales/purchase
