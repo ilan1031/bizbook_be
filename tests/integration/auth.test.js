@@ -261,7 +261,7 @@ test("a new IP within the limit needs the emailed code", async () => {
   const verify = (ip, otp) => as(ip).post("/api/v1/user/verify-login-otp", { otp_session: session, otp });
   const wrong = await verify("10.0.0.2", code === "000000" ? "111111" : "000000");
   assert.equal(wrong.body.code, "OTP_WRONG");
-  assert.equal((await verify("10.0.0.9", code)).body.code, "OTP_INVALID", "other IP");
+  assert.equal((await verify("10.0.0.9", code === "000000" ? "111111" : "000000")).body.code, "OTP_WRONG", "a wrong code from another address is just a wrong code");
   assert.equal((await as("10.0.0.2").post("/api/v1/user/verify-login-otp", { otp_session: "junk", otp: code })).body.code, "OTP_EXPIRED");
 
   const ok = await verify("10.0.0.2", code);
@@ -306,7 +306,30 @@ test("device limit: a third IP is refused; removing one frees a slot", async () 
   const entry = u.allowed_ips.find((i) => i.ip === "10.0.0.2");
   const del = await as("203.0.113.1").del(`/api/v1/admin/users/${userId}/ips/${entry._id}`, saToken);
   assert.equal(del.status, 200);
-  assert.equal((await login("10.0.0.3", USER)).body.otp_required, true);
+  const freed = await login("10.0.0.3", USER);
+  assert.equal(freed.body.otp_required, true);
+
+  // The code is checked from a different address than the password step (a
+  // proxy or IPv4/IPv6 switch): it still signs in, and that address is the
+  // one remembered.
+  const entered = await as("10.0.0.6").post("/api/v1/user/verify-login-otp", { otp_session: freed.body.otp_session, otp: lastCode() });
+  assert.equal(entered.status, 200, entered.text);
+  assert.ok(entered.body.token);
+  const after = await mongoose.model("user").findById(userId).lean();
+  assert.ok(after.allowed_ips.some((i) => i.ip === "10.0.0.6"));
+
+  // With every slot used, the code step says so plainly instead of failing quietly.
+  const second = await login("10.0.0.7", USER);
+  assert.equal(second.status, 403);
+  await as("203.0.113.1").patch(`/api/v1/admin/users/${userId}`, { ip_limit: 3 }, saToken);
+  const third2 = await login("10.0.0.7", USER);
+  assert.equal(third2.body.otp_required, true);
+  await as("203.0.113.1").patch(`/api/v1/admin/users/${userId}`, { ip_limit: 2 }, saToken);
+  const blocked = await as("10.0.0.8").post("/api/v1/user/verify-login-otp", { otp_session: third2.body.otp_session, otp: lastCode() });
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.body.code, "IP_LIMIT_REACHED");
+  assert.match(blocked.body.message, /hit the device limit/);
+  assert.equal(blocked.body.ip, "10.0.0.8");
 });
 
 test("raising the IP limit lets another device in", async () => {

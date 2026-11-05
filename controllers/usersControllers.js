@@ -415,17 +415,22 @@ class usersController {
         });
       }
       const ip = getClientIp(req);
-      if (session.purpose !== "login-otp" || session.ip !== ip) {
+      // The code proves who is signing in. It is not tied to the address the
+      // password step came from: the two requests can arrive from different
+      // addresses (IPv4/IPv6, a proxy, a mobile network), which used to leave
+      // people unable to finish. The device remembered is the one that entered
+      // the code, and the device limit is checked against it below.
+      if (session.purpose !== "login-otp") {
         return res.status(ST_CODES.BAD_REQUEST).json({
           code: "OTP_INVALID",
-          message: "Please sign in again from this device.",
+          message: "Please sign in again.",
         });
       }
 
       const user = await UsersCollection.findById(session.userId);
       const pending = user?.login_otp;
       const isSuperadmin = user?.role === "superadmin";
-      if (!user || (!isSuperadmin && user.status !== "active") || !pending?.code_hash || pending.ip !== ip) {
+      if (!user || (!isSuperadmin && user.status !== "active") || !pending?.code_hash) {
         return res.status(ST_CODES.BAD_REQUEST).json({
           code: "OTP_INVALID",
           message: "Please sign in again.",
@@ -454,10 +459,16 @@ class usersController {
 
       // Re-check the limit: another device may have been added meanwhile.
       if (!isSuperadmin && !(user.allowed_ips || []).some((e) => e.ip === ip)) {
-        if ((user.allowed_ips || []).length >= (user.ip_limit ?? 2)) {
+        const limit = user.ip_limit ?? 2;
+        if ((user.allowed_ips || []).length >= limit) {
+          await UsersCollection.updateOne(
+            { _id: user._id },
+            { $set: { last_blocked_ip: { ip, at: new Date(), user_agent: String(req.headers["user-agent"] || "").slice(0, 200) } } }
+          );
           return res.status(ST_CODES.FORBIDDEN).json({
             code: "IP_LIMIT_REACHED",
-            message: "Your device limit has been reached. Ask your administrator to remove an old one.",
+            ip,
+            message: `You've hit the device limit: this account can sign in from ${limit} device${limit === 1 ? "" : "s"}/network${limit === 1 ? "" : "s"}, and this one (${ip}) isn't one of them. Ask your administrator to remove an old one.`,
           });
         }
         user.allowed_ips.push({ ip, user_agent: String(req.headers["user-agent"] || "").slice(0, 200) });
