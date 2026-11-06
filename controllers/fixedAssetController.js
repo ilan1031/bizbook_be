@@ -8,6 +8,7 @@ const ST_CODES = require("../helpers/statusCodeHelpers");
 const commonHelper = require("../helpers/commonHelpers");
 const { toPaise, fromPaise, getAccountsMap, formatCurrency } = require("../helpers/accountingHelper");
 const { buildSchedule, dueEntries } = require("../helpers/depreciation");
+const { lockedUntil, assertUnlocked } = require("../helpers/periodLock");
 
 const Asset = () => mongoose.model("FixedAsset");
 const Journal = () => mongoose.model("Journal");
@@ -276,11 +277,19 @@ class FixedAssetController {
       if (Array.isArray(asset_ids) && asset_ids.length) query._id = { $in: asset_ids.filter((id) => mongoose.isValidObjectId(id)) };
       const assets = await Asset().find(query);
       const accounts = await getAccountsMap(org_id, admin_id);
+      const locked = await lockedUntil(admin_id, org_id);
       let posted = 0;
       let total = 0;
       const skipped = [];
       for (const asset of assets) {
-        const entries = dueEntries(asset, upTo).slice(0, MAX_RUN_MONTHS);
+        // Months in a locked period can't be posted; say so rather than posting around them silently.
+        let entries = dueEntries(asset, upTo);
+        if (locked) {
+          const closed = entries.filter((e) => !dayjs(e.date).isAfter(locked, "day"));
+          if (closed.length) skipped.push({ asset_id: asset.asset_id, reason: `${closed.length} month${closed.length === 1 ? " is" : "s are"} in the locked period (up to ${locked.format("DD-MM-YYYY")}) and weren't posted` });
+          entries = entries.filter((e) => dayjs(e.date).isAfter(locked, "day"));
+        }
+        entries = entries.slice(0, MAX_RUN_MONTHS);
         const expense = accounts.get(asset.expense_account_id);
         const accumulated = accounts.get(asset.accumulated_account_id);
         if (!expense || !accumulated) {
@@ -327,6 +336,12 @@ class FixedAssetController {
       const when = parseDay(date);
       if (!when) return bad(res, "The disposal date must be a valid date (YYYY-MM-DD)");
       if (when.isBefore(dayjs(asset.purchase_date).startOf("day"))) return bad(res, "The disposal date can't be before the purchase date");
+      try {
+        await assertUnlocked(admin_id, org_id, [when]);
+      } catch (e) {
+        if (e.code === "PERIOD_LOCKED") return res.status(ST_CODES.FORBIDDEN).json({ status: false, code: "PERIOD_LOCKED", message: e.message });
+        throw e;
+      }
       const received = Number(proceeds || 0);
       if (!Number.isFinite(received) || received < 0 || Math.abs(toPaise(received) - received * 100) > 1e-6) return bad(res, "Proceeds must be zero or more, with at most 2 decimal places");
 

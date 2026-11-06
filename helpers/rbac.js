@@ -46,6 +46,9 @@ const PAGES = [
 
   { key: "chartOfAccounts", label: "Chart of Accounts", group: "Accountant", routes: ["/accountant/chartOfAccounts"] },
   { key: "fixedAssets", label: "Fixed Assets", group: "Accountant", routes: ["/accountant/fixedassets"] },
+  // Closing a period: entries dated on or before the lock date can't change.
+  { key: "budgets", label: "Budgets", group: "Accountant", routes: ["/accountant/budgets"] },
+  { key: "periodLock", label: "Period Locking", group: "Accountant", routes: ["/accountant/periodlock"], actions: ["view", "edit"] },
   { key: "journalEntries",label: "Journal Entries", group: "Accountant", routes: ["/accountant/journals"] },
 
   { key: "profitAndLoss", label: "Profit and Loss", group: "Reports", routes: ["/reports/profitandloss"], actions: VIEW_ONLY },
@@ -186,6 +189,9 @@ const API_RULES = [
   { re: /^\/api\/v1\/fixed-assets\/depreciation\/run$/, pages: ["fixedAssets"], action: "edit" },
   { re: /^\/api\/v1\/fixed-assets\/[^/]+\/dispose$/, pages: ["fixedAssets"], action: "delete" },
   { re: /^\/api\/v1\/fixed-assets(\/|$)/, pages: ["fixedAssets"] },
+  { re: /^\/api\/v1\/period-lock$/, pages: ["periodLock"] },
+  { re: /^\/api\/v1\/reports\/budget-vs-actual$/, pages: ["budgets"], action: "view" },
+  { re: /^\/api\/v1\/budgets(\/|$)/, pages: ["budgets"] },
 
   { re: /^\/api\/v1\/email\/(invite-portal|verify-invite)$/, pages: ["customerPortal"], action: "create" },
   // Emailing a document: only users who can create or edit sales/purchase

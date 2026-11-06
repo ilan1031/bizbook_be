@@ -1,6 +1,7 @@
 const express = require("express");
 const billsController = require("../controllers/billsController");
 const authMiddleware = require("../middleware/userMiddleware");
+const periodLock = require("../helpers/periodLock");
 const { upload } = require("../helpers/multer");
 const router = express.Router();
 
@@ -8,23 +9,23 @@ const router = express.Router();
 // Get all vendors for bills
 router.get("/bills/get-vendors", authMiddleware, billsController.getVendors);
 // Create a new bill (with optional document upload)
-router.post("/bills/create-bills", authMiddleware, upload.single("documents"), billsController.createBills);
+router.post("/bills/create-bills", authMiddleware, upload.single("documents"), periodLock.guard("bill"), billsController.createBills);
 // Get all bills
 router.get("/bills/get-bills", authMiddleware, billsController.getAllBills);
 // Get a specific bill by ID
 router.get("/bills/get-individual-bill", authMiddleware, billsController.getIndividualBill);
 // Update a specific bill (with optional document upload)
-router.put("/bills/update-individual-bill", authMiddleware, upload.single("documents"), billsController.updateIndividualBill);
+router.put("/bills/update-individual-bill", authMiddleware, upload.single("documents"), periodLock.guard("bill"), billsController.updateIndividualBill);
 // Delete a specific bill
-router.delete("/bills/delete-individual-bill", authMiddleware, billsController.deleteIndividualBill);
+router.delete("/bills/delete-individual-bill", authMiddleware, periodLock.guard("bill"), billsController.deleteIndividualBill);
 // Update billing address for a bill
 router.post("/bills/update-billing-address", authMiddleware, billsController.updateBillingAddress);
 // Mark a bill as void
-router.post("/bills/update-status-void", authMiddleware, billsController.updateBillStatusToVoid);
+router.post("/bills/update-status-void", authMiddleware, periodLock.guard("bill"), billsController.updateBillStatusToVoid);
 // Mark a bill as draft
-router.post("/bills/update-status-draft", authMiddleware, billsController.updateBillStatusToDraft);
+router.post("/bills/update-status-draft", authMiddleware, periodLock.guard("bill"), billsController.updateBillStatusToDraft);
 // Change bill status from draft to another status
-router.post("/bills/update-status-from-draft", authMiddleware, billsController.updateBillStatusFromDraft);
+router.post("/bills/update-status-from-draft", authMiddleware, periodLock.guard("bill"), billsController.updateBillStatusFromDraft);
 // Get summary of bills by vendor
 router.get("/bills/vendor-summary", authMiddleware, billsController.getVendorBillSummary);
 // Apply payment to a bill
