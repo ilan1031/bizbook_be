@@ -24,4 +24,16 @@ router.get("/inventory/landed-cost", authMiddleware, planning.landedList.bind(pl
 router.post("/inventory/landed-cost", authMiddleware, periodLock.guard(), planning.landedCreate.bind(planning));
 router.delete("/inventory/landed-cost/:id", authMiddleware, periodLock.guard("landedCost"), planning.landedRemove.bind(planning));
 
+// Warehouses (page "warehouses") and stock transfers (page "stockTransfers").
+const wh = require("../controllers/warehouseController");
+router.get("/inventory/warehouses", authMiddleware, wh.list.bind(wh));
+router.post("/inventory/warehouses", authMiddleware, wh.create.bind(wh));
+router.get("/inventory/warehouses/:id/stock", authMiddleware, wh.stockIn.bind(wh));
+router.patch("/inventory/warehouses/:id", authMiddleware, wh.update.bind(wh));
+router.delete("/inventory/warehouses/:id", authMiddleware, wh.remove.bind(wh));
+router.get("/inventory/transfers/lookups", authMiddleware, wh.lookups.bind(wh));
+router.get("/inventory/transfers", authMiddleware, wh.transfers.bind(wh));
+router.post("/inventory/transfers", authMiddleware, wh.transferCreate.bind(wh));
+router.delete("/inventory/transfers/:id", authMiddleware, wh.transferRemove.bind(wh));
+
 module.exports = router;

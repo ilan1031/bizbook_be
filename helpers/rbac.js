@@ -41,6 +41,8 @@ const PAGES = [
   { key: "inventory", label: "Stock Summary", group: "Inventory", routes: ["/inventory"], actions: VIEW_ONLY },
   { key: "reorderPlanning", label: "Reorder Planning", group: "Inventory", routes: ["/inventory/reorder"], actions: ["view", "edit"] },
   { key: "landedCost", label: "Landed Cost", group: "Inventory", routes: ["/inventory/landedcost"], actions: ["view", "create", "delete"] },
+  { key: "warehouses", label: "Warehouses", group: "Inventory", routes: ["/inventory/warehouses"], actions: ["view", "create", "edit", "delete"] },
+  { key: "stockTransfers", label: "Stock Transfers", group: "Inventory", routes: ["/inventory/transfers"], actions: ["view", "create", "delete"] },
   { key: "inventoryAdjustments", label: "Inventory Adjustments", group: "Inventory", routes: ["/inventory/adjustments"] },
 
   { key: "timesheets", label: "Timesheets", group: "Time Tracking", routes: ["/time/timesheets"], planned: true },
@@ -127,6 +129,8 @@ const API_RULES = [
   // the valuation report and adjustments have their own pages.
   { re: /^\/api\/v1\/inventory\/reorder(\/|$)/, pages: ["reorderPlanning"] },
   { re: /^\/api\/v1\/inventory\/landed-cost(\/|$)/, pages: ["landedCost"] },
+  { re: /^\/api\/v1\/inventory\/warehouses(\/|$)/, pages: ["warehouses"] },
+  { re: /^\/api\/v1\/inventory\/transfers(\/|$)/, pages: ["stockTransfers"] },
   { re: /^\/api\/v1\/inventory\/settings$/, pages: ["items"], sharedRead: true },
   { re: /^\/api\/v1\/inventory\/valuation$/, pages: ["inventoryValuation"] },
   { re: /^\/api\/v1\/inventory\/adjustments(\/|$)/, pages: ["inventoryAdjustments"] },
