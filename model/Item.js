@@ -62,6 +62,8 @@ const ItemSchema = new mongoose.Schema(
     reorder_level: { type: Number, default: 0 },
     // How much to order when stock reaches the reorder level (0: top up to twice the level).
     reorder_quantity: { type: Number, default: 0 },
+    // "none", "batch" or "serial": how units are told apart (see the lot register).
+    tracking: { type: String, enum: ["none", "batch", "serial"], default: "none" },
     stock_qty: { type: Number, default: 0 },
     stock_value: { type: Number, default: 0 },
     avg_cost: { type: Number, default: 0 },

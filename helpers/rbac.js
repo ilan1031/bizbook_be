@@ -43,6 +43,7 @@ const PAGES = [
   { key: "landedCost", label: "Landed Cost", group: "Inventory", routes: ["/inventory/landedcost"], actions: ["view", "create", "delete"] },
   { key: "warehouses", label: "Warehouses", group: "Inventory", routes: ["/inventory/warehouses"], actions: ["view", "create", "edit", "delete"] },
   { key: "stockTransfers", label: "Stock Transfers", group: "Inventory", routes: ["/inventory/transfers"], actions: ["view", "create", "delete"] },
+  { key: "batchTracking", label: "Batch & Serial Tracking", group: "Inventory", routes: ["/inventory/batches"], actions: ["view", "create", "edit", "delete"] },
   { key: "inventoryAdjustments", label: "Inventory Adjustments", group: "Inventory", routes: ["/inventory/adjustments"] },
 
   { key: "timesheets", label: "Timesheets", group: "Time Tracking", routes: ["/time/timesheets"], planned: true },
@@ -130,6 +131,8 @@ const API_RULES = [
   { re: /^\/api\/v1\/inventory\/reorder(\/|$)/, pages: ["reorderPlanning"] },
   { re: /^\/api\/v1\/inventory\/landed-cost(\/|$)/, pages: ["landedCost"] },
   { re: /^\/api\/v1\/inventory\/warehouses(\/|$)/, pages: ["warehouses"] },
+  { re: /^\/api\/v1\/inventory\/batches\/[^/]+\/issue$/, pages: ["batchTracking"], action: "edit" },
+  { re: /^\/api\/v1\/inventory\/batches(\/|$)/, pages: ["batchTracking"] },
   { re: /^\/api\/v1\/inventory\/transfers(\/|$)/, pages: ["stockTransfers"] },
   { re: /^\/api\/v1\/inventory\/settings$/, pages: ["items"], sharedRead: true },
   { re: /^\/api\/v1\/inventory\/valuation$/, pages: ["inventoryValuation"] },

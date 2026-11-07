@@ -36,4 +36,13 @@ router.get("/inventory/transfers", authMiddleware, wh.transfers.bind(wh));
 router.post("/inventory/transfers", authMiddleware, wh.transferCreate.bind(wh));
 router.delete("/inventory/transfers/:id", authMiddleware, wh.transferRemove.bind(wh));
 
+// Batch and serial tracking (page "batchTracking").
+const lots = require("../controllers/stockLotController");
+router.get("/inventory/batches/lookups", authMiddleware, lots.lookups.bind(lots));
+router.get("/inventory/batches", authMiddleware, lots.list.bind(lots));
+router.post("/inventory/batches", authMiddleware, lots.receive.bind(lots));
+router.patch("/inventory/batches/tracking/:itemId", authMiddleware, lots.setTracking.bind(lots));
+router.post("/inventory/batches/:id/issue", authMiddleware, lots.issue.bind(lots));
+router.delete("/inventory/batches/:id", authMiddleware, lots.remove.bind(lots));
+
 module.exports = router;
