@@ -55,7 +55,7 @@ const PAGES = [
   { key: "budgets", label: "Budgets", group: "Accountant", routes: ["/accountant/budgets"] },
   { key: "exchangeRates", label: "Exchange Rates", group: "Accountant", routes: ["/accountant/exchangerates"], actions: ["view", "create", "delete"] },
   { key: "receipts", label: "Receipt Capture", group: "Purchase", routes: ["/purchase/receipts"], actions: ["view", "create", "edit", "delete"] },
-  { key: "investments", label: "Company Investments", group: "Wealth", routes: ["/wealth/investments"], actions: ["view", "create", "edit", "delete"] },
+  { key: "investments", label: "Company Investments", group: "Wealth", routes: ["/wealth/investments", "/wealth/networth"], actions: ["view", "create", "edit", "delete"] },
   { key: "personalWealth", label: "Personal Wealth", group: "Wealth", routes: ["/wealth/personal"], actions: ["view", "create", "edit", "delete"] },
   { key: "paymentLinks", label: "Payment Links", group: "Sales", routes: ["/sales/paymentlinks"], actions: ["view", "create", "delete"] },
   { key: "paymentReminders", label: "Payment Reminders", group: "Sales", routes: ["/sales/reminders"], actions: ["view", "create"] },

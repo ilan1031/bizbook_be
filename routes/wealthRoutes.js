@@ -14,5 +14,11 @@ router.patch(`${base}/investments/:id`, authMiddleware, wealth.update.bind(wealt
 router.post(`${base}/investments/:id/valuations`, authMiddleware, wealth.value.bind(wealth));
 router.post(`${base}/investments/:id/close`, authMiddleware, wealth.close.bind(wealth));
 router.delete(`${base}/investments/:id`, authMiddleware, wealth.remove.bind(wealth));
+router.get(`${base}/net-worth`, authMiddleware, wealth.netWorth.bind(wealth));
+// Personal assets and loans that are not investments (personal scope only).
+router.get(`${base}/entries`, authMiddleware, wealth.entries.bind(wealth));
+router.post(`${base}/entries`, authMiddleware, wealth.entryCreate.bind(wealth));
+router.patch(`${base}/entries/:id`, authMiddleware, wealth.entryUpdate.bind(wealth));
+router.delete(`${base}/entries/:id`, authMiddleware, wealth.entryRemove.bind(wealth));
 
 module.exports = router;

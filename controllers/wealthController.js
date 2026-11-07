@@ -97,6 +97,42 @@ const present = (inv) => {
   };
 };
 
+// Validates a personal asset/loan entry. `full` requires every field (create).
+function readEntry(b, full) {
+  const values = {};
+  if (full || b.type !== undefined) {
+    if (!["asset", "liability"].includes(b.type)) return { error: "Choose asset or loan" };
+    values.type = b.type;
+  }
+  const type = values.type || b.type;
+  if (full || b.name !== undefined) {
+    const name = String(b.name || "").trim();
+    if (!name || name.length > 120) return { error: "Give it a name (up to 120 characters)" };
+    values.name = name;
+  }
+  if (full || b.category !== undefined) {
+    const category = String(b.category || "other");
+    const allowed = ["home", "vehicle", "savings", "cash", "gold", "other", "home_loan", "vehicle_loan", "personal_loan", "credit_card"];
+    if (!allowed.includes(category)) return { error: "Choose a valid category" };
+    values.category = category;
+    if (type === "asset" && ["home_loan", "vehicle_loan", "personal_loan", "credit_card"].includes(category)) return { error: "That category is for loans" };
+    if (type === "liability" && ["home", "vehicle", "savings", "cash", "gold"].includes(category)) return { error: "That category is for assets" };
+  }
+  if (full || b.amount !== undefined) {
+    const amount = amountOf(b.amount, { allowZero: true });
+    if (amount === null) return { error: "Enter the amount (zero or more, at most 2 decimal places)" };
+    values.amount = amount;
+  }
+  if (full || b.as_on !== undefined) {
+    const d = b.as_on ? parseDay(b.as_on) : dayjs();
+    if (!d) return { error: "Enter a valid date" };
+    if (d.isAfter(dayjs().endOf("day"))) return { error: "The date can't be in the future" };
+    values.as_on = d.toDate();
+  }
+  if (b.note !== undefined) values.note = String(b.note).slice(0, 300);
+  return { values };
+}
+
 const find = async (req, res) => {
   const scope = scopeOf(req);
   const org = String(req.query.org_id || req.body?.org_id || "");
@@ -108,7 +144,163 @@ const find = async (req, res) => {
   return { inv, org, scope };
 };
 
+// ---- Net worth -------------------------------------------------------------
+const WealthEntry = require("../model/wealthEntrySchema");
+const { POSTED_JOURNALS, isDebitNormal, ASSET_TYPES, LIABILITY_TYPES } = require("../helpers/accountingHelper");
+
+const ENTRY_CATEGORIES = { asset: ["home", "vehicle", "savings", "cash", "gold", "other"], liability: ["home_loan", "vehicle_loan", "personal_loan", "credit_card", "other"] };
+const CATEGORY_LABELS = { home: "Home", vehicle: "Vehicle", savings: "Savings", cash: "Cash", gold: "Gold", other: "Other", home_loan: "Home loan", vehicle_loan: "Vehicle loan", personal_loan: "Personal loan", credit_card: "Credit card" };
+const KIND_LABELS = { fixed_deposit: "Fixed deposits", mutual_fund: "Mutual funds", shares: "Shares", bonds: "Bonds", gold: "Gold", loan_given: "Loans given", property: "Property", other: "Other investments" };
+
+// What a holding was worth on a date, or null when it was not held then.
+const valueAt = (inv, asOf) => {
+  if (dayjs(inv.purchase_date).isAfter(asOf, "day")) return null;
+  if (inv.status === "closed" && inv.closed?.date && !dayjs(inv.closed.date).isAfter(asOf, "day")) return null;
+  const last = [...(inv.valuations || [])].filter((v) => !dayjs(v.date).isAfter(asOf, "day")).sort((a, b) => new Date(a.date) - new Date(b.date)).pop();
+  return last ? last.value : inv.cost;
+};
+const slices = (map, labels) =>
+  Object.entries(map).filter(([, p]) => p !== 0).map(([key, p]) => ({ key, label: labels[key] || key, value: fromPaise(p) })).sort((a, b) => b.value - a.value);
+const withShare = (list, total) => list.map((s) => ({ ...s, percent: total > 0 ? Math.round((s.value / total) * 1000) / 10 : 0 }));
+
 class WealthController {
+  // GET /wealth/:scope/net-worth?org_id=&as_of=
+  async netWorth(req, res) {
+    try {
+      const scope = scopeOf(req);
+      const org = String(req.query.org_id || "");
+      const admin_id = res.locals.user_id;
+      if (!scope) return bad(res, "Unknown wealth area", ST_CODES.NOT_FOUND);
+      if (!/^\d+$/.test(org)) return bad(res, "Organization ID is required");
+      const asOf = req.query.as_of ? parseDay(req.query.as_of) : dayjs();
+      if (!asOf) return bad(res, "as_of must be a valid date");
+      const holdings = await Investment.find({ organization_id: org, admin_id, scope }).lean();
+      const byKind = {};
+      let investP = 0;
+      let costP = 0;
+      for (const h of holdings) {
+        const v = valueAt(h, asOf);
+        if (v === null) continue;
+        byKind[h.kind] = (byKind[h.kind] || 0) + toPaise(v);
+        investP += toPaise(v);
+        costP += toPaise(h.cost);
+      }
+
+      if (scope === "personal") {
+        const entries = (await WealthEntry.find({ organization_id: org, admin_id, as_on: { $lte: asOf.endOf("day").toDate() } }).lean());
+        const assetsBy = {};
+        const liabBy = {};
+        for (const e of entries) {
+          const bucket = e.type === "asset" ? assetsBy : liabBy;
+          bucket[e.category] = (bucket[e.category] || 0) + toPaise(e.amount);
+        }
+        const assetsP = investP + Object.values(assetsBy).reduce((t, p) => t + p, 0);
+        const liabP = Object.values(liabBy).reduce((t, p) => t + p, 0);
+        const allocation = withShare([...slices(byKind, KIND_LABELS), ...slices(assetsBy, CATEGORY_LABELS).map((s) => ({ ...s, key: `asset_${s.key}` }))].sort((a, b) => b.value - a.value), fromPaise(assetsP));
+        return res.status(ST_CODES.OK).json({
+          status: true,
+          data: { scope, as_of: asOf.format("YYYY-MM-DD"), total_assets: fromPaise(assetsP), total_liabilities: fromPaise(liabP), net_worth: fromPaise(assetsP - liabP), investments: fromPaise(investP), invested_cost: fromPaise(costP), allocation, liabilities: slices(liabBy, CATEGORY_LABELS) },
+        });
+      }
+
+      // Company: the books give assets and liabilities at cost; the register adds what holdings are worth now.
+      const [accounts, journals] = await Promise.all([
+        getAccountsMap(org, admin_id),
+        Journal().find({ organization_id: org, admin_id, journal_date: { $lte: asOf.endOf("day").toDate() }, ...POSTED_JOURNALS }, { line_items: 1 }).lean(),
+      ]);
+      const bal = new Map();
+      for (const j of journals) for (const l of j.line_items || []) bal.set(l.coa_account_id, (bal.get(l.coa_account_id) || 0) + (l.creditOrDebit === "Debit" ? 1 : -1) * toPaise(l.amount || 0));
+      const groups = { cash: 0, receivables: 0, stock: 0, fixed: 0, other: 0 };
+      const GROUP_OF = { cash: "cash", bank: "cash", accounts_receivable: "receivables", stock: "stock", fixed_asset: "fixed" };
+      let assetsP = 0;
+      let liabP = 0;
+      let heldP = 0;
+      for (const [id, signed] of bal) {
+        const a = accounts.get(id);
+        if (!a) continue;
+        if (ASSET_TYPES.includes(a.account_type)) {
+          assetsP += signed;
+          if (String(a.account_name).trim().toLowerCase() === HELD_NAME.toLowerCase()) heldP += signed;
+          else groups[GROUP_OF[a.account_type] || "other"] += signed;
+        } else if (LIABILITY_TYPES.includes(a.account_type)) liabP += -signed;
+      }
+      const unrealisedP = investP - costP;
+      const labels = { cash: "Cash and bank", receivables: "Money owed to you", stock: "Stock", fixed: "Fixed assets (net)", other: "Other assets" };
+      const bookP = assetsP - liabP;
+      // Investments in the register replace the at-cost balance of Investments Held.
+      const adjAssetsP = assetsP - heldP + investP;
+      const allocation = withShare([...slices(groups, labels), ...slices(byKind, KIND_LABELS)].sort((a, b) => b.value - a.value), fromPaise(adjAssetsP));
+      return res.status(ST_CODES.OK).json({
+        status: true,
+        data: {
+          scope, as_of: asOf.format("YYYY-MM-DD"), total_assets: fromPaise(adjAssetsP), total_liabilities: fromPaise(liabP), net_worth: fromPaise(adjAssetsP - liabP),
+          net_worth_in_books: fromPaise(bookP), unrealised_gain: fromPaise(unrealisedP), investments: fromPaise(investP), invested_cost: fromPaise(costP),
+          register_matches_books: heldP === costP, allocation,
+        },
+      });
+    } catch (error) {
+      return fail(res, "work out net worth", error);
+    }
+  }
+
+  // GET /wealth/personal/entries?org_id=
+  async entries(req, res) {
+    try {
+      const org = String(req.query.org_id || "");
+      if (req.params.scope !== "personal") return bad(res, "Not found", ST_CODES.NOT_FOUND);
+      if (!/^\d+$/.test(org)) return bad(res, "Organization ID is required");
+      const rows = await WealthEntry.find({ organization_id: org, admin_id: res.locals.user_id }).sort({ type: 1, amount: -1 }).lean();
+      res.status(ST_CODES.OK).json({ status: true, data: rows.map((e) => ({ ...e, as_on: dayjs(e.as_on).format("YYYY-MM-DD") })), categories: ENTRY_CATEGORIES, labels: CATEGORY_LABELS });
+    } catch (error) {
+      return fail(res, "load entries", error);
+    }
+  }
+
+  // POST /wealth/personal/entries  { org_id, type, category, name, amount, as_on?, note? }
+  async entryCreate(req, res) {
+    try {
+      const org = String(req.body?.org_id || "");
+      if (req.params.scope !== "personal") return bad(res, "Not found", ST_CODES.NOT_FOUND);
+      if (!/^\d+$/.test(org)) return bad(res, "Organization ID is required");
+      const read = readEntry(req.body, true);
+      if (read.error) return bad(res, read.error);
+      const e = await WealthEntry.create({ organization_id: org, admin_id: res.locals.user_id, ...read.values });
+      res.status(ST_CODES.CREATED || 201).json({ status: true, data: e });
+    } catch (error) {
+      return fail(res, "add the entry", error);
+    }
+  }
+
+  // PATCH /wealth/personal/entries/:id
+  async entryUpdate(req, res) {
+    try {
+      const org = String(req.query.org_id || req.body?.org_id || "");
+      if (req.params.scope !== "personal" || !/^\d+$/.test(org) || !mongoose.isValidObjectId(req.params.id)) return bad(res, "Not found", ST_CODES.NOT_FOUND);
+      const e = await WealthEntry.findOne({ _id: req.params.id, organization_id: org, admin_id: res.locals.user_id });
+      if (!e) return bad(res, "Not found", ST_CODES.NOT_FOUND);
+      const read = readEntry({ type: e.type, ...req.body }, false);
+      if (read.error) return bad(res, read.error);
+      Object.assign(e, read.values);
+      await e.save();
+      res.status(ST_CODES.OK).json({ status: true, data: e });
+    } catch (error) {
+      return fail(res, "save the entry", error);
+    }
+  }
+
+  // DELETE /wealth/personal/entries/:id
+  async entryRemove(req, res) {
+    try {
+      const org = String(req.query.org_id || "");
+      if (req.params.scope !== "personal" || !/^\d+$/.test(org) || !mongoose.isValidObjectId(req.params.id)) return bad(res, "Not found", ST_CODES.NOT_FOUND);
+      const r = await WealthEntry.deleteOne({ _id: req.params.id, organization_id: org, admin_id: res.locals.user_id });
+      if (!r.deletedCount) return bad(res, "Not found", ST_CODES.NOT_FOUND);
+      res.status(ST_CODES.OK).json({ status: true, message: "Deleted" });
+    } catch (error) {
+      return fail(res, "delete the entry", error);
+    }
+  }
+
   // GET /wealth/:scope/investments?org_id=&status=active|closed|all
   async list(req, res) {
     try {
