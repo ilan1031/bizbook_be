@@ -60,6 +60,8 @@ const ItemSchema = new mongoose.Schema(
     // The journal that books the opening stock (Dr Inventory Asset).
     opening_journal_id: { type: String, default: "" },
     reorder_level: { type: Number, default: 0 },
+    // How much to order when stock reaches the reorder level (0: top up to twice the level).
+    reorder_quantity: { type: Number, default: 0 },
     stock_qty: { type: Number, default: 0 },
     stock_value: { type: Number, default: 0 },
     avg_cost: { type: Number, default: 0 },

@@ -92,6 +92,18 @@ const RESOLVERS = {
   },
 };
 
+RESOLVERS.inventoryAdjustment = async (req, org) => {
+  const id = req.params?.id;
+  if (!id || !mongoose.isValidObjectId(id)) return null;
+  const doc = await mongoose.model("Inventory_adjustment").findOne({ _id: id, organization_id: String(org) }).select("date").lean();
+  return doc?.date;
+};
+RESOLVERS.landedCost = async (req, org) => {
+  const id = req.params?.id;
+  if (!id || !mongoose.isValidObjectId(id)) return null;
+  const doc = await mongoose.model("LandedCost").findOne({ _id: id, organization_id: String(org) }).select("date").lean();
+  return doc?.date;
+};
 RESOLVERS.creditNote = RESOLVERS.creditDocument("customer");
 RESOLVERS.vendorCredit = RESOLVERS.creditDocument("vendor");
 

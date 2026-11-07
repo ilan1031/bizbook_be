@@ -85,6 +85,7 @@ require("./model/bankTransactionSchema");
 require("./model/fixedAssetSchema");
 require("./model/periodLockSchema");
 require("./model/budgetSchema");
+require("./model/landedCostSchema");
 require("./model/withholdingTaxSchema");
 require("./model/creditDocumentModels");
 require("./model/coa_transactionSchema");
