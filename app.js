@@ -149,6 +149,7 @@ const periodLockRoutes = require("./routes/periodLockRoutes");
 const budgetRoutes = require("./routes/budgetRoutes");
 const paymentReminderRoutes = require("./routes/paymentReminderRoutes");
 const exchangeRateRoutes = require("./routes/exchangeRateRoutes");
+const paymentLinkRoutes = require("./routes/paymentLinkRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const inventoryRoutes = require("./routes/inventoryRoutes");
 const teamRoutes = require("./routes/teamRoutes");
@@ -215,7 +216,8 @@ app.get("/api-health", (req, res) => {
   res.status(dbUp ? 200 : 503).json({ ok: dbUp, db: dbUp ? "connected" : "disconnected" });
 });
 
-app.use(bodyParser.json({ limit: "10mb" }));
+// rawBody is kept so webhook signatures (Razorpay) can be checked.
+app.use(bodyParser.json({ limit: "10mb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(bodyParser.urlencoded({ limit: "10mb", extended: true }));
 
 // Basic security headers (CSP disabled — this app serves its own EJS/Swagger
@@ -365,6 +367,7 @@ app.use("/api/v1", periodLockRoutes);
 app.use("/api/v1", budgetRoutes);
 app.use("/api/v1", paymentReminderRoutes);
 app.use("/api/v1", exchangeRateRoutes);
+app.use("/api/v1", paymentLinkRoutes);
 app.use("/api/v1", creditDocumentRoutes);
 app.use("/api/v1", adminRoutes);
 app.use("/api/v1", inventoryRoutes);
