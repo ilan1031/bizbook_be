@@ -54,6 +54,7 @@ const PAGES = [
   // Closing a period: entries dated on or before the lock date can't change.
   { key: "budgets", label: "Budgets", group: "Accountant", routes: ["/accountant/budgets"] },
   { key: "exchangeRates", label: "Exchange Rates", group: "Accountant", routes: ["/accountant/exchangerates"], actions: ["view", "create", "delete"] },
+  { key: "receipts", label: "Receipt Capture", group: "Purchase", routes: ["/purchase/receipts"], actions: ["view", "create", "edit", "delete"] },
   { key: "paymentLinks", label: "Payment Links", group: "Sales", routes: ["/sales/paymentlinks"], actions: ["view", "create", "delete"] },
   { key: "paymentReminders", label: "Payment Reminders", group: "Sales", routes: ["/sales/reminders"], actions: ["view", "create"] },
   { key: "periodLock", label: "Period Locking", group: "Accountant", routes: ["/accountant/periodlock"], actions: ["view", "edit"] },
@@ -208,6 +209,8 @@ const API_RULES = [
   { re: /^\/api\/v1\/budgets(\/|$)/, pages: ["budgets"] },
   { re: /^\/api\/v1\/reminders(\/|$)/, pages: ["paymentReminders"] },
   { re: /^\/api\/v1\/payment-links(\/|$)/, pages: ["paymentLinks"] },
+  { re: /^\/api\/v1\/receipts\/[^/]+\/expense$/, pages: ["receipts"], action: "edit" },
+  { re: /^\/api\/v1\/receipts(\/|$)/, pages: ["receipts"] },
   { re: /^\/api\/v1\/currencies(\/|$)/, pages: ["exchangeRates"] },
 
   { re: /^\/api\/v1\/email\/(invite-portal|verify-invite)$/, pages: ["customerPortal"], action: "create" },
