@@ -6,6 +6,13 @@ const router = express.Router();
 // :scope is "company" (page permission "investments", posts to the books) or
 // "personal" (page permission "personalWealth", never touches the books).
 // helpers/rbac.js maps each scope to its own page, so they are granted apart.
+// Cash forecast (page "cashForecast"): company only, declared before the :scope routes.
+const forecast = require("../controllers/forecastController");
+router.get("/wealth/company/forecast", authMiddleware, forecast.forecast.bind(forecast));
+router.get("/wealth/company/forecast-items", authMiddleware, forecast.items.bind(forecast));
+router.post("/wealth/company/forecast-items", authMiddleware, forecast.itemCreate.bind(forecast));
+router.delete("/wealth/company/forecast-items/:id", authMiddleware, forecast.itemRemove.bind(forecast));
+
 const base = "/wealth/:scope";
 router.get(`${base}/lookups`, authMiddleware, wealth.lookups.bind(wealth));
 router.get(`${base}/investments`, authMiddleware, wealth.list.bind(wealth));
