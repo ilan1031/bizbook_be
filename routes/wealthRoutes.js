@@ -21,6 +21,14 @@ router.patch(`${base}/investments/:id`, authMiddleware, wealth.update.bind(wealt
 router.post(`${base}/investments/:id/valuations`, authMiddleware, wealth.value.bind(wealth));
 router.post(`${base}/investments/:id/close`, authMiddleware, wealth.close.bind(wealth));
 router.delete(`${base}/investments/:id`, authMiddleware, wealth.remove.bind(wealth));
+// Goals (same page permission as the area: "investments" or "personalWealth").
+const goals = require("../controllers/goalController");
+router.get(`${base}/goals`, authMiddleware, goals.list.bind(goals));
+router.post(`${base}/goals`, authMiddleware, goals.create.bind(goals));
+router.patch(`${base}/goals/:id`, authMiddleware, goals.update.bind(goals));
+router.delete(`${base}/goals/:id`, authMiddleware, goals.remove.bind(goals));
+router.post(`${base}/goals/:id/contributions`, authMiddleware, goals.contribute.bind(goals));
+router.delete(`${base}/goals/:id/contributions/:cid`, authMiddleware, goals.uncontribute.bind(goals));
 router.get(`${base}/net-worth`, authMiddleware, wealth.netWorth.bind(wealth));
 // Personal assets and loans that are not investments (personal scope only).
 router.get(`${base}/entries`, authMiddleware, wealth.entries.bind(wealth));
