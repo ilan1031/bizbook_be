@@ -38,7 +38,7 @@ class OrgController {
       }
       const gstIn = String(bData.gst_in ?? "").trim().toUpperCase();
       if (gstIn && !GSTIN_RE.test(gstIn)) {
-        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "Enter a valid 15-character GSTIN, e.g. 33ABCDE1234F1Z5" });
+        return res.status(ST_CODES.BAD_REQUEST).send({ status: false, message: "Enter a valid 15-character GSTIN, e.g. 33AAACB2902M1Z0" });
       }
       // The setup screen sends the PIN code as "country_code".
       const zip = String(bData.zip ?? bData.country_code ?? "").trim();

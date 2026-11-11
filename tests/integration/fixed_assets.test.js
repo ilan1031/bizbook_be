@@ -81,7 +81,7 @@ test("an asset is added with its figures checked", async () => {
     [{ name: "" }, /name/],
     [{ cost: 0 }, /cost/],
     [{ salvage_value: 12000 }, /salvage/],
-    [{ purchase_date: "2026-02-30" }, /purchase date/],
+    [{ purchase_date: "2026-02-30" }, /purchase date/i],
     [{ useful_life_months: 0 }, /Useful life/],
     [{ cost: 100.123 }, /decimal/],
     [{ asset_account_id: acct.expense.account_id }, /fixed asset account/],

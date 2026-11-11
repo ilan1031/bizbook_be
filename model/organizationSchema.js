@@ -53,11 +53,11 @@ const organizationSchema = new mongoose.Schema(
       default: "",
     },
     phone: {
-      type: Number,
+      type: String, // kept as typed: +91 and leading zeros matter
       required: true,
     },
     zip: {
-      type: Number,
+      type: String, // postal codes are text (some start with 0)
       required: true,
     },
     org_type: {

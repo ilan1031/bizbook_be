@@ -314,6 +314,8 @@ app.use(
 );
 
 // Assign routes COMMON BEO
+// Every field of every JSON body is checked against helpers/fieldRules.js (GSTIN, PAN, email, phone, names, ...).
+app.use("/api/v1", require("./middleware/fieldValidation"));
 app.use("/api/v1", userRoutes);
 app.use("/api/v1", orgRoutes);
 app.use("/api/v1", itemRoutes);

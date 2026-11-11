@@ -81,7 +81,7 @@ const createOrg = async (who, name) => {
   await call("put", `/api/v1/organization/${org}`, {
     token: who.token,
     ip: who.ip,
-    body: { first_street: "12 Gandhi Road", city: "Chennai", zip: 600001, phone: 9876543210, gst_in: "33ABCDE1234F1Z5", email: `accounts+${org}@team.test` },
+    body: { first_street: "12 Gandhi Road", city: "Chennai", zip: 600001, phone: 9876543210, gst_in: "33AAACB2902M1Z0", email: `accounts+${org}@team.test` },
   });
   return org;
 };
