@@ -79,6 +79,11 @@ test.before(async () => {
   });
   assert.equal(o.status, 200, o.text);
   org = String(o.body.data?.organization_id || o.body.organization_id);
+  const createdOrg = await mongoose.model("Organization").findOne({ organization_id: org }).lean();
+  assert.equal(createdOrg.industry_type, "IT");
+  assert.equal(createdOrg.fiscal_year_start_month, "APRIL");
+  assert.equal(createdOrg.language_code, "EN");
+  assert.equal(createdOrg.theme, "primary");
 
   await asSa("post", "/api/v1/contact", {
     organization_id: org,
@@ -196,11 +201,46 @@ test("profile can be read and updated", async () => {
   assert.equal(r.body.data.devices[0].ip, USER_IP);
 
   assert.equal((await asUser("patch", "/api/v1/user/profile", { mobile: "12" })).status, 400);
-  const u = await asUser("patch", "/api/v1/user/profile", { company_name: "Search Co Ltd", role: "superadmin" });
+  const profileImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lJ8AAAAASUVORK5CYII=";
+  const u = await asUser("patch", "/api/v1/user/profile", {
+    company_name: "Search Co Ltd",
+    profile_image: profileImage,
+    role: "superadmin",
+  });
   assert.equal(u.status, 200, u.text);
   const user = await mongoose.model("user").findById(userId).lean();
   assert.equal(user.company_name, "Search Co Ltd");
+  assert.equal(user.profile_image, profileImage);
   assert.equal(user.role, "user", "profile updates can't change the role");
+  assert.equal((await asUser("get", "/api/v1/user/profile")).body.data.profile_image, profileImage);
+  assert.equal(
+    (await asUser("patch", "/api/v1/user/profile", { profile_image: "data:image/svg+xml;base64,PHN2Zz4=" })).status,
+    400
+  );
+});
+
+test("organization profile image can be read, updated and persisted", async () => {
+  const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lJ8AAAAASUVORK5CYII=";
+  const updated = await asSa("put", `/api/v1/organization/${org}`, {
+    org_image: image,
+    phone: "+1 (408) 555-1212",
+    zip: "",
+  });
+  assert.equal(updated.status, 200, updated.text);
+  assert.equal(updated.body.data.org_image, image);
+  assert.equal(updated.body.data.phone, "+1 (408) 555-1212"); // kept as typed
+
+  const fetched = await asSa("get", `/api/v1/organization/${org}`);
+  assert.equal(fetched.status, 200, fetched.text);
+  assert.equal(fetched.body.data.org_image, image);
+  const stored = await mongoose.model("Organization").findOne({ organization_id: org }).lean();
+  assert.equal(stored.org_image, image);
+  assert.match(stored.org_image, /^data:image\/png;base64,/);
+
+  const invalid = await asSa("put", `/api/v1/organization/${org}`, {
+    org_image: "data:image/svg+xml;base64,PHN2Zz4=",
+  });
+  assert.equal(invalid.status, 400);
 });
 
 test("password change checks the current password and the rules", async () => {
@@ -454,7 +494,7 @@ test("portal invite: emails the customer; accepting needs the link and tells who
     const ok = await register({ token, password: "Secret@123" });
     assert.equal(ok.status, 200, ok.text);
     assert.equal(String(ok.body.org_id), org);
-    assert.equal((await register({ token, password: "Secret@123" })).status, 400, "used link");
+    assert.equal((await register({ token, password: "Secret@123" })).status, 409, "used link: the link now means sign in");
 
     const after = await mongoose.model("contactDetails").findOne({ contact_person_id: person.contact_person_id }).lean();
     assert.ok(after.is_portal_invitation_accepted && after.portal_accepted_at);
@@ -518,4 +558,175 @@ test("portal sign-ins can change their password and use an emailed reset link on
   assert.match(again.body.message, /already been used/);
   const fresh = await mongoose.model("clients").findById(client._id);
   assert.ok(await bcrypt.compare("Reset@12345", fresh.password));
+});
+
+test("a regular user's portal invite works: the backend's own calls aren't blocked by the device check", async () => {
+  const mailer = require("../../helpers/mailer");
+  const realSend = mailer.sendMail;
+  const realUser = process.env.EMAIL_USER;
+  const realPass = process.env.EMAIL_PASS;
+  // The invite makes calls to this API over HTTP, so serve the app on a real port.
+  const server = await new Promise((resolve) => {
+    const srv = app.listen(0, "127.0.0.1", () => resolve(srv));
+  });
+  const realPort = process.env.PORT;
+  process.env.PORT = String(server.address().port);
+  const sent = [];
+  process.env.EMAIL_USER = "sender@example.com"; // only so the invite sees a mailbox...
+  process.env.EMAIL_PASS = "x";
+  mailer.sendMail = async (m) => {
+    sent.push(m); // ...the message itself is captured, never sent
+    return { ok: true, channel: "email", messageId: "<test@example.com>" };
+  };
+  try {
+    await asSa("patch", `/api/v1/admin/users/${userId}`, {
+      permissions: { customers: ["view", "create"], customerPortal: ["view", "create"] },
+    });
+    const person = await mongoose.model("contactDetails").create({
+      contact_person_id: "CP-INVITE-1",
+      admin_id: userId,
+      contact_id: "CU-W1",
+      organization_id: userOrg,
+      first_name: "Ravi",
+      email: "ravi@example.com",
+    });
+    assert.ok(person);
+    const r = await asUser("post", "/api/v1/email/invite-portal", {
+      contactId: "CU-W1",
+      contact_person_id: "CP-INVITE-1",
+      admin_id: userId,
+      email: "ravi@example.com",
+      name: "Ravi",
+      organizationId: userOrg,
+    });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].to, "ravi@example.com");
+    assert.match(sent[0].html || sent[0].text, /\/portal\/create-password\?token=/);
+    assert.match(sent[0].text, new RegExp(`/portal/${userOrg}/login`));
+    // The contact is marked invited even though this user can't edit customers.
+    const contact = await mongoose.model("Contact").findOne({ contact_id: "CU-W1", organization_id: userOrg }).lean();
+    assert.equal(contact.portal_status, "enabled");
+    assert.ok(contact.invited_at);
+    const personAfter = await mongoose.model("contactDetails").findOne({ contact_person_id: "CP-INVITE-1" }).lean();
+    assert.equal(personAfter.is_added_in_portal, true);
+    assert.equal(personAfter.is_portal_invitation_accepted, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (realPort === undefined) delete process.env.PORT;
+    else process.env.PORT = realPort;
+    mailer.sendMail = realSend;
+    process.env.EMAIL_USER = realUser;
+    process.env.EMAIL_PASS = realPass;
+  }
+});
+
+test("the internal-call header is only honoured from this process", async () => {
+  const { HEADER } = require("../../helpers/internalCall");
+  // A guessed header from outside doesn't get past the device check.
+  const r = await request(app)
+    .get("/api/v1/user/me")
+    .set("X-Forwarded-For", "198.51.100.200")
+    .set(HEADER, "guess")
+    .set("Authorization", `Bearer ${userToken}`);
+  assert.equal(r.status, 403);
+  assert.equal(r.body.code, "IP_NOT_ALLOWED");
+});
+
+test("recurring-invoice emails go to the customer's contact email, from the server mailbox", async () => {
+  const mailer = require("../../helpers/mailer");
+  const helper = require("../../helpers/emailHelper");
+  const real = mailer.sendCustomerMail;
+  const calls = [];
+  mailer.sendCustomerMail = async (m) => {
+    calls.push(m);
+    return { ok: true, channel: "email", messageId: "<r@example.com>" };
+  };
+  try {
+    // CU-W1 has the person added by the invite test (not flagged primary) - still found.
+    const ok = await helper.sendInvoiceNotificationEmail(
+      { organization_id: userOrg, customer_id: "CU-W1", customer_name: "Kumaran Stores", invoice_number: "INV-9", invoice_id: "9", date_formatted: "01/01/2026" },
+      { profile_name: "Monthly" }
+    );
+    assert.equal(ok.success, true, JSON.stringify(ok));
+    assert.equal(calls[0].to, "ravi@example.com");
+    assert.equal(calls[0].businessName, "Searcher Org");
+    // A customer with no email anywhere is reported, not silently skipped.
+    const none = await helper.sendInvoiceNotificationEmail(
+      { organization_id: userOrg, customer_id: "CU-NOBODY", customer_name: "X", invoice_number: "INV-10" },
+      {}
+    );
+    assert.equal(none.success, false);
+    assert.match(none.error, /No email address/);
+  } finally {
+    mailer.sendCustomerMail = real;
+  }
+});
+
+test("invitation link lifecycle: set password once, then the link means 'sign in'", async () => {
+  const claims = {
+    clientId: "CU-W1",
+    clientPersonId: "CP-INVITE-1",
+    name: "Ravi",
+    email: "ravi@example.com",
+    organization_id: userOrg,
+    org_name: "Searcher Org",
+  };
+  const link = (extra = {}, opts = { expiresIn: "24h" }) => jwt.sign({ ...claims, ...extra }, process.env.JWT_SECRET, opts);
+  const status = (token) => request(app).get("/api/v1/client/invite-status").query({ token });
+  const register = (body) => request(app).post("/api/v1/client/register").send(body);
+
+  // Before any password: pending, and it says who it's for.
+  const token = link();
+  const pending = await status(token);
+  assert.equal(pending.body.data.state, "pending");
+  assert.equal(pending.body.data.email, "ravi@example.com");
+  assert.equal(pending.body.data.org_name, "Searcher Org");
+
+  // Bad links.
+  assert.equal((await status("garbage")).body.data.state, "invalid");
+  assert.equal((await status(jwt.sign(claims, "wrong-secret"))).body.data.state, "invalid");
+  assert.equal((await status(link({}, { expiresIn: -10 }))).body.data.state, "expired");
+  assert.equal((await register({ token: "garbage", password: "Valid@12345" })).status, 400);
+  // The body can't pick who to register: no link, no account.
+  assert.equal((await register({ email: "ravi@example.com", clientId: "CU-W1", clientPersonId: "CP-INVITE-1", password: "Valid@12345" })).status, 400);
+  assert.equal((await register({ token, password: "weak" })).status, 400);
+
+  // Setting the password works once and signs them in.
+  const ok = await register({ token, password: "Valid@12345" });
+  assert.equal(ok.status, 200, ok.text);
+  assert.ok(ok.body.token);
+  assert.equal(String(ok.body.org_id), String(userOrg));
+  assert.equal(ok.body.data.password, undefined);
+  assert.equal((await mongoose.model("clients").countDocuments({ email: "ravi@example.com" })), 1);
+
+  // Opening the same link again: "registered", with the organisation to sign in to.
+  const again = await status(token);
+  assert.equal(again.body.data.state, "registered");
+  assert.equal(String(again.body.data.organization_id), String(userOrg));
+  assert.equal(again.body.data.email, undefined, "no address is revealed once registered");
+  const second = await register({ token, password: "Other@12345" });
+  assert.equal(second.status, 409);
+  assert.equal(second.body.code, "ALREADY_REGISTERED");
+  assert.equal(String(second.body.organization_id), String(userOrg));
+
+  // The password they chose is the one that works, through the portal sign-in.
+  const login = await request(app)
+    .post("/api/v1/client/login")
+    .send({ email: "ravi@example.com", password: "Valid@12345", role: "client", organization_id: userOrg });
+  assert.equal(login.status, 200, login.text);
+
+  // A withdrawn invitation stops working.
+  await mongoose.model("contactDetails").create({
+    contact_person_id: "CP-INVITE-2",
+    admin_id: userId,
+    contact_id: "CU-W1",
+    organization_id: userOrg,
+    first_name: "Meena",
+    email: "meena@example.com",
+    is_added_in_portal: false,
+  });
+  const withdrawn = link({ email: "meena@example.com", clientPersonId: "CP-INVITE-2" });
+  assert.equal((await status(withdrawn)).body.data.state, "revoked");
+  assert.equal((await register({ token: withdrawn, password: "Valid@12345" })).status, 400);
 });

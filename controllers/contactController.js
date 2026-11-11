@@ -379,6 +379,7 @@ class ContactController {
             city: organization.city,
             country: organization.country,
             gst_in: organization.gst_in,
+            email: organization.email,
             phone: organization.phone,
             zip: organization.zip,
             state: organization.state,

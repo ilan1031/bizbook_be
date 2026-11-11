@@ -15,6 +15,8 @@ const app = express();
 // loaded the correct path itself; fixed here so JWT_SECRET (and everything
 // else) is reliably available as soon as app.js needs it.
 dotenv.config({ path: path.join(__dirname, ".env") });
+// Calls the backend makes to itself are recognised by the auth middleware.
+require("./helpers/internalCall").installAxiosHeader(require("axios"));
 
 // Every auth token in this app is signed with JWT_SECRET — refuse to boot
 // without one so we never silently sign tokens with `undefined`, and refuse
@@ -290,6 +292,7 @@ app.use(
     "/api/v1/client/login",
     "/api/v1/client/register",
     "/api/v1/client/forgot-password",
+    "/api/v1/client/invite-status",
     "/api/v1/client/reset-password",
     "/api/v1/user/change-password",
     "/api/v1/client/change-password",

@@ -6,6 +6,7 @@ const OrgCollection = mongoose.model("Organization");
 const { checkApiAccess, classifyRequest, getClientIp } = require("../helpers/rbac");
 const { deviceIdOf, findDevice } = require("../helpers/devices");
 const { checkCreateLimit, recordCreate, checkOrgLimit } = require("../helpers/usageLimits");
+const { isInternal } = require("../helpers/internalCall");
 const ContactCollection = mongoose.model("Contact");
 const teamAccess = require("../helpers/teamAccess");
 
@@ -138,7 +139,9 @@ const authMiddleware = async (req, res, next) => {
             { $set: { "allowed_ips.$.device_id": deviceIdOf(req), "allowed_ips.$.ip": getClientIp(req) } }
           ).catch(() => {});
         }
-        if (!device) {
+        // The device check is about the person; the backend's own calls
+        // (made on their behalf, with their token) skip it.
+        if (!isInternal(req) && !device) {
           return res.status(403).json({
             code: "IP_NOT_ALLOWED",
             message: "This device's IP address isn't approved for your account. Please sign in again.",
@@ -166,7 +169,8 @@ const authMiddleware = async (req, res, next) => {
         // the organisation admin's limits). The customer / vendor / item
         // imports count their rows themselves (recordImportController).
         const billed = acting || user;
-        const kind = req.method !== "GET" && classifyRequest(req.method, req.originalUrl);
+        // The backend's own follow-up calls are part of a request already counted.
+        const kind = req.method !== "GET" && !isInternal(req) && classifyRequest(req.method, req.originalUrl);
         if (kind && kind.action === "create" && !/^\/api\/v1\/import\/(customers|vendors|items|accounts)(\?|$)/.test(req.originalUrl)) {
           const over = await checkCreateLimit(billed);
           if (over) return res.status(429).json({ ...over, success: false });

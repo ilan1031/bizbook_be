@@ -1,4 +1,5 @@
-const nodemailer = require("nodemailer");
+const mongoose = require("mongoose");
+const mailer = require("./mailer");
 const OrganizationCollection = require("../model/organizationSchema");
 const ContactPersonCollection = require("../model/contactPerson");
 require("dotenv").config();
@@ -150,63 +151,36 @@ const generateInvoiceEmailTemplate = (templateData) => {
   };
 };
 
-// Get organization email by organization_id
+// The organisation sending the invoice: its name, and its own address when
+// it has one (used as Reply-To; the message itself goes from the server's
+// mailbox, see mailer.sendCustomerMail).
 const getOrganizationEmail = async (organizationId) => {
-  try {
-    const organization = await OrganizationCollection.findOne({
-      organization_id: organizationId,
-    });
-
-    if (!organization || !organization.email) {
-      throw new Error(`No email found for organization: ${organizationId}`);
-    }
-
-    return {
-      email: organization.email,
-      name:
-        organization.organization_name || organization.name || "Organization",
-    };
-  } catch (error) {
-    console.error(
-      `Error getting organization email for ${organizationId}:`,
-      error
-    );
-    throw error;
-  }
+  const organization = await OrganizationCollection.findOne({
+    organization_id: { $in: [String(organizationId), Number(organizationId)] },
+  }).lean();
+  if (!organization) throw new Error(`Organization not found: ${organizationId}`);
+  return {
+    email: organization.email || "",
+    name: organization.org_name || organization.organization_name || organization.name || "Organization",
+  };
 };
 
-// Get primary contact person email by customer_id
+// Who an invoice is emailed to: the customer's primary contact person, else
+// any contact person with an email, else the customer's own email address.
 const getPrimaryContactEmail = async (customer_id) => {
-  try {
-    const primaryContact = await ContactPersonCollection.findOne({
-      contact_id: customer_id,
-      is_primary_contact: true,
-    });
-    if (!primaryContact || !primaryContact.email) {
-      throw new Error(
-        `No primary contact email found for customer: ${customer_id}`
-      );
-    }
-
+  const people = await ContactPersonCollection.find({ contact_id: customer_id }).lean();
+  const withEmail = people.filter((p) => p.email);
+  const person = withEmail.find((p) => p.is_primary_contact) || withEmail[0];
+  if (person) {
     return {
-      email: primaryContact.email,
-      name:
-        primaryContact.first_name && primaryContact.last_name
-          ? `${primaryContact.first_name} ${primaryContact.last_name}`
-          : primaryContact.contact_person_name || "Customer",
+      email: person.email,
+      name: [person.first_name, person.last_name].filter(Boolean).join(" ") || "Customer",
     };
-  } catch (error) {
-    console.error(
-      `Error getting primary contact email for customer ${customer_id}:`,
-      error
-    );
-    throw error;
   }
+  const contact = await mongoose.model("Contact").findOne({ contact_id: customer_id }, { email: 1, contact_name: 1 }).lean();
+  if (contact?.email) return { email: contact.email, name: contact.contact_name || "Customer" };
+  throw new Error(`No email address found for customer: ${customer_id}`);
 };
-
-// Mail goes through the configured SMTP server (EMAIL_HOST / EMAIL_PORT /
-// EMAIL_USER / EMAIL_PASS), see helpers/mailer.js.
-const createEmailTransporter = () => require("./mailer").getTransporter();
 
 // Send invoice notification email
 const sendInvoiceNotificationEmail = async (
@@ -238,30 +212,18 @@ const sendInvoiceNotificationEmail = async (
     // Generate email template
     const emailTemplate = generateInvoiceEmailTemplate(templateData);
 
-    // Create transporter
-    const transporter = createEmailTransporter();
-
-    // Email options
-    const mailOptions = {
-      from: {
-        name: organizationInfo.name,
-        address: organizationInfo.email,
-      },
-      to: {
-        name: contactInfo.name,
-        address: contactInfo.email,
-      },
+    const result = await mailer.sendCustomerMail({
+      to: contactInfo.email,
       subject: emailTemplate.subject,
       html: emailTemplate.html,
       text: emailTemplate.text,
-    };
+      businessName: organizationInfo.name,
+      replyTo: organizationInfo.email,
+    });
+    if (!result.ok) throw new Error(result.error);
 
-    // Send email
-    const result = await transporter.sendMail(mailOptions);
-
-    console.log(`Invoice notification email sent successfully:`, {
+    console.log("Invoice notification email sent successfully:", {
       invoiceNumber: invoiceData.invoice_number,
-      from: organizationInfo.email,
       to: contactInfo.email,
       messageId: result.messageId,
     });
@@ -269,7 +231,6 @@ const sendInvoiceNotificationEmail = async (
     return {
       success: true,
       messageId: result.messageId,
-      from: organizationInfo.email,
       to: contactInfo.email,
     };
   } catch (error) {

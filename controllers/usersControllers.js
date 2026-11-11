@@ -11,6 +11,7 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { getClientIp, CATALOG } = require("../helpers/rbac");
 const { deviceIdOf, findDevice, newDevice } = require("../helpers/devices");
+const { readInvite } = require("../helpers/portalInvite");
 const { canSendCodes, sendLoginCode, sendSignupAlert } = require("../helpers/accountEmails");
 const { sendInviteAccepted } = require("../helpers/portalEmails");
 const { appUrl } = require("../helpers/mailer");
@@ -695,87 +696,74 @@ class usersController {
     }
   }
 
-  // POST /client/register  { token, password }
-  // A customer accepts a portal invitation: the token from the invitation
-  // email says who they are, and they choose a password. The user who sent
-  // the invitation is told by email (and sees it in their notifications).
+  // POST /client/register { token, password }
+  // Sets the customer's portal password from their invitation link. Who they
+  // are comes from the signed link, never from the request body, and a link
+  // that was already used (or whose invitation was withdrawn) is refused.
   async clientRegister(req, res) {
     try {
-      const { token, password } = req.body;
-      if (!token || !password) {
-        return res.status(400).json({ message: "Open the link from your invitation email to set your password." });
+      const { token: inviteToken, password } = req.body || {};
+      if (!inviteToken || !password) {
+        return res.status(400).json({ message: "The invitation link and a password are required" });
       }
-      let invite;
-      try {
-        invite = jwt.verify(String(token), process.env.JWT_SECRET || "portal-invite-secret-key");
-      } catch {
-        return res.status(400).json({ message: "This invitation link has expired or isn't valid. Ask for a new invitation." });
-      }
-      // Older invitations have no purpose claim but always carry these two.
-      if ((invite.purpose && invite.purpose !== "portal_invite") || !invite.clientPersonId || !invite.email) {
-        return res.status(400).json({ message: "This invitation link isn't valid. Ask for a new invitation." });
-      }
-      const email = String(invite.email).trim().toLowerCase();
-      const role = "client";
-
-      const existingUser = await ClientCollection.findOne({ email, role });
-      if (existingUser)
-        return res.status(400).json({
-          message:
-            "The Customer Portal has already been enabled for this email address. Try signing in to the portal instead, or sign up using a different email address.",
+      const invite = await readInvite(inviteToken);
+      if (invite.state === "registered") {
+        return res.status(409).json({
+          code: "ALREADY_REGISTERED",
+          message: "You've already set your password. Please sign in.",
+          organization_id: invite.organization_id,
         });
-      const contact = await ContactPersonCollection.findOne({
-        contact_person_id: String(invite.clientPersonId),
-      });
-      if (!contact || !contact.is_added_in_portal || String(contact.email || "").trim().toLowerCase() !== email) {
-        return res.status(404).json({ message: "This invitation is no longer valid. Ask for a new invitation." });
       }
+      if (invite.state !== "pending") {
+        const messages = {
+          expired: "This invitation has expired. Ask the business to send you a new one.",
+          revoked: "This invitation is no longer active. Ask the business to send you a new one.",
+          invalid: "This invitation link isn't valid.",
+        };
+        return res.status(400).json({ code: `INVITE_${invite.state.toUpperCase()}`, message: messages[invite.state] });
+      }
+
       const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])(?=.{8,})/;
-      if (!passwordRegex.test(password)) {
+      if (!passwordRegex.test(String(password))) {
         return res.status(400).json({
           message:
             "Password must be at least 8 characters long and include at least one uppercase letter, one number, and one special character.",
         });
       }
-      const hashedPassword = await bcrypt.hash(password, 10);
+
+      const contact = invite.person && (await ContactPersonCollection.findOne({ contact_person_id: invite.claims.clientPersonId }));
+      if (!contact) return res.status(404).json({ message: "This account does not exist" });
+
+      const hashedPassword = await bcrypt.hash(String(password), 10);
       const newUser = new ClientCollection({
-        email,
+        email: invite.email,
         password: hashedPassword,
         client_id: contact.contact_id,
         client_person_id: contact.contact_person_id,
-        role,
+        role: "client",
         status: "active",
         role_formatted: "Client",
       });
       await newUser.save();
       const acceptedAt = new Date();
-      await ContactPersonCollection.updateOne(
+      await ContactPersonCollection.findOneAndUpdate(
         { contact_person_id: contact.contact_person_id },
-        { $set: { is_portal_invitation_accepted: true, portal_accepted_at: acceptedAt } }
+        { is_portal_invitation_accepted: true, portal_accepted_at: acceptedAt },
+        { new: true }
       );
-      const contactData = await ContactCollection.findOne({ contact_id: newUser.client_id }).lean();
-      if (contactData) {
-        await ContactCollection.updateOne(
-          { contact_id: contactData.contact_id, organization_id: contactData.organization_id },
-          { $set: { portal_status: "active", portal_status_formatted: "Active" } }
-        );
-      }
-      const sessionToken = jwt.sign({ userId: newUser._id, role: "client" }, process.env.JWT_SECRET, {
-        expiresIn: "10d",
-      });
-
+      const token = jwt.sign({ userId: newUser._id, role: "client" }, process.env.JWT_SECRET, { expiresIn: "10d" });
+      const contactData = await ContactCollection.findOne({ contact_id: newUser.client_id });
       // Tell whoever sent the invitation (else the organisation's owner).
       // The customer is signed in either way, so this never fails the request.
-      notifyInviteAccepted(contact, contactData).catch((err) =>
+      notifyInviteAccepted(contact, contactData && contactData.toObject ? contactData.toObject() : contactData).catch((err) =>
         console.error("invite-accepted notice failed:", err.message)
       );
-
       const { password: _omit, ...safeNewUser } = newUser.toObject();
       res.status(ST_CODES.OK).json({
         message: "User registered successfully",
         status: true,
-        token: sessionToken,
-        org_id: contactData?.organization_id,
+        token,
+        org_id: contactData?.organization_id || invite.organization_id,
         data: safeNewUser,
       });
     } catch (error) {

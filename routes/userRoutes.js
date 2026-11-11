@@ -30,6 +30,7 @@ router.post("/client/register", usersController.clientRegister);
 // Client login
 router.post("/client/login", usersController.clientLogin);
 // Customer-portal password reset (emailed link)
+router.get("/client/invite-status", portalPassword.inviteStatus);
 router.post("/client/forgot-password", portalPassword.forgotPassword);
 router.post("/client/reset-password", portalPassword.resetPassword);
 // Fetch client by token

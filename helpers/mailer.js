@@ -82,9 +82,49 @@ const getMailHealth = async () => {
   }
 };
 
+// Email to a customer or vendor on behalf of a business user. (Added on the
+// uat branch.) The EMAIL_RE / cleanList helpers and sendCustomerMail follow.
+const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+const cleanList = (v) =>
+  (Array.isArray(v) ? v : String(v || "").split(/[,;]/)).map((x) => String(x).trim()).filter(Boolean);
+
+// Email to a customer or vendor on behalf of a business user. Gmail (and
+// most SMTP servers) only deliver reliably from the authenticated mailbox,
+// so the message is sent from it, shown under the business's name, and
+// replies go to the user's own address (replyTo).
+// Returns { ok, channel, messageId?, error? } - channel "console" means it
+// was only printed (no mailbox configured) and nothing reached the customer.
+const sendCustomerMail = async ({ to, cc, bcc, subject, html, text, businessName, replyTo, attachments }) => {
+  const toList = cleanList(to);
+  const bad = [...toList, ...cleanList(cc), ...cleanList(bcc)].find((a) => !EMAIL_RE.test(a));
+  if (!toList.length) return { ok: false, error: "No recipient email address" };
+  if (bad) return { ok: false, error: `"${bad}" isn't a valid email address` };
+  if (!subject) return { ok: false, error: "Subject is required" };
+  const mailbox = process.env.EMAIL_FROM_ADDRESS || process.env.EMAIL_USER;
+  const name = String(businessName || "").replace(/["<>\r\n]/g, "").trim();
+  const result = await sendMail({
+    to: toList.join(", "),
+    subject,
+    html,
+    text,
+    from: mailbox ? (name ? `"${name}" <${mailbox}>` : mailbox) : undefined,
+    extra: {
+      cc: cleanList(cc).join(", ") || undefined,
+      bcc: cleanList(bcc).join(", ") || undefined,
+      replyTo: EMAIL_RE.test(String(replyTo || "")) ? replyTo : undefined,
+      attachments,
+    },
+  });
+  if (result.ok && result.channel !== "email") {
+    return { ok: false, channel: result.channel, error: "Email isn't set up on the server (EMAIL_USER / EMAIL_PASS), so nothing was sent." };
+  }
+  return result;
+};
+
 // fromName shows as the sender's name (the address stays EMAIL_USER, or
-// EMAIL_FROM when set); replyTo sends replies somewhere else.
-const sendMail = async ({ to, subject, text, html, fromName, replyTo }) => {
+// EMAIL_FROM when set); replyTo sends replies somewhere else. `from` and
+// `extra` (cc, bcc, attachments) are for customer mail (sendCustomerMail).
+const sendMail = async ({ to, subject, text, html, from, fromName, replyTo, extra = {} }) => {
   if (!to) return { ok: false, error: "No email address" };
   if (!isMailConfigured()) {
     if (isProduction()) return { ok: false, error: `Email is not configured: ${MAIL_SETUP_HINT}` };
@@ -93,16 +133,17 @@ const sendMail = async ({ to, subject, text, html, fromName, replyTo }) => {
   }
   const target = mailTarget();
   try {
-    await getTransporter().sendMail({
-      from: process.env.EMAIL_FROM || `${String(fromName || "BizBooks").replace(/[<>"]/g, "")} <${fromAddress()}>`,
+    const info = await getTransporter().sendMail({
+      from: from || process.env.EMAIL_FROM || `${String(fromName || "BizBooks").replace(/[<>"]/g, "")} <${fromAddress()}>`,
       ...(replyTo ? { replyTo } : {}),
       to,
       subject,
       text,
       html,
+      ...extra,
     });
     recordMailHealth({ ok: true, target, error: "" });
-    return { ok: true, channel: "email", target };
+    return { ok: true, channel: "email", target, messageId: info.messageId };
   } catch (err) {
     const message = withHint(err.message);
     console.error(`[mail] send failed via ${target}:`, message);
@@ -126,4 +167,4 @@ const layout = (title, bodyHtml) => `<!doctype html><html><body style="margin:0;
 <tr><td style="padding:24px"><h1 style="font-size:18px;margin:0 0 12px">${escapeHtml(title)}</h1>${bodyHtml}</td></tr>
 </table></td></tr></table></body></html>`;
 
-module.exports = { isMailConfigured, fromAddress, canSendMail, sendMail, appUrl, escapeHtml, layout, getTransporter, getMailHealth, mailTarget };
+module.exports = { isMailConfigured, fromAddress, canSendMail, sendMail, sendCustomerMail, appUrl, escapeHtml, layout, getTransporter, getMailHealth, mailTarget };
