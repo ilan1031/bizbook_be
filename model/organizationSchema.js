@@ -24,6 +24,10 @@ const organizationSchema = new mongoose.Schema(
     email: {
       type: String,
     },
+    website: { type: String, default: "" },
+    pan_no: { type: String, default: "" },
+    // A short line under the name on documents, e.g. "Manufacturer & Distributor".
+    tagline: { type: String, default: "" },
     first_street: {
       type: String,
     },

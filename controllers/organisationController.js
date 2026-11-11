@@ -222,6 +222,9 @@ class OrgController {
         industry_type: 1,
         theme: 1,
         gst_in: 1,
+        website: 1,
+        pan_no: 1,
+        tagline: 1,
         logo: 1,
         createdAt: 1,
         // organization_email: 1, // Added for email templates
@@ -307,6 +310,10 @@ class OrgController {
         "theme",
         "gst_in",
         "organization_email",
+        "email",
+        "website",
+        "pan_no",
+        "tagline",
         "logo",
       ];
 

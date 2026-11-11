@@ -9,6 +9,10 @@ router.post("/org/create-organisation", authMiddleware, orgController.createOrg)
 // Invoice and quote templates (per organisation)
 router.get("/org/templates", authMiddleware, docTemplates.get);
 router.put("/org/templates/:type", authMiddleware, docTemplates.save);
+const docOverrides = require("../controllers/docOverrideController");
+router.get("/org/doc-overrides", authMiddleware, docOverrides.get);
+router.put("/org/doc-overrides", authMiddleware, docOverrides.save);
+router.delete("/org/doc-overrides", authMiddleware, docOverrides.remove);
 // Get organization(s)
 router.post("/org/get-organisation", authMiddleware, orgController.getOrganisation);
 // Get individual organization by ID

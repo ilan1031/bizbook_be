@@ -46,6 +46,7 @@ const DEFAULTS = {
     terms: "",
     note: "",
     signatory: "",
+    declaration: "",
     footer: "This is a computer-generated invoice. · Thank you for your business.",
     logo: "",
   },
@@ -64,6 +65,7 @@ const DEFAULTS = {
     terms: "1. This quotation is valid for 15 days from the date of issue.",
     note: "",
     signatory: "",
+    declaration: "",
     footer: "This is a computer-generated quotation. · Thank you for your business.",
     logo: "",
   },
@@ -79,6 +81,7 @@ const TEXT_LIMITS = [
   ["terms", "Terms & conditions", 3000],
   ["note", "Note", 1000],
   ["signatory", "Signatory", 100],
+  ["declaration", "Declaration", 500],
   ["footer", "Footer", 300],
 ];
 const BANK_LIMITS = [
@@ -138,6 +141,7 @@ const clean = (type, input = {}) => {
       terms: str(input.terms ?? d.terms, 3000),
       note: str(input.note ?? d.note, 1000),
       signatory: str(input.signatory ?? d.signatory, 100),
+      declaration: str(input.declaration ?? d.declaration, 500),
       footer: str(input.footer ?? d.footer, 300),
       logo,
     },

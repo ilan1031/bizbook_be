@@ -116,7 +116,7 @@ const FEATURE_RULES = [
   { re: /^\/api\/v1\/user\/search$/, feature: "globalSearch", action: "view" },
   { re: /^\/api\/v1\/user\/notifications$/, feature: "notifications", action: "view" },
   { re: /^\/api\/v1\/(sales|purchase|common)\/export$/, feature: "exportData", action: "view" },
-  { re: /^\/api\/v1\/org\/templates(\/|$)/, methods: ["PUT", "POST", "PATCH", "DELETE"], feature: "templates", action: "edit" },
+  { re: /^\/api\/v1\/org\/(templates|doc-overrides)(\/|$)/, methods: ["PUT", "POST", "PATCH", "DELETE"], feature: "templates", action: "edit" },
   { re: /^\/api\/v1\/team(\/|$)/, feature: "teamUsers", action: "view" },
 ];
 
