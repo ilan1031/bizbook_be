@@ -60,9 +60,10 @@ test.after(async () => {
 
 test("website, PAN, tagline and contact details are saved and returned, with the format shown when wrong", async () => {
   const put = (b) => call("put", `/api/v1/organization/${org}`, b);
-  const good = await put({ website: "www.example.com", pan_no: "abcpe1234f", tagline: "Manufacturer  &  Distributor", email: "office@example.com", phone: "+91 91596 40239", gst_in: "33AAACB2902M1Z0" });
+  const good = await put({ trade_name: "  Sri   Lakshmi Traders ", website: "www.example.com", pan_no: "abcpe1234f", tagline: "Manufacturer  &  Distributor", email: "office@example.com", phone: "+91 91596 40239", gst_in: "33AAACB2902M1Z0" });
   assert.equal(good.status, 200, good.text);
   const got = (await call("get", `/api/v1/organization/${org}`)).body.data;
+  assert.equal(got.trade_name, "Sri Lakshmi Traders", "optional trade name, tidied");
   assert.equal(got.website, "www.example.com");
   assert.equal(got.pan_no, "ABCPE1234F");
   assert.equal(got.tagline, "Manufacturer & Distributor");
@@ -73,15 +74,19 @@ test("website, PAN, tagline and contact details are saved and returned, with the
   assert.equal(bad.status, 400);
   assert.match(bad.body.message, /Format: 5 letters, 4 digits, 1 letter/);
   assert.equal((await put({ website: "not a site" })).status, 400);
+  assert.equal((await put({ trade_name: "<b>x</b>" })).status, 400);
+  assert.equal((await put({ trade_name: "" })).status, 200, "it is optional, and can be cleared");
+  assert.equal((await call("get", `/api/v1/organization/${org}`)).body.data.trade_name, "");
+  await put({ trade_name: "Sri Lakshmi Traders" });
   assert.equal((await put({ tagline: "<b>x</b>" })).status, 400);
 });
 
 test("details for one document are kept apart from the organisation's own", async () => {
   const q = `organization_id=${org}&kind=invoice&doc_id=INV-1`;
   assert.equal((await call("get", `/api/v1/org/doc-overrides?${q}`)).body.data, null);
-  const saved = await call("put", "/api/v1/org/doc-overrides", { organization_id: org, kind: "invoice", doc_id: "INV-1", fields: { org_name: "Terranova Finishes", phone: "+91 98765 43210", gst_in: "27AAPFU0939F1ZV", ignored: "x" } });
+  const saved = await call("put", "/api/v1/org/doc-overrides", { organization_id: org, kind: "invoice", doc_id: "INV-1", fields: { org_name: "Terranova Finishes", trade_name: "Terranova", phone: "+91 98765 43210", gst_in: "27AAPFU0939F1ZV", ignored: "x" } });
   assert.equal(saved.status, 200, saved.text);
-  assert.deepEqual(Object.keys(saved.body.data).sort(), ["gst_in", "org_name", "phone"]);
+  assert.deepEqual(Object.keys(saved.body.data).sort(), ["gst_in", "org_name", "phone", "trade_name"]);
   const read = await call("get", `/api/v1/org/doc-overrides?${q}`);
   assert.equal(read.body.data.org_name, "Terranova Finishes");
   // The organisation itself is unchanged, and another document is unaffected.

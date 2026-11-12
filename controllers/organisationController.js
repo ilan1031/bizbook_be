@@ -143,6 +143,7 @@ class OrgController {
         plan_name: 1,
         org_type: 1,
         logo: 1,
+        trade_name: 1,
       };
       const limitInt = Math.max(0, parseInt(limit, 10) || 0);
       const pageInt = Math.max(1, parseInt(page, 10) || 1);
@@ -229,6 +230,7 @@ class OrgController {
         website: 1,
         pan_no: 1,
         tagline: 1,
+        trade_name: 1,
         logo: 1,
         createdAt: 1,
         // organization_email: 1, // Added for email templates
@@ -320,6 +322,7 @@ class OrgController {
         "website",
         "pan_no",
         "tagline",
+        "trade_name",
         "logo",
       ];
 

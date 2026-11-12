@@ -36,6 +36,8 @@ const organizationSchema = new mongoose.Schema(
     pan_no: { type: String, default: "" },
     // A short line under the name on documents, e.g. "Manufacturer & Distributor".
     tagline: { type: String, default: "" },
+    // The name the business trades under, if different; printed under the name on documents.
+    trade_name: { type: String, default: "" },
     first_street: {
       type: String,
     },

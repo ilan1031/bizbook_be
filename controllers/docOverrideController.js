@@ -12,7 +12,7 @@ const mongoose = require("mongoose");
 const ST_CODES = require("../helpers/statusCodeHelpers");
 
 const KINDS = ["invoice", "quote", "sales_order", "delivery_challan", "credit_note", "purchase_order", "bill", "vendor_credit"];
-const FIELDS = ["org_name", "tagline", "first_street", "second_street", "city", "zip", "state", "country", "phone", "email", "website", "gst_in", "pan_no"];
+const FIELDS = ["org_name", "trade_name", "tagline", "first_street", "second_street", "city", "zip", "state", "country", "phone", "email", "website", "gst_in", "pan_no"];
 const MAX_LEN = 150;
 
 const DocOverride =
